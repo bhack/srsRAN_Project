@@ -23,6 +23,7 @@
 #include "du_manager_procedure_test_helpers.h"
 #include "lib/du_manager/procedures/ue_configuration_procedure.h"
 #include "lib/du_manager/procedures/ue_creation_procedure.h"
+#include "srsran/rlc/rlc_srb_config_factory.h"
 #include "srsran/support/test_utils.h"
 
 using namespace srsran;
@@ -32,7 +33,7 @@ ul_ccch_indication_message srsran::srs_du::create_test_ul_ccch_message(rnti_t rn
 {
   ul_ccch_indication_message ul_ccch_msg;
   ul_ccch_msg.cell_index = to_du_cell_index(0);
-  ul_ccch_msg.crnti      = rnti;
+  ul_ccch_msg.tc_rnti    = rnti;
   ul_ccch_msg.slot_rx    = {0, test_rgen::uniform_int<unsigned>(0, 10239)};
   ul_ccch_msg.subpdu     = test_rgen::random_vector<uint8_t>(6);
   return ul_ccch_msg;
@@ -50,19 +51,22 @@ du_ue& du_manager_proc_tester::create_ue(du_ue_index_t ue_index)
   f1ap.next_ue_create_response.f1c_bearers_added.resize(2);
   f1ap.next_ue_create_response.f1c_bearers_added[0] = &f1ap.f1ap_ues[ue_index].f1c_bearers[srb_id_t::srb0];
   f1ap.next_ue_create_response.f1c_bearers_added[1] = &f1ap.f1ap_ues[ue_index].f1c_bearers[srb_id_t::srb1];
-  mac.wait_ue_create.result.result                  = true;
+  mac.wait_ue_create.result.allocated_crnti         = ul_ccch_msg.tc_rnti;
   mac.wait_ue_create.result.ue_index                = ue_index;
   mac.wait_ue_create.result.cell_index              = ul_ccch_msg.cell_index;
   mac.wait_ue_create.ready_ev.set();
 
   async_task<void> t = launch_async<ue_creation_procedure>(
-      ue_index, ul_ccch_msg, ue_mng, params.services, params.mac, params.rlc, params.f1ap, cell_res_alloc);
+      du_ue_creation_request{ue_index, ul_ccch_msg.cell_index, ul_ccch_msg.tc_rnti, ul_ccch_msg.subpdu.copy()},
+      ue_mng,
+      params,
+      cell_res_alloc);
 
   lazy_task_launcher<void> launcher{t};
 
   srsran_assert(launcher.ready(), "The UE creation procedure should have completed by now");
 
-  return *ue_mng.ues[ue_index];
+  return ue_mng.ues[ue_index];
 }
 
 f1ap_ue_context_update_response du_manager_proc_tester::configure_ue(const f1ap_ue_context_update_request& req)
@@ -87,12 +91,23 @@ f1ap_ue_context_update_response du_manager_proc_tester::configure_ue(const f1ap_
     cell_res_alloc.next_context_update_result.rlc_bearers.emplace_back();
     cell_res_alloc.next_context_update_result.rlc_bearers.back().lcid    = srb_id_to_lcid(srb_id);
     cell_res_alloc.next_context_update_result.rlc_bearers.back().rlc_cfg = make_default_srb_rlc_config();
+    cell_res_alloc.next_context_update_result.rlc_bearers.back().mac_cfg =
+        make_default_srb_mac_lc_config(srb_id_to_lcid(srb_id));
   }
   for (const f1ap_drb_to_setup& drb : req.drbs_to_setup) {
     cell_res_alloc.next_context_update_result.rlc_bearers.emplace_back();
     cell_res_alloc.next_context_update_result.rlc_bearers.back().drb_id  = drb.drb_id;
     cell_res_alloc.next_context_update_result.rlc_bearers.back().lcid    = uint_to_lcid(3 + (unsigned)drb.drb_id);
     cell_res_alloc.next_context_update_result.rlc_bearers.back().rlc_cfg = make_default_srb_rlc_config();
+    cell_res_alloc.next_context_update_result.rlc_bearers.back().mac_cfg = make_default_drb_mac_lc_config();
+  }
+  for (drb_id_t drb_id : req.drbs_to_rem) {
+    auto it = std::find_if(cell_res_alloc.next_context_update_result.rlc_bearers.begin(),
+                           cell_res_alloc.next_context_update_result.rlc_bearers.end(),
+                           [drb_id](const auto& b) { return b.drb_id == drb_id; });
+    if (it != cell_res_alloc.next_context_update_result.rlc_bearers.end()) {
+      cell_res_alloc.next_context_update_result.rlc_bearers.erase(it);
+    }
   }
 
   // Run Procedure.

@@ -26,18 +26,24 @@
 
 using namespace srsran;
 
-rlc_tx_um_entity::rlc_tx_um_entity(du_ue_index_t                        du_index,
+rlc_tx_um_entity::rlc_tx_um_entity(uint32_t                             du_index,
+                                   du_ue_index_t                        ue_index,
                                    rb_id_t                              rb_id,
                                    const rlc_tx_um_config&              config,
                                    rlc_tx_upper_layer_data_notifier&    upper_dn_,
                                    rlc_tx_upper_layer_control_notifier& upper_cn_,
-                                   rlc_tx_lower_layer_notifier&         lower_dn_) :
-  rlc_tx_entity(du_index, rb_id, upper_dn_, upper_cn_, lower_dn_),
+                                   rlc_tx_lower_layer_notifier&         lower_dn_,
+                                   task_executor&                       pcell_executor_,
+                                   rlc_pcap&                            pcap_) :
+  rlc_tx_entity(du_index, ue_index, rb_id, upper_dn_, upper_cn_, lower_dn_, pcap_),
   cfg(config),
+  sdu_queue(cfg.queue_size),
   mod(cardinality(to_number(cfg.sn_field_length))),
   head_len_full(rlc_um_pdu_header_size_complete_sdu),
   head_len_first(rlc_um_pdu_header_size_no_so(cfg.sn_field_length)),
-  head_len_not_first(rlc_um_pdu_header_size_with_so(cfg.sn_field_length))
+  head_len_not_first(rlc_um_pdu_header_size_with_so(cfg.sn_field_length)),
+  pcell_executor(pcell_executor_),
+  pcap_context(ue_index, rb_id, config)
 {
   logger.log_info("RLC UM configured. {}", cfg);
 }
@@ -54,7 +60,7 @@ void rlc_tx_um_entity::handle_sdu(rlc_sdu sdu_)
                     sdu_.pdcp_sn,
                     sdu_queue);
     metrics.metrics_add_sdus(1, sdu_length);
-    handle_buffer_state_update(); // take lock
+    handle_changed_buffer_state();
   } else {
     logger.log_info("Dropped SDU. sdu_len={} pdcp_sn={} {}", sdu_length, sdu_.pdcp_sn, sdu_queue);
     metrics.metrics_add_lost_sdus(1);
@@ -67,7 +73,7 @@ void rlc_tx_um_entity::discard_sdu(uint32_t pdcp_sn)
   if (sdu_queue.discard(pdcp_sn)) {
     logger.log_info("Discarded SDU. pdcp_sn={}", pdcp_sn);
     metrics.metrics_add_discard(1);
-    handle_buffer_state_update(); // take lock
+    handle_changed_buffer_state();
   } else {
     logger.log_info("Could not discard SDU. pdcp_sn={}", pdcp_sn);
     metrics.metrics_add_discard_failure(1);
@@ -75,14 +81,15 @@ void rlc_tx_um_entity::discard_sdu(uint32_t pdcp_sn)
 }
 
 // TS 38.322 v16.2.0 Sec. 5.2.2.1
-byte_buffer_slice_chain rlc_tx_um_entity::pull_pdu(uint32_t grant_len)
+size_t rlc_tx_um_entity::pull_pdu(span<uint8_t> mac_sdu_buf)
 {
+  uint32_t grant_len = mac_sdu_buf.size();
   logger.log_debug("MAC opportunity. grant_len={}", grant_len);
 
   // Check available space -- we need at least the minimum header + 1 payload Byte
   if (grant_len <= head_len_full) {
     logger.log_debug("Cannot fit SDU into grant_len={}. head_len_full={}", grant_len, head_len_full);
-    return {};
+    return 0;
   }
 
   // Multiple threads can read from the SDU queue and change the
@@ -106,55 +113,49 @@ byte_buffer_slice_chain rlc_tx_um_entity::pull_pdu(uint32_t grant_len)
     }
   }
 
+  // Prepare header
   rlc_um_pdu_header header = {};
   header.sn                = st.tx_next;
   header.sn_size           = cfg.sn_field_length;
   header.so                = next_so;
 
   // Get SI and expected header size
-  uint32_t head_len = 0;
-  if (not get_si_and_expected_header_size(next_so, sdu.buf.length(), grant_len, header.si, head_len)) {
-    logger.log_debug("Cannot fit any payload into grant_len={}. head_len={} si={}", grant_len, head_len, header.si);
-    return {};
+  uint32_t expected_hdr_len = 0;
+  if (not get_si_and_expected_header_size(next_so, sdu.buf.length(), grant_len, header.si, expected_hdr_len)) {
+    logger.log_debug(
+        "Cannot fit any payload into grant_len={}. expected_hdr_len={} si={}", grant_len, expected_hdr_len, header.si);
+    return 0;
   }
 
   // Pack header
-  byte_buffer header_buf = {};
-  rlc_um_write_data_pdu_header(header, header_buf);
-  srsran_sanity_check(head_len == header_buf.length(),
-                      "Header length and expected header length do not match ({} != {})",
-                      header_buf.length(),
-                      head_len);
-
-  // Sanity check: can this SDU be sent considering header overhead?
-  // TODO: verify if this check is redundant; see get_si_and_expected_header_size() above
-  if (grant_len <= head_len) {
-    logger.log_debug("Cannot fit any payload into grant_len={}. head_len={} si={}", grant_len, head_len, header.si);
-    return {};
-  }
+  size_t header_len = rlc_um_write_data_pdu_header(mac_sdu_buf, header);
+  srsran_sanity_check(header_len = expected_hdr_len,
+                      "Failed to write header. header_len={} expected_hdr_len={}",
+                      header_len,
+                      expected_hdr_len);
 
   // Calculate the amount of data to move
-  uint32_t space       = grant_len - head_len;
+  uint32_t space       = grant_len - header_len;
   uint32_t payload_len = space >= sdu.buf.length() - next_so ? sdu.buf.length() - next_so : space;
 
   // Log PDU info
-  logger.log_debug("Creating PDU. si={} payload_len={} head_len={} sdu_len={} grant_len={}",
+  logger.log_debug("Creating PDU. si={} payload_len={} header_len={} sdu_len={} grant_len={}",
                    header.si,
                    payload_len,
-                   head_len,
+                   header_len,
                    sdu.buf.length(),
                    grant_len);
 
   // Assemble PDU
-  byte_buffer_slice_chain pdu_buf = {};
-  pdu_buf.push_front(std::move(header_buf));
-  pdu_buf.push_back(byte_buffer_slice{sdu.buf, next_so, payload_len});
+  size_t nwritten = copy_segments(byte_buffer_view{sdu.buf, next_so, payload_len},
+                                  mac_sdu_buf.subspan(header_len, mac_sdu_buf.size() - header_len));
+  if (nwritten == 0 || nwritten != payload_len) {
+    logger.log_error("Could not write PDU payload. {} payload_len={} grant_len={}", header, payload_len, grant_len);
+    return 0;
+  }
 
-  // Assert number of bytes
-  srsran_assert(
-      pdu_buf.length() <= grant_len, "Resulting pdu_len={} exceeds grant_len={}.", pdu_buf.length(), grant_len);
-  logger.log_info(
-      pdu_buf.begin(), pdu_buf.end(), "TX PDU. {} pdu_len={} grant_len={}", header, pdu_buf.length(), grant_len);
+  size_t pdu_size = header_len + nwritten;
+  logger.log_info(mac_sdu_buf.data(), pdu_size, "TX PDU. {} pdu_size={} grant_len={}", header, pdu_size, grant_len);
 
   // Release SDU if needed
   if (header.si == rlc_si_field::full_sdu || header.si == rlc_si_field::last_segment) {
@@ -171,12 +172,14 @@ byte_buffer_slice_chain rlc_tx_um_entity::pull_pdu(uint32_t grant_len)
   }
 
   // Update metrics
-  metrics.metrics_add_pdus(1, pdu_buf.length());
+  metrics.metrics_add_pdus(1, pdu_size);
 
   // Log state
   log_state(srslog::basic_levels::debug);
 
-  return pdu_buf;
+  pcap.push_pdu(pcap_context, mac_sdu_buf.subspan(0, pdu_size));
+
+  return pdu_size;
 }
 
 /// Helper to get SI of an PDU
@@ -219,22 +222,23 @@ bool rlc_tx_um_entity::get_si_and_expected_header_size(uint32_t      so,
   return true;
 }
 
-// TS 38.322 v16.2.0 Sec 5.5
-uint32_t rlc_tx_um_entity::get_buffer_state()
+void rlc_tx_um_entity::handle_changed_buffer_state()
 {
-  std::lock_guard<std::mutex> lock(mutex);
-  return get_buffer_state_nolock();
+  if (not pending_buffer_state.test_and_set(std::memory_order_seq_cst)) {
+    logger.log_debug("Triggering buffer state update to lower layer");
+    // Redirect handling of status to pcell_executor
+    if (not pcell_executor.defer([this]() { update_mac_buffer_state(); })) {
+      logger.log_error("Failed to enqueue buffer state update");
+    }
+  } else {
+    logger.log_debug("Avoiding redundant buffer state update to lower layer");
+  }
 }
 
-void rlc_tx_um_entity::handle_buffer_state_update()
+void rlc_tx_um_entity::update_mac_buffer_state()
 {
-  std::lock_guard<std::mutex> lock(mutex);
-  handle_buffer_state_update_nolock();
-}
-
-void rlc_tx_um_entity::handle_buffer_state_update_nolock()
-{
-  unsigned bs = get_buffer_state_nolock();
+  pending_buffer_state.clear(std::memory_order_seq_cst);
+  unsigned bs = get_buffer_state();
   if (not(bs > MAX_DL_PDU_LENGTH && prev_buffer_state > MAX_DL_PDU_LENGTH)) {
     logger.log_debug("Sending buffer state update to lower layer. bs={}", bs);
     lower_dn.on_buffer_state_update(bs);
@@ -247,8 +251,11 @@ void rlc_tx_um_entity::handle_buffer_state_update_nolock()
   prev_buffer_state = bs;
 }
 
-uint32_t rlc_tx_um_entity::get_buffer_state_nolock()
+// TS 38.322 v16.2.0 Sec 5.5
+uint32_t rlc_tx_um_entity::get_buffer_state()
 {
+  std::lock_guard<std::mutex> lock(mutex);
+
   // minimum bytes needed to tx all queued SDUs + each header
   uint32_t queue_bytes = sdu_queue.size_bytes() + sdu_queue.size_sdus() * head_len_full;
 

@@ -33,9 +33,7 @@ class test_bench_guardbands
 {
 public:
   explicit test_bench_guardbands(subcarrier_spacing scs, bool is_tdd = false) :
-    cell_cfg{make_default_sched_cell_configuration_request_scs(scs, is_tdd)},
-    res_grid{cell_cfg},
-    pucch_guard_sched{cell_cfg},
+    cell_cfg{sched_cfg, make_default_sched_cell_configuration_request_scs(scs, is_tdd)},
     sl_tx{to_numerology_value(cell_cfg.ul_cfg_common.init_ul_bwp.generic_params.scs), 0}
   {
     srsran_assert(not cell_cfg.pucch_guardbands.empty(), "PUCCH guardbands list is empty.");
@@ -45,10 +43,11 @@ public:
 
   void slot_indication(slot_point slot_tx) { res_grid.slot_indication(slot_tx); }
 
-  cell_configuration         cell_cfg;
-  cell_resource_allocator    res_grid;
-  pucch_guardbands_scheduler pucch_guard_sched;
-  slot_point                 sl_tx;
+  const scheduler_expert_config sched_cfg = config_helpers::make_default_scheduler_expert_config();
+  cell_configuration            cell_cfg;
+  cell_resource_allocator       res_grid{cell_cfg};
+  pucch_guardbands_scheduler    pucch_guard_sched{cell_cfg};
+  slot_point                    sl_tx;
 };
 
 // Class to test PUCCH schedule with SR occasions only.
@@ -57,7 +56,7 @@ class test_pucch_guard_sched : public ::testing::TestWithParam<std::pair<subcarr
 public:
   test_pucch_guard_sched() : bwp_cfg{t_bench.cell_cfg.ul_cfg_common.init_ul_bwp.generic_params}
   {
-    res_grid_size  = t_bench.res_grid.RING_ALLOCATOR_SIZE;
+    res_grid_size  = t_bench.res_grid.max_ul_slot_alloc_delay;
     ul_bwp_scs     = t_bench.cell_cfg.ul_cfg_common.init_ul_bwp.generic_params.scs;
     test_tot_slots = test_tot_frames * static_cast<unsigned>(t_bench.sl_tx.nof_slots_per_frame());
   }
@@ -82,8 +81,8 @@ TEST_P(test_pucch_guard_sched, test_first_slot)
   // Check if PUCCH guardbands have been allocated for all the slots in the grid.
   for (unsigned sl = 0; sl < res_grid_size; ++sl) {
     for (const auto& guard_b : t_bench.cell_cfg.pucch_guardbands) {
-      if (t_bench.cell_cfg.is_ul_enabled(t_bench.res_grid[sl].slot)) {
-        grant_info grant{ul_bwp_scs, guard_b.symbols, prb_to_crb(bwp_cfg, guard_b.prbs)};
+      if (t_bench.cell_cfg.is_fully_ul_enabled(t_bench.res_grid[sl].slot)) {
+        const grant_info grant{ul_bwp_scs, guard_b.symbols, prb_to_crb(bwp_cfg, guard_b.prbs)};
         ASSERT_TRUE(test_res_grid_has_re_set(t_bench.res_grid, grant, sl));
       }
     }
@@ -99,8 +98,8 @@ TEST_P(test_pucch_guard_sched, test_slots_after_initialization)
     // Check if, after initialization, PUCCH guardbands have been allocated for the last slot of the grid.
     if (sl > 0) {
       for (const auto& guard_b : t_bench.cell_cfg.pucch_guardbands) {
-        if (t_bench.cell_cfg.is_ul_enabled(t_bench.res_grid[res_grid_size - 1].slot)) {
-          grant_info grant{ul_bwp_scs, guard_b.symbols, prb_to_crb(bwp_cfg, guard_b.prbs)};
+        if (t_bench.cell_cfg.is_fully_ul_enabled(t_bench.res_grid[res_grid_size - 1].slot)) {
+          const grant_info grant{ul_bwp_scs, guard_b.symbols, prb_to_crb(bwp_cfg, guard_b.prbs)};
           ASSERT_TRUE(test_res_grid_has_re_set(t_bench.res_grid, grant, res_grid_size - 1));
         }
       }
@@ -117,10 +116,3 @@ INSTANTIATE_TEST_SUITE_P(test_pucch_guard_sched_scs_values,
                              // TDD.
                              std::make_pair(subcarrier_spacing::kHz15, true),
                              std::make_pair(subcarrier_spacing::kHz30, true)));
-
-int main(int argc, char** argv)
-{
-  ::testing::InitGoogleTest(&argc, argv);
-
-  return RUN_ALL_TESTS();
-}

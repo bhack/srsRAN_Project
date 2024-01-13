@@ -44,14 +44,14 @@ class mac_dummy : public rlc_tx_lower_layer_notifier
 
 public:
   mac_dummy(const stress_test_args& args_, uint32_t ue_id, rb_id_t rb_id) :
-    args(args_), logger("MAC", {ue_id, rb_id, "DL"}), rgen(args_.seed), bsr(0)
+    args(args_), logger("MAC", {0, ue_id, rb_id, "DL"}), rgen(args_.seed), bsr(0)
   {
   }
 
-  std::vector<byte_buffer_slice_chain> pdu_rx_list;
-  std::vector<byte_buffer_slice_chain> run_tx_tti(uint32_t tti);
-  void                                 run_rx_tti();
-  void                                 push_rx_pdus(std::vector<byte_buffer_slice_chain> list_pdus);
+  std::vector<byte_buffer_chain> pdu_rx_list;
+  std::vector<byte_buffer_chain> run_tx_tti(uint32_t tti);
+  void                           run_rx_tti();
+  void                           push_rx_pdus(std::vector<byte_buffer_chain> list_pdus);
 
   // rlc_tx_lower_layer_notifier interface
   void on_buffer_state_update(unsigned bsr_) final { this->bsr.store(bsr_, std::memory_order_relaxed); }

@@ -19,92 +19,222 @@
 #
 
 include:
-  - project: softwareradiosystems/testing-tools
-    ref: "45"
-    file: .gitlab/ci-shared/setup/all.yml
+  - project: softwareradiosystems/ci/srsran_project_packaging
+    ref: "2"
+    file: .gitlab/ci-shared/package.yml
+  - local: .gitlab/ci/src_cache.yml
 
-stages:
-  - build and unit tests
+variables:
+  AMD64_TAG: amd64
+  AMD64_AVX2_TAG: amd64-avx2
+  AMD64_AVX512_TAG: amd64-avx2-avx512
+  ARM64_TAG: arm64
 
-# Template job
+  INFRASTRUCTURE_TAG:
+    description: Computer architecture and supported instruction sets
+    options:
+      - "on-prem-amd64"
+      - "on-prem-arm64"
+      - "aws-spot-amd64"
+      - "aws-spot-arm64"
+    value: "aws-spot-amd64"
+  OS:
+    description: Operating system
+    options:
+      - "ubuntu-23.10"
+      - "ubuntu-23.04"
+      - "ubuntu-22.04"
+      - "ubuntu-20.04"
+      - "debian-12"
+      - "debian-11"
+      - "archlinux-latest"
+      - "rhel-8"
+    value: "ubuntu-22.04"
+  COMPILER:
+    description: Compiler to use
+    options:
+      - "gcc"
+      - "clang"
+    value: "gcc"
+  TEST_MODE:
+    description: What tests to run. None won't run any test at all.
+    options:
+      - "default"
+      - "coverage"
+      - "tsan"
+      - "valgrind"
+      - "none"
+    value: "default"
+  BUILD_ARGS:
+    description: It will be passed to cmake
+    value: ""
+  MAKE_ARGS:
+    description: It will be passed to make
+    value: ""
+  UHD_VERSION:
+    description: must be one version supported in the specified OS
+    value: ""
+  DPDK_VERSION:
+    description: must be one version supported in the specified OS
+    value: ""
+
+################
+# Build caches #
+################
+
+.cache_build_set: &cache_build_set
+  - key: ${OS}-${COMPILER}-${BUILD_TYPE}
+    paths: [ccache]
+    policy: push
+
+.cache_build_get: &cache_build_get
+  - key: ${OS}-${COMPILER}-${BUILD_TYPE}
+    paths: [ccache]
+    policy: pull
+
+#################
+# Template jobs #
+#################
+
+# Base job
 
 .build_and_unit:
-  image: ${CR_REGISTRY_URI}/${PROJECT}/srs-builder-gnb-${OS}:${DOCKER_BUILDER_VERSION}
-  tags:
-    - ${SRS_INFRASTRUCTURE_TAG}-${PLATFORM}
+  image: ${CR_REGISTRY_URI}/srsgnb/builder-${OS}:${DOCKER_BUILDER_VERSION}
+  tags: ["${AMD64_TAG}"]
   stage: build and unit tests
   variables:
-    DOCKER_BUILDER_VERSION: "1.7.4"
-    # General
-    OS: ubuntu-22.04
+    # Setup
+    UHD_VERSION: "" # Default for OS
+    DPDK_VERSION: "" # None
     # Build
-    COMPILER: gcc
-    UHD_VERSION: "" # Empty for OS default
     BUILD_TYPE: "" # Empty for cmake default
     ASSERT_LEVEL: "" # Empty for cmake default
     ENABLE_EXPORT: "" # Empty for cmake default
     ENABLE_FFTW: "" # Empty for cmake default
     ENABLE_UHD: "" # Empty for cmake default
-    ENABLE_ZERO_MQ: "" # Empty for cmake default
+    ENABLE_DPDK: "" # Empty for cmake default
+    ENABLE_ZEROMQ: "True" # Empty for cmake default
     ENABLE_ASAN: "" # Empty for cmake default
     ENABLE_TSAN: "" # Empty for cmake default
     ENABLE_GCOV: "" # Empty for cmake default
-    AUTO_DETECT_ISA: "False"
-    PLATFORM: "amd64"
-    PROJECT: "testing-tools"
-    # Test
-    TEST_MODE: none # default, coverage, asan, tsan, valgrind, none
-  needs: []
+    ENABLE_WERROR: "" # Empty for cmake default
+    AUTO_DETECT_ISA: ""
+    # CI
+    SAVE_ARTIFACTS: "" # Empty by default
+    KUBERNETES_MEMORY_REQUEST: 12Gi
+    KUBERNETES_CPU_REQUEST: 7
+    MAKE_ARGS: "-j${KUBERNETES_CPU_REQUEST}"
+    GIT_STRATEGY: none
+  needs:
+    - !reference [.fetch_src_cache, needs]
+    - job: builder version
+      optional: false
+      artifacts: true
+    - job: trigger builder
+      optional: true
+      artifacts: false
   before_script:
+    - !reference [.fetch_src_cache, script]
     - |
       build_srsgnb() {
-        if [ -n "${UHD_VERSION}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -u ${UHD_VERSION}"
-        fi
-        if [ -n "${BUILD_TYPE}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
-        fi
-        if [ -n "${ASSERT_LEVEL}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DASSERT_LEVEL=${ASSERT_LEVEL}"
-        fi
-        if [ -n "${AUTO_DETECT_ISA}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DAUTO_DETECT_ISA=${AUTO_DETECT_ISA}"
-        fi
-        if [ -n "${ENABLE_EXPORT}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_EXPORT=${ENABLE_EXPORT}"
-        fi
-        if [ -n "${ENABLE_FFTW}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_FFTW=${ENABLE_FFTW}"
-        fi
-        if [ -n "${ENABLE_UHD}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_UHD=${ENABLE_UHD}"
-        fi
-        if [ -n "${ENABLE_ZERO_MQ}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_ZERO_MQ=${ENABLE_ZERO_MQ}"
-        fi
-        if [ -n "${ENABLE_ASAN}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_ASAN=${ENABLE_ASAN}"
-        fi
-        if [ -n "${ENABLE_TSAN}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_TSAN=${ENABLE_TSAN}"
-        fi
-        if [ -n "${ENABLE_GCOV}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_GCOV=${ENABLE_GCOV}"
-        fi
-        if [ -n "${ENABLE_AVX2}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_AVX2=${ENABLE_AVX2}"
-        fi
-        if [ -n "${ENABLE_AVX512}" ]; then
-          BUILD_ARGS="${BUILD_ARGS} -DENABLE_AVX512=${ENABLE_AVX512}"
-        fi
-        if [[ $TEST_MODE = "none" ]]; then
-          BUILD_ARGS="${BUILD_ARGS} -DBUILD_TESTS=False"
+        start_time=$(date +%s)
+        if [ -e "/usr/local/bin/ram_reporter.py" ]; then
+          /usr/local/builder_tools/bin/python3 /usr/local/bin/ram_reporter.py ${CI_PROJECT_DIR}/ram_usage.txt &
+          ram_reporter_pid=$!
         fi
 
-        BUILD_CMD="builder.sh -c ${COMPILER} ${BUILD_ARGS} ."
+        BUILD_CMD=""
+        if [ -n "${BUILD_TYPE}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DCMAKE_BUILD_TYPE=${BUILD_TYPE}"
+        fi
+        if [ -n "${ASSERT_LEVEL}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DASSERT_LEVEL=${ASSERT_LEVEL}"
+        fi
+        if [ -n "${AUTO_DETECT_ISA}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DAUTO_DETECT_ISA=${AUTO_DETECT_ISA}"
+        fi
+        if [ -n "${ENABLE_EXPORT}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_EXPORT=${ENABLE_EXPORT}"
+        fi
+        if [ -n "${ENABLE_FFTW}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_FFTW=${ENABLE_FFTW}"
+        fi
+        if [ -n "${ENABLE_UHD}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_UHD=${ENABLE_UHD}"
+        fi
+        if [ -n "${ENABLE_DPDK}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_DPDK=${ENABLE_DPDK}"
+        fi
+        if [ -n "${ENABLE_ZEROMQ}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_ZEROMQ=${ENABLE_ZEROMQ}"
+        fi
+        if [ -n "${ENABLE_ASAN}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_ASAN=${ENABLE_ASAN}"
+        fi
+        if [ -n "${ENABLE_TSAN}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_TSAN=${ENABLE_TSAN}"
+        fi
+        if [ -n "${ENABLE_GCOV}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_GCOV=${ENABLE_GCOV}"
+        fi
+        if [ -n "${ENABLE_AVX2}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_AVX2=${ENABLE_AVX2}"
+        fi
+        if [ -n "${ENABLE_AVX512}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_AVX512=${ENABLE_AVX512}"
+        fi
+        if [ -n "${ENABLE_WERROR}" ]; then
+          BUILD_CMD="${BUILD_CMD} -DENABLE_WERROR=${ENABLE_WERROR}"
+        fi
+        if [[ $TEST_MODE = "none" ]]; then
+          BUILD_CMD="${BUILD_CMD} -DBUILD_TESTS=False"
+        fi
+        if [ -n "${BUILD_ARGS}" ]; then
+          BUILD_CMD="${BUILD_CMD} ${BUILD_ARGS}"
+        fi
+
+        if [ -n "${DPDK_VERSION}" ]; then
+          BUILD_CMD="-d ${DPDK_VERSION} ${BUILD_CMD}"
+        fi
+        if [ -n "${UHD_VERSION}" ]; then
+          BUILD_CMD="-u ${UHD_VERSION} ${BUILD_CMD}"
+        fi
+        if [ -n "${CLEAN_BUILD}" ]; then
+          BUILD_CMD="-r ${CLEAN_BUILD} ${BUILD_CMD}"
+        fi
+        if [ -n "${MAKE_ARGS}" ]; then
+          BUILD_CMD="-m ${MAKE_ARGS} ${BUILD_CMD}"
+        fi
+        if [ -n "${COMPILER}" ]; then
+          BUILD_CMD="-c ${COMPILER} ${BUILD_CMD}"
+        fi
+        BUILD_CMD="builder.sh ${BUILD_CMD} ."
+
         echo "${BUILD_CMD}"
         echo "============================================================================================="
         $BUILD_CMD
+
+        if [[ -n "$OUTPUT_FINGERPRINT" ]]; then
+          echo "Storing fingerprints of all executables to $OUTPUT_FINGERPRINT"
+          cd build
+          /usr/local/builder_tools/bin/python /usr/local/bin/changed_tests.py -b . -o "../$OUTPUT_FINGERPRINT"
+          cd ..
+        fi
+
+        end_time=$(date +%s)
+        execution_time=$((end_time - start_time))
+        echo "Build time is: $execution_time seconds"
+
+        export metric_prefix=""
+        if [[ $ON_MR == "true" ]]; then metric_prefix="_pr"; fi
+
+        if [ -e "${CI_PROJECT_DIR}/ram_usage.txt" ]; then
+          ram_usage=$(cat ${CI_PROJECT_DIR}/ram_usage.txt)
+          echo "RAM usage is: $ram_usage GB"
+          kill $ram_reporter_pid
+          echo "ram_usage${metric_prefix},pipeline=${CI_PIPELINE_ID},os=${OS} value=${ram_usage}" >> build_time_metrics.txt
+        fi
+        echo "build_time${metric_prefix},pipeline=${CI_PIPELINE_ID},os=${OS} value=${execution_time}" >> build_time_metrics.txt
       }
     - |
       launch_tests() {
@@ -118,40 +248,49 @@ stages:
             ctest_extra="-L tsan"
             ;;
           valgrind)
-            cp DartConfiguration.tcl ${test_folder}/
-            sed -i "s/${CI_PROJECT_DIR//\//\\/}\/build/${CI_PROJECT_DIR//\//\\/}\/build\/${test_folder//\//\\/}/" ${test_folder}/DartConfiguration.tcl
-            sed -i "s/MemoryCheckCommandOptions: /MemoryCheckCommandOptions: --verbose --trace-children=yes --time-stamp=yes --leak-check=full --show-leak-kinds=all --show-reachable=yes/" ${test_folder}/DartConfiguration.tcl
             G_DEBUG=gc-friendly G_SLICE=always-malloc
             ctest_extra="-T memcheck --timeout 10800"
             ;;
         esac
-        CTEST_CMD="ctest -j "$(nproc --all)" $ctest_extra --schedule-random --output-on-failure --output-junit xunit.xml"
+        if [ -n "${FINGERPRINT}" ]; then
+          echo "Searching for changed tests"
+          CTEST_SUBSET=$(/usr/local/builder_tools/bin/python /usr/local/bin/changed_tests.py -b . -i "../${FINGERPRINT}" -d md5)
+          if [ -n "${CTEST_SUBSET}" ]; then
+            echo "Tests with changed fingerprint: ${CTEST_SUBSET}"
+            CTEST_SUBSET_CMD="-I 0,0,0,${CTEST_SUBSET}"
+          else
+            echo "No tests changed"
+            ret=0
+            exit $ret
+          fi
+        fi
+        CTEST_CMD="ctest -j${KUBERNETES_CPU_REQUEST} ${CTEST_SUBSET_CMD} $ctest_extra --schedule-random --output-on-failure --output-junit xunit.xml"
         echo "${CTEST_CMD}"
         echo "============================================================================================="
         $CTEST_CMD && ret=0 || ret=1
 
         if [[ $TEST_MODE = "coverage" ]]; then 
-          gcovr --xml --print-summary -j "$(nproc --all)" --exclude-unreachable-branches \
+          common_options="-j${KUBERNETES_CPU_REQUEST} \
+            --exclude-unreachable-branches \
             --gcov-ignore-parse-errors \
-            --exclude "${CI_PROJECT_DIR}/tests/*" \
-            --exclude "${CI_PROJECT_DIR}/benchmarks/*" \
-            --exclude "${CI_PROJECT_DIR}/apps/examples/*" \
-            --exclude "${CI_PROJECT_DIR}/external/*" \
-            --exclude "${CI_PROJECT_DIR}/include/srsgnb/asn1/e1ap/.*" \
-            --exclude "${CI_PROJECT_DIR}/include/srsgnb/asn1/e2ap/.*" \
-            --exclude "${CI_PROJECT_DIR}/include/srsgnb/asn1/f1ap/.*" \
-            --exclude "${CI_PROJECT_DIR}/include/srsgnb/asn1/ngap/.*" \
-            --exclude "${CI_PROJECT_DIR}/include/srsgnb/asn1/rrc_nr/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/asn1/e1ap/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/asn1/e2ap/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/asn1/f1ap/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/asn1/ngap/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/asn1/rrc_nr/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/phy/generic_functions/fftx/lib_fftx_dftbat_srcs/.*" \
-            --exclude "${CI_PROJECT_DIR}/lib/phy/generic_functions/fftx/lib_fftx_idftbat_srcs/.*" \
-            --exclude-lines-by-pattern ".*srsgnb_assert.*|.*srsgnb_sanity_check.*" \
-            --root ${CI_PROJECT_DIR} \
-            -o coverage.xml
+            --exclude=${CI_PROJECT_DIR}/tests/* \
+            --exclude=${CI_PROJECT_DIR}/apps/examples/* \
+            --exclude=${CI_PROJECT_DIR}/external/* \
+            --exclude=${CI_PROJECT_DIR}/include/srsran/asn1/e1ap/.* \
+            --exclude=${CI_PROJECT_DIR}/include/srsran/asn1/e2ap/.* \
+            --exclude=${CI_PROJECT_DIR}/include/srsran/asn1/f1ap/.* \
+            --exclude=${CI_PROJECT_DIR}/include/srsran/asn1/ngap/.* \
+            --exclude=${CI_PROJECT_DIR}/include/srsran/asn1/rrc_nr/.* \
+            --exclude=${CI_PROJECT_DIR}/lib/asn1/e1ap/.* \
+            --exclude=${CI_PROJECT_DIR}/lib/asn1/e2ap/.* \
+            --exclude=${CI_PROJECT_DIR}/lib/asn1/f1ap/.* \
+            --exclude=${CI_PROJECT_DIR}/lib/asn1/ngap/.* \
+            --exclude=${CI_PROJECT_DIR}/lib/asn1/rrc_nr/.* \
+            --exclude-lines-by-pattern \".*srsran_assert.*|.*srsran_sanity_check.*\" \
+            --root=${CI_PROJECT_DIR}"
+
+          gcovr $common_options --keep >/dev/null
+          gcovr $common_options --xml --print-summary --use-gcov-files -o coverage.xml
 
           filesize=$(stat -c%s coverage.xml)
           maxsize=$((10*1204*1024))
@@ -163,468 +302,1448 @@ stages:
     - build_srsgnb
     - launch_tests
   after_script:
-    - mv ${CI_PROJECT_DIR}/build/xunit.xml         ${CI_PROJECT_DIR}/${CI_JOB_ID}_xunit.xml               || true
     - mv ${CI_PROJECT_DIR}/build/coverage.xml      ${CI_PROJECT_DIR}/${CI_JOB_ID}_coverage.xml            || true
-    - mv ${CI_PROJECT_DIR}/build/Testing/Temporary ${CI_PROJECT_DIR}/build/Testing/Temporary_${CI_JOB_ID} || true
-  timeout: 2h
-  artifacts:
+    - |
+      if [ -z "${SAVE_ARTIFACTS}" ]; then
+        rm -Rf ${CI_PROJECT_DIR}/build
+        rm -Rf build_time_metrics.txt
+      else
+        mv ${CI_PROJECT_DIR}/build/apps/gnb/gnb /tmp/gnb
+        cd build
+        make clean
+        mv /tmp/gnb ${CI_PROJECT_DIR}/build/apps/gnb/gnb
+      fi
+  timeout: 4h
+  artifacts: &build_artifacts
     when: always
     reports:
-      junit: ${CI_JOB_ID}_xunit.xml
       coverage_report:
         coverage_format: cobertura
         path: ${CI_JOB_ID}_coverage.xml
     paths:
-      - ${CI_JOB_ID}_xunit.xml
       - ${CI_JOB_ID}_coverage.xml
-      - build/Testing/Temporary_${CI_JOB_ID}
-      - build/apps/gnb/gnb
+      - build/
+      - build_time_metrics.txt
     expire_in: 10 minutes
-  cache: &build_cache
-    key: ${OS}-${DOCKER_BUILDER_VERSION}-${COMPILER}
-    paths:
-      - ccache
-    policy: pull
+  cache:
+    - !reference [.fetch_src_cache, cache]
 
-.build_and_unit_big:
+# Basic builds (MR and update cache on Nightly)
+
+.smoke release:
   extends: .build_and_unit
   variables:
-    KUBERNETES_CPU_REQUEST: 7
-    KUBERNETES_MEMORY_REQUEST: 13Gi
-
-# Main combinations
-
-.build_and_unit_main:
-  extends: .build_and_unit_big
-  variables:
+    OS: ubuntu-22.04
+    COMPILER: gcc
+    BUILD_TYPE: Release
     ASSERT_LEVEL: PARANOID
-  parallel:
-    matrix:
-      - OS: ubuntu-22.04
-        TEST_MODE: coverage
-        COMPILER: gcc
-        BUILD_TYPE: Release
-        ENABLE_GCOV: "True"
-      - OS: archlinux-latest
-        TEST_MODE: default
-        COMPILER: gcc
-        BUILD_TYPE: Release
-      - OS: ubuntu-20.04
-        TEST_MODE: default
-        COMPILER: gcc
-        BUILD_TYPE: Release
-        ENABLE_EXPORT: "True"
-      - OS: rhel8
-        TEST_MODE: default
-        COMPILER: gcc
-        BUILD_TYPE: Release
+    TEST_MODE: coverage
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+    ENABLE_GCOV: "True"
+  tags: ["${AMD64_AVX2_TAG}"]
 
-build cached:
-  extends: .build_and_unit_main
+.smoke relwithdeb:
+  extends: .build_and_unit
+  variables:
+    OS: ubuntu-22.04
+    COMPILER: gcc
+    BUILD_TYPE: RelWithDebInfo
+    ASSERT_LEVEL: PARANOID
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+  tags: ["${AMD64_AVX2_TAG}"]
+
+.smoke tsan:
+  extends: .build_and_unit
+  variables:
+    OS: ubuntu-22.04
+    COMPILER: clang
+    BUILD_TYPE: Debug
+    ASSERT_LEVEL: PARANOID
+    ENABLE_TSAN: "True"
+    TEST_MODE: tsan
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+  tags: ["${AMD64_AVX2_TAG}"]
+
+.smoke rhel:
+  extends: .build_and_unit
+  variables:
+    OS: rhel-8
+    COMPILER: gcc
+    BUILD_TYPE: Release
+    ASSERT_LEVEL: PARANOID
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+  tags: ["${AMD64_TAG}"]
+
+.smoke archlinux:
+  extends: .build_and_unit
+  variables:
+    OS: archlinux-latest
+    ENABLE_WERROR: "False"
+    COMPILER: gcc
+    BUILD_TYPE: Debug
+    ASSERT_LEVEL: PARANOID
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+  tags: ["${AMD64_TAG}"]
+
+.smoke dpdk:
+  extends: .build_and_unit
+  variables:
+    OS: ubuntu-23.10
+    COMPILER: clang
+    BUILD_TYPE: Release
+    ENABLE_UHD: "False"
+    ENABLE_ZEROMQ: "False"
+    ENABLE_DPDK: "True"
+    ASSERT_LEVEL: PARANOID
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+    DPDK_VERSION: "23.07"
+  tags: ["${AMD64_TAG}"]
+
+.smoke valgrind:
+  extends: .build_and_unit
+  variables:
+    OS: ubuntu-22.04
+    COMPILER: gcc
+    BUILD_TYPE: Debug
+    ASSERT_LEVEL: PARANOID
+    TEST_MODE: valgrind
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+    BUILD_ARGS: -DEXIT_TIMEOUT=120
+  tags: ["${AMD64_AVX2_TAG}"]
+
+# Combinations to use in schedules matrix
+
+.combinations: &basic_combinations
+  COMPILER: [gcc, clang]
+  BUILD_TYPE: [Release, RelWithDebInfo, Debug]
+  ASSERT_LEVEL: [MINIMAL, NORMAL, PARANOID]
+
+######
+# MR #
+######
+
+# Smoke builds in PR: with or without cache
+
+smoke relwithdeb cached:
+  extends: .smoke relwithdeb
+  timeout: 45 min
   rules:
     - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
       when: never
     - if: $ON_MR
+  variables:
+    SAVE_ARTIFACTS: "True"
   cache:
-    <<: *build_cache
-    policy: pull
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
 
-build update cache:
-  extends: .build_and_unit_main
+smoke tsan cached:
+  extends: .smoke tsan
+  stage: manual
+  timeout: 45 min
   rules:
     - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
       when: never
-    - if: $CI_DESCRIPTION =~ /Nightly/
+    - if: $ON_MR == "true" && $CI_MERGE_REQUEST_APPROVED == "true"
+    - if: $ON_MR
+      when: manual
+      allow_failure: false
   cache:
-    <<: *build_cache
-    policy: push
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
 
-build clean:
-  extends: .build_and_unit_main
+smoke rhel cached:
+  extends: .smoke rhel
+  stage: manual
+  timeout: 45 min
   rules:
     - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
-  cache: []
+      when: never
+    - if: $ON_MR == "true" && $CI_MERGE_REQUEST_APPROVED == "true"
+    - if: $ON_MR
+      when: manual
+      allow_failure: false
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
 
-# Alt combinations
+smoke archlinux cached:
+  extends: .smoke archlinux
+  stage: manual
+  timeout: 45 min
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
+      when: never
+    - if: $ON_MR == "true" && $CI_MERGE_REQUEST_APPROVED == "true"
+    - if: $ON_MR
+      when: manual
+      allow_failure: false
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
 
-.build_and_unit_alt:
-  extends: .build_and_unit
+smoke dpdk cached:
+  extends: .smoke dpdk
+  stage: manual
+  timeout: 45 min
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
+      when: never
+    - if: $ON_MR == "true" && $CI_MERGE_REQUEST_APPROVED == "true"
+    - if: $ON_MR
+      when: manual
+      allow_failure: false
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
+
+smoke relwithdeb clean:
+  extends: .smoke relwithdeb
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
   variables:
-    OS: "" # Need to be specified
-    PLATFORM: "" # Need to be specified
-    BUILD_TYPE: "" # Need to be specified
+    SAVE_ARTIFACTS: "True"
+
+smoke tsan clean:
+  extends: .smoke tsan
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
+
+smoke rhel clean:
+  extends: .smoke rhel
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
+
+smoke archlinux clean:
+  extends: .smoke archlinux
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
+
+smoke dpdk clean:
+  extends: .smoke dpdk
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
+
+# Intermediate commits
+
+intermediate commits:
+  extends: .smoke release
+  rules:
+    - if: $ON_MR
+  timeout: 45 min
+  variables:
+    SAVE_ARTIFACTS: "True"
+  script:
+    - git config advice.detachedHead false
+    - git fetch origin $CI_MERGE_REQUEST_TARGET_BRANCH_NAME $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
+    - |
+      TEST_MODE=none
+      for rev in $(git rev-list --reverse origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME..origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME)
+      do
+        echo "##################################################"
+        echo "#### $rev ####"
+        echo "##################################################"
+        git checkout $rev
+        build_srsgnb
+      done
+    - |
+      TEST_MODE=coverage
+      git checkout $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
+      echo "##################################################"
+      echo "#### $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME ####"
+      echo "##################################################"
+      build_srsgnb
+    - launch_tests
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
+
+valgrind changed tests:
+  extends: .smoke valgrind
+  stage: manual
+  rules:
+    - if: $CI_MERGE_REQUEST_LABELS =~ /urgent/
+      when: never
+    - if: $ON_MR == "true" && $CI_MERGE_REQUEST_APPROVED == "true"
+    - if: $ON_MR
+      when: manual
+      allow_failure: true
+  timeout: 2h
+  variables:
+    CLEAN_BUILD: "False"
+    FINGERPRINT: "fingerprints.csv"
+    SAVE_ARTIFACTS: "True"
+  script:
+    - git config advice.detachedHead false
+    - git fetch origin $CI_MERGE_REQUEST_TARGET_BRANCH_NAME $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME --depth 40
+    - |
+      FORK_POINT=$(git merge-base origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME)
+      echo "##################################################"
+      echo "#### $FORK_POINT ####"
+      echo "##################################################"
+      git checkout $FORK_POINT
+      OUTPUT_FINGERPRINT="${FINGERPRINT}"
+      build_srsgnb
+      OUTPUT_FINGERPRINT=""
+    - |
+      echo "##################################################"
+      echo "#### origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME ####"
+      echo "##################################################"
+      git checkout origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME
+      build_srsgnb
+    - launch_tests
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get
+
+###########
+# Nightly #
+###########
+
+check builders ubuntu versions:
+  extends: .check image exists for all supported ubuntu versions
+  stage: static
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  script:
+    - check_if_image_exists ${CR_REGISTRY_URI}/srsgnb/builder-ubuntu- :${DOCKER_BUILDER_VERSION}
+
+# Update cache for MR jobs
+
+smoke release update cache:
+  extends: .smoke release
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 30 minutes
+  retry: 2
+  interruptible: false
+  variables:
+    SAVE_ARTIFACTS: "True"
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+  artifacts:
+    <<: *build_artifacts
+    expire_in: 1 day
+
+smoke relwithdeb update cache:
+  extends: .smoke relwithdeb
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  retry: 2
+  interruptible: false
+  variables:
+    SAVE_ARTIFACTS: "True"
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+  artifacts:
+    <<: *build_artifacts
+    expire_in: 1 day
+
+smoke tsan update cache:
+  extends: .smoke tsan
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  interruptible: false
+  retry: 2
+  variables:
+    SAVE_ARTIFACTS: "True"
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+  artifacts:
+    <<: *build_artifacts
+    expire_in: 1 day
+
+smoke rhel update cache:
+  extends: .smoke rhel
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 30 minutes
+  retry: 2
+  interruptible: false
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+
+smoke archlinux update cache:
+  extends: .smoke archlinux
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 30 minutes
+  retry: 2
+  interruptible: false
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+
+smoke dpdk update cache:
+  extends: .smoke dpdk
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 30 minutes
+  retry: 2
+  interruptible: false
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+
+smoke valgrind update cache:
+  extends: .smoke valgrind
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  interruptible: false
+  retry: 2
+  variables:
+    SAVE_ARTIFACTS: "True"
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_set
+  artifacts:
+    <<: *build_artifacts
+    expire_in: 1 day
+
+# High priority smoke checks. Some of them save the binary for e2e tests
+
+basic asan:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  retry: 2
+  interruptible: false
+  variables:
+    OS: ubuntu-22.04
+    COMPILER: clang
+    BUILD_TYPE: Debug
+    ASSERT_LEVEL: PARANOID
+    ENABLE_ASAN: "True"
     TEST_MODE: default
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+    SAVE_ARTIFACTS: "True"
+  tags: ["${AMD64_AVX2_TAG}"]
+  artifacts:
+    <<: *build_artifacts
+    expire_in: 1 day
+
+basic avx512 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 30 minutes
+  retry: 2
+  interruptible: false
+  variables:
+    OS: ubuntu-22.04
+    COMPILER: gcc
+    BUILD_TYPE: RelWithDebInfo
+    TEST_MODE: default
+    ASSERT_LEVEL: PARANOID
+    ENABLE_UHD: "False"
+    ENABLE_ZEROMQ: "False"
+    ENABLE_DPDK: "True"
+    DPDK_VERSION: "23.07"
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "True"
+    SAVE_ARTIFACTS: "True"
+  tags: ["${AMD64_AVX512_TAG}"]
+  artifacts:
+    <<: *build_artifacts
+    expire_in: 1 day
+
+# Packaging
+
+package:
+  extends: .deb-package
+  stage: build and unit tests
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 30 minutes
+  variables:
+    PROJECT_NAME: srsran-project
+    RELEASE_VERSION: "99.9"
+    KUBERNETES_MEMORY_REQUEST: 12Gi
+  tags: ["${AMD64_AVX2_TAG}"]
+  parallel:
+    matrix:
+      - OS_VERSION: "20.04"
+      - OS_VERSION: "22.04"
+      - OS_VERSION: "23.04"
+      - OS_VERSION: "23.10"
+  needs: []
+
+install-package:
+  extends: .deb-install
+  stage: build and unit tests
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  variables:
+    PROJECT_NAME: srsran-project
+    RELEASE_VERSION: "99.9"
+  tags: ["${AMD64_AVX2_TAG}"]
+  script:
+    - gnb --version
+  parallel:
+    matrix:
+      - OS_VERSION: "20.04"
+      - OS_VERSION: "22.04"
+      - OS_VERSION: "23.04"
+      - OS_VERSION: "23.10"
+  needs:
+    - package
+
+check package ubuntu versions:
+  extends: .check packaging ubuntu images
+  stage: static
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+
+# Validate export on, enabled for test vector generation
+
+export on amd64:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  variables:
+    COMPILER: gcc
+    TEST_MODE: none
+    ENABLE_EXPORT: "True"
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: [ubuntu-23.10, ubuntu-23.04, ubuntu-22.04, ubuntu-20.04]
+        AUTO_DETECT_ISA: "False"
+      - OS: [ubuntu-23.10, ubuntu-23.04, ubuntu-22.04, ubuntu-20.04]
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+export on amd64 avx512:
+  extends: export on amd64
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: [ubuntu-23.10, ubuntu-23.04, ubuntu-22.04, ubuntu-20.04]
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+# Build + unit tests combinations
+
+ubuntu-23.10 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 270 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-22.04 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-22.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-20.04 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 210 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-20.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+rhel-8 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 180 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: rhel-8
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+# Basic AMD NO_ISA / AVX512
+
+ubuntu-22.04 amd64 no isa release:
+  extends: .smoke release
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 150 minutes
+  interruptible: false
+  variables:
     ENABLE_GCOV: "False"
-    ENABLE_ASAN: "False"
-    ENABLE_TSAN: "False"
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "False"
+  tags: ["${AMD64_TAG}"]
   parallel:
     matrix:
       - COMPILER: [gcc, clang]
-        ASSERT_LEVEL: [MINIMAL, NORMAL, PARANOID]
-        ENABLE_EXPORT: ["True", "False"]
 
-build alt [ubuntu-22.04, amd64, Debug]:
-  extends: .build_and_unit_alt
+ubuntu-22.04 amd64 avx512 release:
+  extends: .smoke release
   rules:
     - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
   variables:
-    OS: ubuntu-22.04
-    PLATFORM: amd64
+    ENABLE_GCOV: "False"
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "True"
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - COMPILER: [gcc, clang]
+
+# Basic ARM NO_ISA / NEON
+
+ubuntu-22.04 arm no isa release:
+  extends: .smoke release
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 150 minutes
+  interruptible: false
+  variables:
+    ENABLE_GCOV: "False"
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "False"
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - COMPILER: [gcc, clang]
+
+ubuntu-22.04 arm neon release:
+  extends: .smoke release
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  variables:
+    ENABLE_GCOV: "False"
+    TEST_MODE: default
+    AUTO_DETECT_ISA: "True"
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - COMPILER: [gcc, clang]
+
+# Basic DPDK
+
+smoke dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 90 minutes
+  interruptible: false
+  variables:
+    ENABLE_UHD: "False"
+    ENABLE_ZEROMQ: "False"
+    ENABLE_DPDK: "True"
+    ASSERT_LEVEL: PARANOID
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        COMPILER: [gcc, clang]
+        DPDK_VERSION: ["22.11.2", "23.07"]
+      - OS: ubuntu-23.04
+        COMPILER: [gcc, clang]
+        DPDK_VERSION: ["22.11.2", "23.07"]
+      - OS: ubuntu-22.04
+        COMPILER: [gcc, clang]
+        DPDK_VERSION: ["22.11.2", "23.07"]
+      - OS: ubuntu-20.04
+        COMPILER: [gcc, clang]
+        DPDK_VERSION: ["22.11.2", "23.07"]
+
+###################
+# Alternative OSs #
+###################
+archlinux amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: archlinux-latest
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+archlinux amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: archlinux-latest
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+archlinux amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: archlinux-latest
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+debian 12 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: debian-12
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+debian 12 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 90 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: debian-12
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+debian 12 amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: debian-12
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+debian 11 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: debian-11
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+debian 11 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 150 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: debian-11
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+debian 11 amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Alternative OSs/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: debian-11
+        ENABLE_WERROR: "False"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+##########
+# Weekly #
+##########
+
+# Sanitizers
+
+.weekly sanitizers:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+  interruptible: false
+  variables:
+    ASSERT_LEVEL: PARANOID
     BUILD_TYPE: Debug
-  cache: []
+  parallel:
+    matrix:
+      - OS: [ubuntu-23.10, ubuntu-23.04, ubuntu-22.04] # ubuntu-20.04 disabled due to https://bugs.launchpad.net/ubuntu/+source/gcc-9/+bug/2029910
+        SANITIZER: tsan
+        COMPILER: [gcc, clang]
+        ENABLE_TSAN: "True"
+        TEST_MODE: tsan
+      - OS: [ubuntu-22.04, ubuntu-20.04]
+        SANITIZER: asan
+        COMPILER: [gcc, clang]
+        ENABLE_ASAN: "True"
+        TEST_MODE: default
+      - OS: [ubuntu-23.10, ubuntu-23.04]
+        SANITIZER: asan
+        COMPILER: clang
+        ENABLE_ASAN: "True"
+        TEST_MODE: default
+      - OS: [ubuntu-23.10, ubuntu-23.04, ubuntu-22.04]
+        SANITIZER: valgrind
+        COMPILER: gcc
+        TEST_MODE: valgrind
+        SAVE_ARTIFACTS: "True"
 
-build alt [ubuntu-22.04, amd64, Release]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
+sanitizers amd64 no isa:
+  extends: .weekly sanitizers
   variables:
-    OS: ubuntu-22.04
-    PLATFORM: amd64
-    BUILD_TYPE: Release
-  cache: []
+    AUTO_DETECT_ISA: "False"
+  tags: ["${AMD64_TAG}"]
 
-build alt [ubuntu-22.04, amd64, RelWithDebInfo]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
+sanitizers amd64 avx2:
+  extends: .weekly sanitizers
   variables:
-    OS: ubuntu-22.04
-    PLATFORM: amd64
-    BUILD_TYPE: RelWithDebInfo
-  cache: []
+    AUTO_DETECT_ISA: "True"
+    ENABLE_AVX512: "False"
+  tags: ["${AMD64_AVX2_TAG}"]
 
-build alt [ubuntu-22.04, arm64v8, Debug]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
+sanitizers amd64 avx512:
+  extends: .weekly sanitizers
   variables:
-    OS: ubuntu-22.04
-    PLATFORM: arm64
-    BUILD_TYPE: Debug
-  cache: []
+    AUTO_DETECT_ISA: "True"
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: [ubuntu-23.10, ubuntu-23.04, ubuntu-22.04] # ubuntu-20.04 disabled due to https://bugs.launchpad.net/ubuntu/+source/gcc-9/+bug/2029910
+        SANITIZER: tsan
+        COMPILER: [gcc, clang]
+        ENABLE_TSAN: "True"
+        TEST_MODE: tsan
+      - OS: [ubuntu-22.04, ubuntu-20.04]
+        SANITIZER: asan
+        COMPILER: [gcc, clang]
+        ENABLE_ASAN: "True"
+        TEST_MODE: default
+      - OS: [ubuntu-23.10, ubuntu-23.04]
+        SANITIZER: asan
+        COMPILER: clang
+        ENABLE_ASAN: "True"
+        TEST_MODE: default
+      # Valgrind doesn't support AVX512 instruction set
 
-build alt [ubuntu-22.04, arm64v8, Release]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
+sanitizers arm no isa:
+  extends: .weekly sanitizers
   variables:
-    OS: ubuntu-22.04
-    PLATFORM: arm64
-    BUILD_TYPE: Release
-  cache: []
+    AUTO_DETECT_ISA: "False"
+  tags: ["${ARM64_TAG}"]
 
-build alt [ubuntu-22.04, arm64v8, RelWithDebInfo]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
+sanitizers arm neon:
+  extends: .weekly sanitizers
   variables:
-    OS: ubuntu-22.04
-    PLATFORM: arm64
-    BUILD_TYPE: RelWithDebInfo
-  cache: []
+    AUTO_DETECT_ISA: "True"
+  tags: ["${ARM64_TAG}"]
 
-build alt [ubuntu-20.04, amd64, Debug]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: ubuntu-20.04
-    PLATFORM: amd64
-    BUILD_TYPE: Debug
-  cache: []
-
-build alt [ubuntu-20.04, amd64, Release]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: ubuntu-20.04
-    PLATFORM: amd64
-    BUILD_TYPE: Release
-  cache: []
-
-build alt [ubuntu-20.04, amd64, RelWithDebInfo]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: ubuntu-20.04
-    PLATFORM: amd64
-    BUILD_TYPE: RelWithDebInfo
-  cache: []
-
-build alt [ubuntu-20.04, arm64v8, Debug]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: ubuntu-20.04
-    PLATFORM: arm64
-    BUILD_TYPE: Debug
-  cache: []
-
-build alt [ubuntu-20.04, arm64v8, Release]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: ubuntu-20.04
-    PLATFORM: arm64
-    BUILD_TYPE: Release
-  cache: []
-
-build alt [ubuntu-20.04, arm64v8, RelWithDebInfo]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: ubuntu-20.04
-    PLATFORM: arm64
-    BUILD_TYPE: RelWithDebInfo
-  cache: []
-
-build alt [archlinux-latest, amd64, Debug]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: archlinux-latest
-    PLATFORM: amd64
-    BUILD_TYPE: Debug
-  cache: []
-
-build alt [archlinux-latest, amd64, Release]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: archlinux-latest
-    PLATFORM: amd64
-    BUILD_TYPE: Release
-  cache: []
-
-build alt [archlinux-latest, amd64, RelWithDebInfo]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: archlinux-latest
-    PLATFORM: amd64
-    BUILD_TYPE: RelWithDebInfo
-  cache: []
-
-build alt [rhel8, amd64, Debug]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: rhel8
-    PLATFORM: amd64
-    BUILD_TYPE: Debug
-  cache: []
-
-build alt [rhel8, amd64, Release]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: rhel8
-    PLATFORM: amd64
-    BUILD_TYPE: Release
-  cache: []
-
-build alt [rhel8, amd64, RelWithDebInfo]:
-  extends: .build_and_unit_alt
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: rhel8
-    PLATFORM: amd64
-    BUILD_TYPE: RelWithDebInfo
-  cache: []
-
-# UHD
+# UHD Alternatives
 
 build uhd alt:
   extends: .build_and_unit
   rules:
     - if: $CI_DESCRIPTION =~ /Weekly/
+  interruptible: false
   variables:
     TEST_MODE: none
     ASSERT_LEVEL: PARANOID
+    AUTO_DETECT_ISA: "False"
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        COMPILER: [gcc, clang]
+        UHD_VERSION: ["4.5.0.0", "4.4.0.0"]
+      - OS: ubuntu-23.04
+        COMPILER: [gcc, clang]
+        UHD_VERSION: ["4.5.0.0", "4.4.0.0", "4.3.0.0"]
+      - OS: ubuntu-22.04
+        COMPILER: [gcc, clang]
+        UHD_VERSION: ["4.5.0.0", "4.4.0.0", "4.3.0.0", "4.2.0.0", "4.1.0.5"]
+      - OS: ubuntu-20.04
+        COMPILER: [gcc, clang]
+        UHD_VERSION: ["4.5.0.0", "4.4.0.0", "4.3.0.0", "4.2.0.0", "4.1.0.5"]
+
+# Build + unit tests combinations
+
+ubuntu-23.10 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+ubuntu-23.10 amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+ubuntu-23.10 arm no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+ubuntu-23.10 arm neon:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+ubuntu-23.04 amd64 avx2:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: delayed
+      start_in: 240 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-23.04 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+ubuntu-23.04 amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+ubuntu-23.04 arm no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+ubuntu-23.04 arm neon:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 30 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+ubuntu-22.04 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
   parallel:
     matrix:
       - OS: ubuntu-22.04
-        COMPILER: [gcc, clang]
-        UHD_VERSION: "4.2.0.0"
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+ubuntu-22.04 amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-22.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+ubuntu-22.04 arm no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-22.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+ubuntu-22.04 arm neon:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 60 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-22.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+ubuntu-20.04 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 90 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
       - OS: ubuntu-20.04
-        COMPILER: [gcc, clang]
-        UHD_VERSION: ["4.2.0.0", "4.1.0.5"]
-  cache: []
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
 
-# Sanitizers
-sanitizers [asan]:
-  extends: .build_and_unit
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: ubuntu-22.04
-    TEST_MODE: asan
-    COMPILER: gcc
-    BUILD_TYPE: Debug
-    ENABLE_ASAN: "True"
-    ASSERT_LEVEL: PARANOID
-  cache: []
-
-sanitizers [tsan]:
-  extends: .build_and_unit
-  rules:
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    OS: ubuntu-22.04
-    TEST_MODE: tsan
-    COMPILER: clang
-    BUILD_TYPE: Debug
-    ENABLE_TSAN: "True"
-    ASSERT_LEVEL: PARANOID
-  cache: []
-
-sanitizers [valgrind]:
+ubuntu-20.04 amd64 avx512:
   extends: .build_and_unit
   rules:
     - if: $CI_DESCRIPTION =~ /Weekly/
-  variables:
-    OS: ubuntu-22.04
-    TEST_MODE: valgrind
-    COMPILER: gcc
-    BUILD_TYPE: Debug
-    ASSERT_LEVEL: PARANOID
-  cache: []
-  timeout: 4 hours # valgrind mode
+      when: delayed
+      start_in: 90 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-20.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
 
-# AVX
-
-.avx:
+ubuntu-20.04 arm no isa:
   extends: .build_and_unit
-  tags:
-    - aws-demand-amd64-$CPU_FLAG
-  variables:
-    OS: ubuntu-22.04
-    TEST_MODE: default
-    COMPILER: gcc
-    BUILD_TYPE: Release
-    AUTO_DETECT_ISA: "True"
-
-avx2 [basic]:
-  extends: .avx
-  rules:
-    - if: $ON_MR
-      when: manual
-      allow_failure: true
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    CPU_FLAG: "avx2"
-    ENABLE_AVX2: "True"
-    ENABLE_AVX512: "False"
-
-avx2 [tsan, cached]:
-  extends: .avx
-  rules:
-    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
-      when: never
-    - if: $ON_MR
-  variables:
-    OS: ubuntu-22.04
-    TEST_MODE: tsan
-    COMPILER: clang
-    BUILD_TYPE: Debug
-    ENABLE_TSAN: "True"
-    ASSERT_LEVEL: PARANOID
-    CPU_FLAG: "avx2"
-    ENABLE_AVX512: "False"
-    ENABLE_AVX2: "True"
-  cache:
-    <<: *build_cache
-    policy: pull
-
-avx2 [tsan, update cache]:
-  extends: "avx2 [tsan, cached]"
-  rules:
-    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
-      when: never
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  cache:
-    <<: *build_cache
-    policy: push
-
-avx2 [tsan, clean]:
-  extends: "avx2 [tsan, cached]"
-  rules:
-    - if: $CI_MERGE_REQUEST_LABELS =~ /no-cache/
-  cache: []
-
-# avx2 [asan]:
-#   extends: .avx
-#   rules:
-#     - if: $CI_DESCRIPTION =~ /Nightly/
-#   variables:
-#     OS: ubuntu-22.04
-#     TEST_MODE: asan
-#     COMPILER: gcc
-#     BUILD_TYPE: Debug
-#     ENABLE_ASAN: "True"
-#     ASSERT_LEVEL: PARANOID
-#     CPU_FLAG: "avx2"
-#     ENABLE_AVX512: "False"
-#     ENABLE_AVX2: "True"
-
-avx512:
-  extends: .avx
-  rules:
-    - if: $ON_MR
-      when: manual
-      allow_failure: true
-    - if: $CI_DESCRIPTION =~ /Nightly/
-  variables:
-    CPU_FLAG: "avx2-avx512"
-    ENABLE_AVX2: "True"
-    ENABLE_AVX512: "True"
-
-avx extended:
-  extends: .avx
   rules:
     - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 90 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
   parallel:
     matrix:
-      - CPU_FLAG: ["avx2", "avx2-avx512"]
-        AUTO_DETECT_ISA: ["True", "False"]
-        ENABLE_AVX512: ["True", "False"]
-        ENABLE_AVX2: ["True", "False"]
+      - OS: ubuntu-20.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
 
-# Custom
-
-custom build:
-  tags:
-    - aws-spot-${PLATFORM}
+ubuntu-20.04 arm neon:
   extends: .build_and_unit
   rules:
-    - if: $ON_MR
-      when: manual
-      allow_failure: true
-  variables:
-    # must be one of ubuntu-22.04, ubuntu-20.04, archlinux-latest
-    OS: "ubuntu-22.04"
-    # must be one of gcc, clang
-    COMPILER: "gcc"
-    # must be one of default, coverage, asan, tsan, valgrind, none
-    TEST_MODE: "default"
-    # it will be passed to cmake
-    BUILD_ARGS: ""
-    # must be one version supported in the specified OS
-    UHD_VERSION: ""
-  cache: []
-  timeout: 4 hours # valgrind mode
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 90 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
   parallel:
     matrix:
-      - PLATFORM: amd64
-      - PLATFORM: arm64
+      - OS: ubuntu-20.04
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+rhel-8 amd64 no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  tags: ["${AMD64_TAG}"]
+  parallel:
+    matrix:
+      - OS: rhel-8
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+rhel-8 amd64 avx512:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: rhel-8
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+rhel-8 arm no isa:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: rhel-8
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "False"
+
+rhel-8 arm neon:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 120 minutes
+  interruptible: false
+  tags: ["${ARM64_TAG}"]
+  parallel:
+    matrix:
+      - OS: rhel-8
+        <<: *basic_combinations
+        AUTO_DETECT_ISA: "True"
+
+# DPDK
+
+.dpdk_combinations: &basic_combinations_dpdk
+  <<: *basic_combinations
+  ENABLE_UHD: "False"
+  ENABLE_ZEROMQ: "False"
+  ENABLE_DPDK: "True"
+  COMPILER: [gcc, clang]
+  DPDK_VERSION: ["22.11.2", "23.07"]
+
+ubuntu-20.04 amd64 avx2 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 180 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX2_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-20.04
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-20.04 amd64 avx512 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 210 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-20.04
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+ubuntu-22.04 amd64 avx2 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 240 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX2_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-22.04
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-22.04 amd64 avx512 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 270 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-22.04
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+ubuntu-23.04 amd64 avx2 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 300 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX2_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-23.04 amd64 avx512 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 330 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.04
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+ubuntu-23.10 amd64 avx2 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 360 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX2_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "False"
+
+ubuntu-23.10 amd64 avx512 dpdk:
+  extends: .build_and_unit
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: delayed
+      start_in: 390 minutes
+  interruptible: false
+  tags: ["${AMD64_AVX512_TAG}"]
+  parallel:
+    matrix:
+      - OS: ubuntu-23.10
+        <<: *basic_combinations_dpdk
+        AUTO_DETECT_ISA: "True"
+        ENABLE_AVX512: "True"
+
+#############
+# Run check #
+#############
+
+check-affinity-manager-nocpu:
+  image: ${CR_REGISTRY_URI}/srsgnb/builder-ubuntu-22.04:${DOCKER_BUILDER_VERSION}
+  tags: ["${AMD64_TAG}"]
+  stage: build and unit tests
+  needs:
+    - job: "smoke release update cache"
+      artifacts: true
+    - job: builder version
+      optional: false
+      artifacts: true
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+  script:
+    - cd build/apps/gnb
+    - taskset -c 0-2 "./gnb" 2>&1 || true
+    - |
+      error_found=false
+      for (( i=1; i<=8; i++ ))
+      do
+          echo "Checking for number of CPU = $i"
+          output=$(taskset -c 0-$i "./gnb" 2>&1 || true)
+
+          if [[ "$output" == *"nof_cores_for_non_prio_threads"* ]]; then
+              error_found=true
+              echo "**********************************************************************************"
+              echo $output
+              echo "**********************************************************************************"
+              echo "Error for number of CPU = $i"
+              echo -e "\n\n\n\n\n" 
+          fi
+      done
+
+      if [ "$error_found" = true ]; then
+          exit 1
+      fi
+
+#######
+# Web #
+#######
+custom-build:
+  extends: .build_and_unit
+  rules:
+    - if: $ON_WEB
+  interruptible: false # Web jobs are standalone
+  variables:
+    ENABLE_ZEROMQ: ""
+    AUTO_DETECT_ISA: ""
+    SAVE_ARTIFACTS: "True"
+  tags: ["${INFRASTRUCTURE_TAG}"]
+  cache:
+    - !reference [.fetch_src_cache, cache]
+    - *cache_build_get

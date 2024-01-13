@@ -35,6 +35,7 @@ class du_manager_impl final : public du_manager_interface
 {
 public:
   explicit du_manager_impl(const du_manager_params& params_);
+  ~du_manager_impl();
 
   // Controller interface.
   void start() override;
@@ -50,24 +51,37 @@ public:
     ue_mng.schedule_async_task(ue_index, std::move(task));
   }
 
+  du_ue_index_t find_unused_du_ue_index() override;
+
+  async_task<f1ap_ue_context_creation_response>
+  handle_ue_context_creation(const f1ap_ue_context_creation_request& request) override;
+
   async_task<f1ap_ue_context_update_response>
   handle_ue_context_update(const f1ap_ue_context_update_request& request) override;
 
   async_task<void> handle_ue_delete_request(const f1ap_ue_delete_request& request) override;
 
+  void handle_ue_reestablishment(du_ue_index_t new_ue_index, du_ue_index_t old_ue_index) override;
+
   size_t nof_ues() override;
+
+  async_task<ric_control_config_response> configure_ue_mac_scheduler(srsran::ric_control_config reconf) override;
 
 private:
   // DU manager configuration that will be visible to all running procedures
-  du_manager_params params;
+  du_manager_params     params;
+  srslog::basic_logger& logger;
 
   // Components
   du_cell_manager              cell_mng;
   du_ran_resource_manager_impl cell_res_alloc;
   du_ue_manager                ue_mng;
 
+  std::mutex mutex;
+  bool       running{false};
+
   // Handler for DU tasks.
-  async_task_sequencer main_ctrl_loop;
+  fifo_async_task_scheduler main_ctrl_loop;
 };
 
 } // namespace srs_du

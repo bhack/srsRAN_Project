@@ -21,6 +21,7 @@
  */
 
 #include "lib/mac/mac_ul/mac_ul_sch_pdu.h"
+#include "lib/mac/mac_ul/ul_phr.h"
 #include "srsran/support/bit_encoding.h"
 #include "srsran/support/test_utils.h"
 #include <gtest/gtest.h>
@@ -171,17 +172,15 @@ TEST(mac_ul_subpdu, decode_long_bsr_with_2_lcgs)
   ASSERT_EQ(5, subpdu.total_length()) << "Wrong subPDU length for MAC CE Long BSR (2B header + 3B MAC-CE)";
   ASSERT_EQ(subpdu.payload(), byte_buffer_view(msg).view(2, subpdu.sdu_length()));
 
-  long_bsr_report lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
+  expected<long_bsr_report> lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
+  ASSERT_TRUE(lbsr.has_value());
 
-  bool lcg_7_flag = (bool)(lbsr.bitmap & 0b10000000U);
-  ASSERT_TRUE(lcg_7_flag);
-  bool lcg_0_flag = (bool)(lbsr.bitmap & 0b00000001U);
-  ASSERT_TRUE(lcg_0_flag);
-
-  unsigned buffer_size_lcg0 = lbsr.list[0].buffer_size;
-  ASSERT_EQ(217U, buffer_size_lcg0);
-  unsigned buffer_size_lcg7 = lbsr.list[1].buffer_size;
-  ASSERT_EQ(171U, buffer_size_lcg7);
+  const std::array<lcg_id_t, 2> expected_lcg_ids      = {uint_to_lcg_id(0U), uint_to_lcg_id(7U)};
+  const std::array<unsigned, 2> expected_buffer_sizes = {217U, 171U};
+  for (unsigned i = 0; i != 2; ++i) {
+    ASSERT_EQ(expected_lcg_ids[i], lbsr.value().list[i].lcg_id);
+    ASSERT_EQ(expected_buffer_sizes[i], lbsr.value().list[i].buffer_size);
+  }
 
   fmt::print("subPDU: {}\n", subpdu);
 }
@@ -215,25 +214,16 @@ TEST(mac_ul_subpdu, decode_long_bsr_with_4_lcgs)
   ASSERT_EQ(7, subpdu.total_length()) << "Wrong subPDU length for MAC CE Long BSR (2B header + 5B MAC-CE)";
   ASSERT_EQ(subpdu.payload(), byte_buffer_view(msg).view(2, subpdu.sdu_length()));
 
-  long_bsr_report lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
+  expected<long_bsr_report> lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
+  ASSERT_TRUE(lbsr.has_value());
 
-  bool lcg_6_flag = (bool)(lbsr.bitmap & 0b01000000U);
-  ASSERT_TRUE(lcg_6_flag);
-  bool lcg_4_flag = (bool)(lbsr.bitmap & 0b00010000U);
-  ASSERT_TRUE(lcg_4_flag);
-  bool lcg_3_flag = (bool)(lbsr.bitmap & 0b00001000U);
-  ASSERT_TRUE(lcg_3_flag);
-  bool lcg_1_flag = (bool)(lbsr.bitmap & 0b00000010U);
-  ASSERT_TRUE(lcg_1_flag);
-
-  unsigned buffer_size_lcg1 = lbsr.list[0].buffer_size;
-  ASSERT_EQ(2U, buffer_size_lcg1);
-  unsigned buffer_size_lcg3 = lbsr.list[1].buffer_size;
-  ASSERT_EQ(4U, buffer_size_lcg3);
-  unsigned buffer_size_lcg4 = lbsr.list[2].buffer_size;
-  ASSERT_EQ(5U, buffer_size_lcg4);
-  unsigned buffer_size_lcg6 = lbsr.list[3].buffer_size;
-  ASSERT_EQ(7U, buffer_size_lcg6);
+  const std::array<lcg_id_t, 4> expected_lcgs = {
+      uint_to_lcg_id(1), uint_to_lcg_id(3), uint_to_lcg_id(4), uint_to_lcg_id(6)};
+  const std::array<unsigned, 4> expected_buffer_sizes = {2, 4, 5, 7};
+  for (unsigned i = 0; i != 4; ++i) {
+    ASSERT_EQ(expected_lcgs[i], lbsr.value().list[i].lcg_id);
+    ASSERT_EQ(expected_buffer_sizes[i], lbsr.value().list[i].buffer_size);
+  }
 
   fmt::print("subPDU: {}\n", subpdu);
 }
@@ -267,41 +257,12 @@ TEST(mac_ul_subpdu, decode_long_bsr_with_8_lcgs)
   ASSERT_EQ(11, subpdu.total_length()) << "Wrong subPDU length for MAC CE Long BSR (2B header + 9B MAC-CE)";
   ASSERT_EQ(subpdu.payload(), byte_buffer_view(msg).view(2, subpdu.sdu_length()));
 
-  long_bsr_report lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
+  expected<long_bsr_report> lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
 
-  bool lcg_7_flag = (bool)(lbsr.bitmap & 0b10000000U);
-  ASSERT_TRUE(lcg_7_flag);
-  bool lcg_6_flag = (bool)(lbsr.bitmap & 0b01000000U);
-  ASSERT_TRUE(lcg_6_flag);
-  bool lcg_5_flag = (bool)(lbsr.bitmap & 0b00100000U);
-  ASSERT_TRUE(lcg_5_flag);
-  bool lcg_4_flag = (bool)(lbsr.bitmap & 0b00010000U);
-  ASSERT_TRUE(lcg_4_flag);
-  bool lcg_3_flag = (bool)(lbsr.bitmap & 0b00001000U);
-  ASSERT_TRUE(lcg_3_flag);
-  bool lcg_2_flag = (bool)(lbsr.bitmap & 0b00000100U);
-  ASSERT_TRUE(lcg_2_flag);
-  bool lcg_1_flag = (bool)(lbsr.bitmap & 0b00000010U);
-  ASSERT_TRUE(lcg_1_flag);
-  bool lcg_0_flag = (bool)(lbsr.bitmap & 0b00000001U);
-  ASSERT_TRUE(lcg_0_flag);
-
-  unsigned buffer_size_lcg0 = lbsr.list[0].buffer_size;
-  ASSERT_EQ(1U, buffer_size_lcg0);
-  unsigned buffer_size_lcg1 = lbsr.list[1].buffer_size;
-  ASSERT_EQ(2U, buffer_size_lcg1);
-  unsigned buffer_size_lcg2 = lbsr.list[2].buffer_size;
-  ASSERT_EQ(3U, buffer_size_lcg2);
-  unsigned buffer_size_lcg3 = lbsr.list[3].buffer_size;
-  ASSERT_EQ(4U, buffer_size_lcg3);
-  unsigned buffer_size_lcg4 = lbsr.list[4].buffer_size;
-  ASSERT_EQ(5U, buffer_size_lcg4);
-  unsigned buffer_size_lcg5 = lbsr.list[5].buffer_size;
-  ASSERT_EQ(6U, buffer_size_lcg5);
-  unsigned buffer_size_lcg6 = lbsr.list[6].buffer_size;
-  ASSERT_EQ(7U, buffer_size_lcg6);
-  unsigned buffer_size_lcg7 = lbsr.list[7].buffer_size;
-  ASSERT_EQ(8U, buffer_size_lcg7);
+  for (unsigned i = 0; i != 8; ++i) {
+    ASSERT_EQ(uint_to_lcg_id(i), lbsr.value().list[i].lcg_id);
+    ASSERT_EQ(i + 1, lbsr.value().list[i].buffer_size);
+  }
 
   fmt::print("subPDU: {}\n", subpdu);
 }
@@ -378,7 +339,7 @@ TEST(mac_ul_subpdu, decode_crnti_ce)
 }
 
 // Test the unpacking function for MAC subPDU with MAC CE (Single Entry PHR).
-TEST(mac_ul_subpdu, decode_se_phr)
+TEST(mac_ul_subpdu, decode_single_entry_phr)
 {
   mac_ul_sch_subpdu subpdu;
 
@@ -403,10 +364,13 @@ TEST(mac_ul_subpdu, decode_se_phr)
   ASSERT_EQ(subpdu.payload(), byte_buffer_view(msg).view(1, subpdu.sdu_length()));
 
   // Test Payload.
-  unsigned ph = subpdu.payload()[0] & 0b00111111U;
-  ASSERT_EQ(0x27, ph);
-  unsigned p_cmax = subpdu.payload()[1] & 0b00111111U;
-  ASSERT_EQ(0x2f, p_cmax);
+  const phr_report se_phr         = decode_se_phr(subpdu.payload());
+  const auto       expected_ph    = ph_db_range(6, 7);
+  const auto       expected_pcmax = p_cmax_dbm_range(17, 18);
+  ASSERT_EQ(expected_ph, se_phr.get_se_phr().ph);
+  ASSERT_EQ(expected_pcmax, se_phr.get_se_phr().p_cmax);
+  ASSERT_EQ(se_phr.get_se_phr().serv_cell_id, to_du_cell_index(0));
+  ASSERT_EQ(se_phr.get_se_phr().ph_type, ph_field_type_t::type1);
   fmt::print("subPDU: {}\n", subpdu);
 }
 
@@ -523,7 +487,7 @@ TEST(mac_ul_pdu, decode_short_sdu)
   enc.pack(0, 1);    // F.
   enc.pack(lcid, 6); // LCID.
   enc.pack(L, 8);    // L.
-  msg.append(payload);
+  ASSERT_TRUE(msg.append(payload));
 
   mac_ul_sch_pdu pdu;
   ASSERT_TRUE(pdu.unpack(msg));
@@ -560,7 +524,7 @@ TEST(mac_ul_pdu, decode_long_sdu)
   enc.pack(1, 1);    // F.
   enc.pack(lcid, 6); // LCID.
   enc.pack(L, 16);   // L (2 octets).
-  msg.append(payload);
+  ASSERT_TRUE(msg.append(payload));
 
   mac_ul_sch_pdu pdu;
   ASSERT_TRUE(pdu.unpack(msg));
@@ -598,11 +562,11 @@ TEST(mac_ul_pdu, handle_the_case_when_a_pdu_has_too_many_subpdus)
     enc.pack(0, 1);    // F.
     enc.pack(lcid, 6); // LCID.
     enc.pack(L, 8);    // L.
-    msg.append(payload);
+    ASSERT_TRUE(msg.append(payload));
   }
 
   mac_ul_sch_pdu pdu;
-  pdu.unpack(msg); // Should not crash.
+  ASSERT_TRUE(pdu.unpack(msg)); // Should not crash.
   ASSERT_GT(pdu.nof_subpdus(), 0);
 }
 
@@ -625,10 +589,11 @@ TEST(mac_ul_pdu, handle_the_case_when_pdu_length_is_too_short_to_decode_length_p
 
 int main(int argc, char** argv)
 {
-  ::testing::InitGoogleTest(&argc, argv);
-
   srslog::fetch_basic_logger("MAC", true).set_level(srslog::basic_levels::debug);
+  srslog::fetch_basic_logger("TEST").set_level(srslog::basic_levels::debug);
   srslog::init();
+
+  ::testing::InitGoogleTest(&argc, argv);
 
   return RUN_ALL_TESTS();
 }

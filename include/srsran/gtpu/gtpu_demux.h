@@ -23,6 +23,7 @@
 #pragma once
 
 #include "srsran/adt/byte_buffer.h"
+#include "srsran/gtpu/gtpu_teid.h"
 #include "srsran/gtpu/gtpu_tunnel_rx.h"
 
 namespace srsran {
@@ -38,7 +39,7 @@ public:
   virtual ~gtpu_demux_rx_upper_layer_interface() = default;
 
   /// \brief Interface for the IO gateway to pass PDUs into the GTP-U demuxer.
-  virtual void handle_pdu(byte_buffer pdu) = 0;
+  virtual void handle_pdu(byte_buffer pdu, const sockaddr_storage& src_addr) = 0;
 };
 
 /// \brief This interface manages the TEID to GTP-U tunnel mapping.
@@ -48,10 +49,10 @@ public:
   virtual ~gtpu_demux_ctrl() = default;
 
   /// Add a new TEID to GTP-U tunnel mapping.
-  virtual bool add_tunnel(uint32_t teid, gtpu_tunnel_rx_upper_layer_interface* tunnel) = 0;
+  virtual bool add_tunnel(gtpu_teid_t teid, gtpu_tunnel_rx_upper_layer_interface* tunnel) = 0;
 
   /// \brief Remove TEID from mapping.
-  virtual bool remove_tunnel(uint32_t teid) = 0;
+  virtual bool remove_tunnel(gtpu_teid_t teid) = 0;
 };
 
 /// Combined entry point for the GTPU-demux object.

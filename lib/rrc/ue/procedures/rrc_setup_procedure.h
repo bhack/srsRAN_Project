@@ -23,6 +23,7 @@
 #pragma once
 
 #include "../rrc_ue_context.h"
+#include "../rrc_ue_logger.h"
 #include "rrc_ue_event_manager.h"
 #include "srsran/asn1/rrc_nr/rrc_nr.h"
 #include "srsran/rrc/rrc_du.h"
@@ -56,12 +57,7 @@ namespace srs_cu_cp {
 ///    deactivate F1AP
 ///    Note over RRC: Decide RRC Setup vs Reject
 ///    activate RRC
-///    RRC->DUMNG: request_srb_creation (SRB1)
-///    activate DUMNG
-///    Note over DUMNG: Create SRB1 notifiers
-///    DUMNG->PDCP: create_srb1
-///    DUMNG-->RRC: return of "request_srb_creation (SRB1)"
-///    deactivate DUMNG
+///    Note over RRC: Create SRB1 (SRB1)
 ///    Note over RRC: Initiate RRCSetup procedure
 ///    RRC->F1AP: send_rrc_setup
 ///    F1AP->DU: DL RRC Message Transfer
@@ -73,14 +69,14 @@ namespace srs_cu_cp {
 class rrc_setup_procedure
 {
 public:
-  rrc_setup_procedure(rrc_ue_context_t&                        context_,
-                      const asn1::rrc_nr::rrc_setup_request_s& request_,
-                      const byte_buffer&                       du_to_cu_container_,
-                      rrc_ue_setup_proc_notifier&              rrc_ue_notifier_,
-                      rrc_ue_du_processor_notifier&            du_processor_notifier_,
-                      rrc_ue_nas_notifier&                     nas_notifier_,
-                      rrc_ue_event_manager&                    ev_mng_,
-                      srslog::basic_logger&                    logger_);
+  rrc_setup_procedure(rrc_ue_context_t&                          context_,
+                      const asn1::rrc_nr::establishment_cause_e& cause_,
+                      const byte_buffer&                         du_to_cu_container_,
+                      rrc_ue_setup_proc_notifier&                rrc_ue_notifier_,
+                      rrc_ue_srb_handler&                        srb_notifier_,
+                      rrc_ue_nas_notifier&                       nas_notifier_,
+                      rrc_ue_event_manager&                      ev_mng_,
+                      rrc_ue_logger&                             logger_);
 
   void operator()(coro_context<async_task<void>>& ctx);
 
@@ -96,22 +92,19 @@ private:
   /// \remark Forward the Initial UE Message to the NGAP
   void send_initial_ue_msg(const asn1::rrc_nr::rrc_setup_complete_s& rrc_setup_complete_msg);
 
-  rrc_ue_context_t&                       context;
-  const asn1::rrc_nr::rrc_setup_request_s request;
-  const byte_buffer&                      du_to_cu_container;
-  const asn1::rrc_nr::pdcp_cfg_s          srb1_pdcp_cfg;
+  rrc_ue_context_t&                         context;
+  const asn1::rrc_nr::establishment_cause_e cause;
+  const byte_buffer&                        du_to_cu_container;
+  const asn1::rrc_nr::pdcp_cfg_s            srb1_pdcp_cfg;
 
-  rrc_ue_setup_proc_notifier&   rrc_ue;                // handler to the parent RRC UE object
-  rrc_ue_du_processor_notifier& du_processor_notifier; // notifier to the DU processor
-  rrc_ue_nas_notifier&          nas_notifier;          // notifier to the NGAP
-  rrc_ue_event_manager&         event_mng;             // event manager for the RRC UE entity
-  srslog::basic_logger&         logger;
+  rrc_ue_setup_proc_notifier& rrc_ue;       // handler to the parent RRC UE object
+  rrc_ue_srb_handler&         srb_notifier; // for creation of SRBs
+  rrc_ue_nas_notifier&        nas_notifier; // notifier to the NGAP
+  rrc_ue_event_manager&       event_mng;    // event manager for the RRC UE entity
+  rrc_ue_logger&              logger;
 
   rrc_transaction               transaction;
   eager_async_task<rrc_outcome> task;
-
-  const unsigned rrc_setup_timeout_ms =
-      1000; // arbitrary timeout for RRC Setup procedure, UE will be removed if timer fires
 };
 
 } // namespace srs_cu_cp

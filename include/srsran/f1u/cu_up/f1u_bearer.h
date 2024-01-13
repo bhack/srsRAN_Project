@@ -24,9 +24,12 @@
 
 #include "f1u_rx_pdu_handler.h"
 #include "f1u_tx_sdu_handler.h"
+#include "srsran/ran/up_transport_layer_info.h"
 
 namespace srsran {
 namespace srs_cu_up {
+
+constexpr uint32_t f1u_dl_notif_time_ms = 10;
 
 class f1u_bearer_disconnector;
 
@@ -49,8 +52,9 @@ public:
 class f1u_bearer_disconnector
 {
 public:
-  virtual ~f1u_bearer_disconnector()                  = default;
-  virtual void disconnect_cu_bearer(uint32_t ul_teid) = 0;
+  virtual ~f1u_bearer_disconnector() = default;
+
+  virtual void disconnect_cu_bearer(const up_transport_layer_info& ul_up_tnl_info) = 0;
 };
 
 } // namespace srs_cu_up

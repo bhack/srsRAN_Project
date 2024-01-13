@@ -20,26 +20,15 @@
  *
  */
 
-#include "lib/scheduler/cell/cell_configuration.h"
+#include "lib/scheduler/config/cell_configuration.h"
+#include "scheduler_test_doubles.h"
 #include "tests/unittests/scheduler/test_utils/config_generators.h"
+#include "srsran/du/du_cell_config_helpers.h"
 #include "srsran/scheduler/scheduler_factory.h"
 #include "srsran/support/benchmark_utils.h"
 #include <getopt.h>
 
 using namespace srsran;
-
-class sched_cfg_dummy_notifier : public sched_configuration_notifier
-{
-public:
-  void on_ue_config_complete(du_ue_index_t ue_index) override {}
-  void on_ue_delete_response(du_ue_index_t ue_index) override {}
-};
-
-class sched_dummy_metric_notifier final : public scheduler_ue_metrics_notifier
-{
-public:
-  void report_metrics(span<const scheduler_ue_metrics> ue_metrics) override {}
-};
 
 struct bench_params {
   unsigned nof_repetitions = 100;
@@ -68,7 +57,7 @@ static void parse_args(int argc, char** argv, bench_params& params)
   }
 }
 
-std::unique_ptr<benchmarker> bm;
+static std::unique_ptr<benchmarker> bm;
 
 void benchmark_sib_scheduling()
 {
@@ -78,8 +67,9 @@ void benchmark_sib_scheduling()
       scheduler_config{config_helpers::make_default_scheduler_expert_config(), cfg_notif, metric_notif});
 
   // Add Cell.
+  scheduler_expert_config                  sched_cfg    = config_helpers::make_default_scheduler_expert_config();
   sched_cell_configuration_request_message cell_cfg_msg = test_helpers::make_default_sched_cell_configuration_request();
-  cell_configuration                       cell_cfg{cell_cfg_msg};
+  cell_configuration                       cell_cfg{sched_cfg, cell_cfg_msg};
   sch->handle_cell_configuration_request(cell_cfg_msg);
 
   auto& logger = srslog::fetch_basic_logger("SCHED", true);
@@ -101,8 +91,9 @@ void benchmark_rach_scheduling()
       scheduler_config{config_helpers::make_default_scheduler_expert_config(), cfg_notif, metric_notif});
 
   // Add Cell.
+  scheduler_expert_config                  sched_cfg    = config_helpers::make_default_scheduler_expert_config();
   sched_cell_configuration_request_message cell_cfg_msg = test_helpers::make_default_sched_cell_configuration_request();
-  cell_configuration                       cell_cfg{cell_cfg_msg};
+  cell_configuration                       cell_cfg{sched_cfg, cell_cfg_msg};
   sch->handle_cell_configuration_request(cell_cfg_msg);
 
   auto&                   logger = srslog::fetch_basic_logger("SCHED", true);
@@ -116,7 +107,7 @@ void benchmark_rach_scheduling()
       // Avoid slots with SIB1, otherwise there might not be space in PDCCH.
       sch->handle_rach_indication(rach_ind);
     }
-    const sched_result* res = sch->slot_indication(sl_tx, to_du_cell_index(0));
+    const sched_result* res = &sch->slot_indication(sl_tx, to_du_cell_index(0));
 
     // ack msg3s.
     if (not res->ul.puschs.empty()) {

@@ -19,22 +19,27 @@
 #
 
 add_subdirectory(build_info)
-add_subdirectory(io_broker)
+add_subdirectory(network)
+add_subdirectory(version)
 
 set(SOURCES
         backtrace.cpp
         math_utils.cpp
         unique_thread.cpp
-        task_worker.cpp
-        task_worker_pool.cpp
+        executors/task_worker.cpp
+        executors/task_worker_pool.cpp
+        executors/task_execution_manager.cpp
         timers.cpp
         bit_encoding.cpp
-        config_json.cpp
         config_yaml.cpp
-        signal_handler.cpp)
+        signal_handler.cpp
+        event_tracing.cpp
+        sysinfo.cpp
+        byte_buffer.cpp
+        byte_buffer_chain.cpp)
 
 add_library(srsran_support STATIC ${SOURCES})
-target_link_libraries(srsran_support srsran_io_broker ${CMAKE_THREAD_LIBS_INIT} ${YAMLCPP_LIBRARY} srslog)
+target_link_libraries(srsran_support srsran_network ${CMAKE_THREAD_LIBS_INIT} ${YAMLCPP_LIBRARY} srslog)
 add_backward(srsran_support)
 
 if (Backward_FOUND AND BACKWARD_HAS_EXTERNAL_LIBRARIES)

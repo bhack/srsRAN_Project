@@ -42,7 +42,7 @@ private:
     /// Contains the codeblock soft bits.
     std::vector<log_likelihood_ratio> soft_bits;
     /// Contains the codeblock data bits.
-    dynamic_bit_buffer data_bits = {};
+    dynamic_bit_buffer data_bits;
   };
 
   /// Stores all codeblock entries.
@@ -55,12 +55,13 @@ public:
   /// \brief Creates a receive buffer codeblock pool.
   /// \param[in] nof_codeblocks Indicates the maximum number of codeblocks.
   /// \param[in] max_codeblock_size Indicates the maximum codeblock size.
-  rx_softbuffer_codeblock_pool(unsigned nof_codeblocks, unsigned max_codeblock_size)
+  /// \param[in] external_soft_bits Set to true to indicate that soft bits are not stored in the buffer.
+  rx_softbuffer_codeblock_pool(unsigned nof_codeblocks, unsigned max_codeblock_size, bool external_soft_bits)
   {
     entries.resize(nof_codeblocks);
     for (entry& e : entries) {
       e.reserved = false;
-      e.soft_bits.resize(max_codeblock_size);
+      e.soft_bits.resize(external_soft_bits ? 0 : max_codeblock_size);
       // The maximum number of data bits is
       // max_codeblock_size * max(BG coding rate) = max_codeblock_size * (1/3)
       e.data_bits.resize(divide_ceil(max_codeblock_size, 3));

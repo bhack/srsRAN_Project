@@ -36,21 +36,24 @@ static unsigned     nof_repetitions = 1000;
 static unsigned     nof_iterations  = 6;
 static bool         silent          = false;
 static bool         use_crc         = false;
+static unsigned     l_size          = 0;
 
 static void usage(const char* prog)
 {
   fmt::print("Usage: {} [-R repetitions] [-s silent]\n", prog);
   fmt::print("\t-R Repetitions [Default {}]\n", nof_repetitions);
-  fmt::print("\t-T Encoder type generic, avx2 or avx512 [Default {}]\n", dec_type);
+  fmt::print("\t-T Encoder type generic, avx2, avx512 or neon [Default {}]\n", dec_type);
   fmt::print("\t-I Number of min-sum iterations [Default {}]\n", nof_iterations);
   fmt::print("\t-s Toggle silent operation [Default {}]\n", silent);
+  fmt::print("\t-C Toggle early stopping with CRC [Default {}]\n", use_crc);
+  fmt::print("\t-L Lifting size - 0 for all [Default {}]\n", l_size);
   fmt::print("\t-h Show this message\n");
 }
 
 static void parse_args(int argc, char** argv)
 {
   int opt = 0;
-  while ((opt = getopt(argc, argv, "R:T:I:Csh")) != -1) {
+  while ((opt = getopt(argc, argv, "R:T:I:L:Csh")) != -1) {
     switch (opt) {
       case 'R':
         nof_repetitions = std::strtol(optarg, nullptr, 10);
@@ -61,8 +64,11 @@ static void parse_args(int argc, char** argv)
       case 'I':
         nof_iterations = std::strtol(optarg, nullptr, 10);
         break;
+      case 'L':
+        l_size = std::strtol(optarg, nullptr, 10);
+        break;
       case 'C':
-        use_crc = true;
+        use_crc = (!use_crc);
         break;
       case 's':
         silent = (!silent);
@@ -85,8 +91,17 @@ int main(int argc, char** argv)
   benchmarker perf_meas_generic(fmt::format("LDPC decoder {}, {} MS iterations", dec_type, nof_iterations),
                                 nof_repetitions);
 
+  span<const lifting_size_t>    use_ls;
+  std::array<lifting_size_t, 1> one_ls = {lifting_size_t::LS384};
+  if (l_size != 0) {
+    one_ls[0] = static_cast<lifting_size_t>(l_size);
+    use_ls    = span<const lifting_size_t>(one_ls);
+  } else {
+    use_ls = span<const lifting_size_t>(all_lifting_sizes);
+  }
+
   for (const ldpc_base_graph_type& bg : {ldpc_base_graph_type::BG1, ldpc_base_graph_type::BG2}) {
-    for (const lifting_size_t& ls : all_lifting_sizes) {
+    for (const lifting_size_t& ls : use_ls) {
       std::unique_ptr<crc_calculator> crc16   = nullptr;
       std::unique_ptr<ldpc_encoder>   encoder = nullptr;
       // Decoder.
@@ -130,24 +145,26 @@ int main(int argc, char** argv)
               codeblock.begin(), codeblock.end(), [&]() { return static_cast<int8_t>((rgen() & 1) * 20 - 10); });
         } else {
           // Generate random message, attach its CRC and encode.
-          std::vector<uint8_t> to_encode(msg_length);
-          std::vector<uint8_t> encoded(cb_length);
+          dynamic_bit_buffer to_encode(msg_length);
+          dynamic_bit_buffer encoded(cb_length);
           // Generate a random message.
-          unsigned      msg_len_minus_crc = msg_length - 16;
-          span<uint8_t> msg_span{to_encode.data(), msg_len_minus_crc};
-          std::generate(msg_span.begin(), msg_span.end(), [&]() { return static_cast<uint8_t>((rgen() & 1)); });
+          unsigned   msg_len_minus_crc = msg_length - 16;
+          bit_buffer msg_span          = to_encode.first(msg_len_minus_crc);
+          for (unsigned i_bit = 0; i_bit != msg_length; ++i_bit) {
+            msg_span.insert(rgen() & 1, i_bit, 1);
+          }
           // Add CRC bits at the end.
-          unsigned checksum = crc16->calculate_bit(msg_span);
-          srsvec::bit_unpack(span<uint8_t>(to_encode.data(), msg_length).last(16), checksum, 16);
+          unsigned checksum = crc16->calculate(msg_span);
+          to_encode.insert(checksum, msg_len_minus_crc, 16);
           // Encode entire message.
           srsran::codeblock_metadata::tb_common_metadata cfg_enc;
           cfg_enc = {bg, ls};
           encoder->encode(encoded, to_encode, cfg_enc);
 
           // Convert codeblock bits to LLRs.
-          std::transform(encoded.begin(), encoded.end(), codeblock.begin(), [](uint8_t b) {
-            return log_likelihood_ratio::copysign(10, 1 - 2 * b);
-          });
+          for (unsigned i_bit = 0; i_bit != cb_length; ++i_bit) {
+            codeblock[i_bit] = log_likelihood_ratio::copysign(10, 1 - 2 * encoded.extract(i_bit, 1));
+          }
         }
 
         // Prepare message storage.

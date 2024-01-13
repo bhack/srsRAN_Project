@@ -30,6 +30,7 @@
 #include "srsran/phy/upper/channel_coding/ldpc/ldpc_segmenter_tx.h"
 #include "srsran/phy/upper/channel_processors/pdsch_encoder.h"
 #include "srsran/phy/upper/codeblock_metadata.h"
+#include "srsran/ran/pdsch/pdsch_constants.h"
 
 namespace srsran {
 
@@ -52,7 +53,10 @@ public:
   }
 
   // See interface for the documentation.
-  void encode(span<uint8_t> codeword, span<const uint8_t> transport_block, const segmenter_config& cfg) override;
+  void encode(span<uint8_t>        codeword,
+              tx_buffer&           softbuffer,
+              span<const uint8_t>  transport_block,
+              const configuration& config) override;
 
 private:
   /// Pointer to an LDPC segmenter.
@@ -63,15 +67,13 @@ private:
   std::unique_ptr<ldpc_rate_matcher> rate_matcher;
 
   /// Buffer for storing data segments obtained after transport block segmentation.
-  static_vector<described_segment, MAX_NOF_SEGMENTS> d_segments = {};
+  static_vector<described_segment, MAX_NOF_SEGMENTS> d_segments;
   /// \brief Maximum codeblock length.
   ///
   /// This is the maximum length of an encoded codeblock, achievable with base graph 1 (rate 1/3).
   static constexpr units::bits MAX_CB_LENGTH{3 * MAX_SEG_LENGTH.value()};
-  /// Buffer for storing temporary unpacked data between LDPC segmenter and the LDPC encoder.
-  std::array<uint8_t, MAX_SEG_LENGTH.value()> temp_unpacked_cb = {};
-  /// Buffer for storing temporary, full-length codeblocks, between LDPC encoder and LDPC rate matcher.
-  std::array<uint8_t, MAX_CB_LENGTH.value()> buffer_cb = {};
+  /// Buffer for storing temporary encoded and packed codeblock.
+  static_bit_buffer<pdsch_constants::CODEWORD_MAX_SIZE.value()> codeblock_packed;
 };
 
 } // namespace srsran

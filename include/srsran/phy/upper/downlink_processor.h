@@ -30,6 +30,8 @@
 namespace srsran {
 
 struct resource_grid_context;
+class resource_grid;
+class unique_tx_buffer;
 
 /// \brief Downlink processor class that groups and process all the downlink channels within a slot.
 ///
@@ -54,14 +56,16 @@ public:
 
   /// \brief Process the given PDSCH PDU and its related data, which it is given in data parameter.
   ///
-  /// \param[in] data Contains the data of the PDSCH.
-  /// \param[in] pdu PDSCH PDU to process.
-  virtual void process_pdsch(const static_vector<span<const uint8_t>, pdsch_processor::MAX_NOF_TRANSPORT_BLOCKS>& data,
+  /// \param[in,out] softbuffer Transmit buffer.
+  /// \param[in]     data       Contains the PDSCH transport blocks.
+  /// \param[in]     pdu        PDSCH PDU to process.
+  virtual void process_pdsch(unique_tx_buffer buffer,
+                             const static_vector<span<const uint8_t>, pdsch_processor::MAX_NOF_TRANSPORT_BLOCKS>& data,
                              const pdsch_processor::pdu_t& pdu) = 0;
 
   /// \brief Process the given SSB PDU.
   ///
-  /// \param[in] pdu SSB PDU to process.
+  /// \param[in] pdu SSB PDU to pr
   virtual void process_ssb(const ssb_processor::pdu_t& pdu) = 0;
 
   /// \brief Process the given NZP-CSI-RS configuration.
@@ -73,12 +77,13 @@ public:
   ///
   /// \param[in] context Resource grid context that contains the information of the processing slot.
   /// \param[in] grid Resource grid that will contain the data of the processed downlink channels.
+  /// \return \c true if the resource grid is successfully configured, \c false otherwise.
   ///
   /// \note
   /// - Calling this method is mandatory before processing any PDU.
   /// - The resource grid number of ports and bandwidth must be sufficient to accommodate all the PDUs.
   // :TODO: move this method to other interface to avoid controlling the order of the methods execution.
-  virtual void configure_resource_grid(const resource_grid_context& context, resource_grid& grid) = 0;
+  virtual bool configure_resource_grid(const resource_grid_context& context, resource_grid& grid) = 0;
 
   /// \brief Stops accepting PDUs.
   ///
@@ -87,11 +92,6 @@ public:
   /// configure_resource_grid() to provide the processing context of the resource grid in the lower physical layer.
   // :TODO: move this method to other interface to avoid controlling the order of the methods execution.
   virtual void finish_processing_pdus() = 0;
-
-  /// \brief Returns true if the processor is reserved.
-  ///
-  /// A processor is reserved if it has been configured and not finished the processing for the configured context.
-  virtual bool is_reserved() const = 0;
 };
 
 /// Downlink processor validation interface.

@@ -6,6 +6,7 @@
 #include "srsran/ran/du_types.h"
 #include "srsran/ran/lcid.h"
 #include "srsran/ran/rnti.h"
+#include "srsran/ran/slot_pdu_capacity_constants.h"
 #include "srsran/ran/slot_point.h"
 
 namespace srsran {
@@ -42,7 +43,7 @@ public:
 /// Used to indicate UL CCCH message arrival.
 struct ul_ccch_indication_message {
   du_cell_index_t cell_index;
-  rnti_t          crnti;
+  rnti_t          tc_rnti;
   slot_point      slot_rx;
   byte_buffer     subpdu;
 };

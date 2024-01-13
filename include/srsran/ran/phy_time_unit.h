@@ -61,6 +61,9 @@ public:
   /// Creates a default physical layer time of zero units.
   phy_time_unit() = default;
 
+  /// \brief Gets the stored time unit in multiple of \f$T_c\f$.
+  const value_type to_Tc() const { return value; }
+
   /// \brief Gets the time in seconds.
   /// \tparam U Return type. Must be a floating point type (default: double).
   template <class U = double>
@@ -97,7 +100,7 @@ public:
   template <typename U>
   constexpr value_type to_samples(U sampling_rate_Hz_) const
   {
-    static_assert(std::is_convertible<U, uint64_t>::value, "Invalid type.");
+    static_assert(std::is_convertible<U, value_type>::value, "Invalid type.");
     value_type sampling_rate_Hz = static_cast<value_type>(sampling_rate_Hz_);
     srsran_assert(is_sample_accurate(sampling_rate_Hz),
                   "Incompatible sampling rate {}.{:02} MHz with time {}.",
@@ -112,19 +115,21 @@ public:
   /// Conversion is performed as per TS38.213 Section 4.2, rounding to the nearest integer.
   ///
   /// \param[in] scs Subcarrier spacing.
+  /// \remark Used to compute the Timing Advance Command to be sent in RAR (not in MAC CE).
   constexpr unsigned to_Ta(subcarrier_spacing scs) const
   {
     return divide_round(value * pow2(to_numerology_value(scs)), 16U * KAPPA);
   }
 
   /// Overload addition operator.
-  constexpr phy_time_unit operator+(phy_time_unit other)
+  constexpr phy_time_unit operator+(phy_time_unit other) const
   {
-    value += other.value;
-    return *this;
+    phy_time_unit ret(*this);
+    ret += other;
+    return ret;
   }
 
-  /// Overload addition operator.
+  /// Overload addition assignment operator.
   constexpr phy_time_unit operator+=(phy_time_unit other)
   {
     value += other.value;
@@ -132,16 +137,47 @@ public:
   }
 
   /// Overload subtraction operator.
-  constexpr phy_time_unit operator-(phy_time_unit other)
+  constexpr phy_time_unit operator-(phy_time_unit other) const
   {
-    value -= other.value;
-    return *this;
+    phy_time_unit ret(*this);
+    ret -= other;
+    return ret;
   }
 
   /// Overload subtraction operator.
   constexpr phy_time_unit operator-=(phy_time_unit other)
   {
     value -= other.value;
+    return *this;
+  }
+
+  /// Overload multiplication assignment operator.
+  constexpr phy_time_unit operator*(unsigned multiplier) const
+  {
+    phy_time_unit ret(*this);
+    ret *= multiplier;
+    return ret;
+  }
+
+  /// Overload multiplication assignment operator.
+  constexpr phy_time_unit operator*=(unsigned multiplier)
+  {
+    value *= multiplier;
+    return *this;
+  }
+
+  /// Overload division operator.
+  constexpr phy_time_unit operator/(unsigned divisor) const
+  {
+    phy_time_unit ret(*this);
+    ret /= divisor;
+    return ret;
+  }
+
+  /// Overload division assignment operator.
+  constexpr phy_time_unit operator/=(unsigned divisor)
+  {
+    value /= divisor;
     return *this;
   }
 
@@ -157,6 +193,12 @@ public:
   /// Overload lower than operator.
   constexpr bool operator<(phy_time_unit other) const { return value < other.value; }
 
+  /// Overload greater than or equal to operator.
+  constexpr bool operator>=(phy_time_unit other) const { return value >= other.value; }
+
+  /// Overload lower than or equal to operator.
+  constexpr bool operator<=(phy_time_unit other) const { return value <= other.value; }
+
   /// Creates a physical layer time from units of \f$\kappa\f$.
   static constexpr inline phy_time_unit from_units_of_kappa(unsigned units_of_kappa)
   {
@@ -167,6 +209,12 @@ public:
   static constexpr inline phy_time_unit from_units_of_Tc(unsigned units_of_Tc)
   {
     return phy_time_unit(static_cast<value_type>(units_of_Tc));
+  }
+
+  /// Creates a physical layer time from a timing advance command \f$T_A\f$, as per TS38.213 Section 4.2.
+  static constexpr inline phy_time_unit from_timing_advance(unsigned units_of_Ta, subcarrier_spacing scs)
+  {
+    return from_units_of_Tc(units_of_Ta * 16U * KAPPA / pow2(to_numerology_value(scs)));
   }
 
   /// Creates a physical layer time from seconds.

@@ -90,7 +90,7 @@ inline const char* srb_id_to_string(srb_id_t srb_id)
   return names[srb_id_to_uint(srb_id < srb_id_t::nulltype ? srb_id : srb_id_t::nulltype)];
 }
 
-enum class drb_id_t : uint16_t {
+enum class drb_id_t : uint8_t {
   drb1 = 1,
   drb2,
   drb3,
@@ -125,12 +125,12 @@ enum class drb_id_t : uint16_t {
 
 constexpr static std::size_t MAX_NOF_DRBS = 29;
 
-constexpr inline uint16_t drb_id_to_uint(drb_id_t id)
+constexpr inline uint8_t drb_id_to_uint(drb_id_t id)
 {
-  return static_cast<uint16_t>(id);
+  return static_cast<uint8_t>(id);
 }
 
-constexpr inline drb_id_t uint_to_drb_id(uint16_t id)
+constexpr inline drb_id_t uint_to_drb_id(uint8_t id)
 {
   return static_cast<drb_id_t>(id);
 }
@@ -149,8 +149,8 @@ public:
   bool is_srb() { return rb_type == rb_type_t::srb; }
   bool is_drb() { return rb_type == rb_type_t::drb; }
 
-  srb_id_t get_srb_id() { return srb_id; }
-  drb_id_t get_drb_id() { return drb_id; }
+  srb_id_t get_srb_id() const { return srb_id; }
+  drb_id_t get_drb_id() const { return drb_id; }
 
 private:
   rb_type_t rb_type;
@@ -163,6 +163,43 @@ private:
 } // namespace srsran
 
 namespace fmt {
+
+// drb_id_t formatter
+template <>
+struct formatter<srsran::drb_id_t> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin())
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(srsran::drb_id_t o, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
+  {
+    switch (o) {
+      case srsran::drb_id_t::invalid:
+        return format_to(ctx.out(), "invalid DRB");
+      default:
+        return format_to(ctx.out(), "DRB{}", drb_id_to_uint(o));
+    }
+  }
+};
+
+// srb_id_t formatter
+template <>
+struct formatter<srsran::srb_id_t> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin())
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(srsran::srb_id_t o, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
+  {
+    return format_to(ctx.out(), "SRB{}", srb_id_to_uint(o));
+  }
+};
 
 // rb_id_t formatter
 template <>
@@ -177,10 +214,10 @@ struct formatter<srsran::rb_id_t> {
   auto format(srsran::rb_id_t o, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
   {
     if (o.is_drb()) {
-      return format_to(ctx.out(), "DRB{}", drb_id_to_uint(o.get_drb_id()));
+      return format_to(ctx.out(), "{}", o.get_drb_id());
     }
     if (o.is_srb()) {
-      return format_to(ctx.out(), "SRB{}", srb_id_to_uint(o.get_srb_id()));
+      return format_to(ctx.out(), "{}", o.get_srb_id());
     }
     return format_to(ctx.out(), "Invalid");
   }

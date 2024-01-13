@@ -38,7 +38,8 @@ protected:
 
     gw     = std::make_unique<dummy_network_gateway_data_handler>();
     e2     = std::make_unique<dummy_e2_message_handler>();
-    packer = std::make_unique<srsran::e2ap_asn1_packer>(*gw, *e2);
+    pcap   = std::make_unique<dummy_e2ap_pcap>();
+    packer = std::make_unique<srsran::e2ap_asn1_packer>(*gw, *e2, *pcap);
   }
 
   void TearDown() override
@@ -49,6 +50,7 @@ protected:
 
   std::unique_ptr<dummy_network_gateway_data_handler> gw;
   std::unique_ptr<dummy_e2_message_handler>           e2;
+  std::unique_ptr<dummy_e2ap_pcap>                    pcap;
   std::unique_ptr<srsran::e2ap_asn1_packer>           packer;
   srslog::basic_logger&                               test_logger = srslog::fetch_basic_logger("TEST");
 };
@@ -57,7 +59,7 @@ protected:
 TEST_F(e2_asn1_packer_test, when_packing_successful_then_unpacking_successful)
 {
   // Action 1: Create valid e2 message
-  e2_message e2_setup_request = generate_e2_setup_request();
+  e2_message e2_setup_request = generate_e2_setup_request("1.3.6.1.4.1.53148.1.2.2.2");
 
   // Action 2: Pack message and forward to gateway
   packer->handle_message(e2_setup_request);

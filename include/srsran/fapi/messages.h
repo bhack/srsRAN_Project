@@ -24,6 +24,7 @@
 
 #include "srsran/adt/static_vector.h"
 #include "srsran/ran/csi_rs/csi_rs_types.h"
+#include "srsran/ran/csi_rs/frequency_allocation_type.h"
 #include "srsran/ran/cyclic_prefix.h"
 #include "srsran/ran/ldpc_base_graph.h"
 #include "srsran/ran/modulation_scheme.h"
@@ -32,6 +33,7 @@
 #include "srsran/ran/pdcch/dci_packing.h"
 #include "srsran/ran/pdcch/pdcch_context.h"
 #include "srsran/ran/pdsch/pdsch_context.h"
+#include "srsran/ran/prach/prach_format_type.h"
 #include "srsran/ran/prach/prach_subcarrier_spacing.h"
 #include "srsran/ran/prach/restricted_set_config.h"
 #include "srsran/ran/pucch/pucch_mapping.h"
@@ -129,17 +131,37 @@ struct dl_pdcch_pdu_parameters_v4 {
   //: TODO: mu_mimo
 };
 
+/// Precoding and beamforming PDU.
+struct tx_precoding_and_beamforming_pdu {
+  /// Maximum number of digital beamforming interfaces supported. Implementation defined.
+  static constexpr unsigned MAX_NUM_SUPPORTED_DIGITAL_BEAMFORMING_INTERFACES = 4U;
+  /// Maximum number of PRGs supported. Implementation defined.
+  static constexpr unsigned MAX_NUM_PRGS = 1U;
+
+  /// Physical resource groups information.
+  struct prgs_info {
+    uint16_t                                                                  pm_index;
+    static_vector<uint16_t, MAX_NUM_SUPPORTED_DIGITAL_BEAMFORMING_INTERFACES> beam_index;
+  };
+
+  /// Setting this variable to a value other than 0 marks the struct as not being used.
+  uint8_t                                trp_scheme = 1U;
+  uint16_t                               prg_size;
+  uint8_t                                dig_bf_interfaces;
+  static_vector<prgs_info, MAX_NUM_PRGS> prgs;
+};
+
 /// Downlink DCI PDU configuration.
 struct dl_dci_pdu {
-  rnti_t   rnti;
-  uint16_t nid_pdcch_data;
-  uint16_t nrnti_pdcch_data;
-  uint8_t  cce_index;
-  uint8_t  aggregation_level;
-  //: TODO: beamforming info
-  uint8_t     beta_pdcch_1_0;
-  int8_t      power_control_offset_ss_profile_nr;
-  dci_payload payload;
+  rnti_t                           rnti;
+  uint16_t                         nid_pdcch_data;
+  uint16_t                         nrnti_pdcch_data;
+  uint8_t                          cce_index;
+  uint8_t                          aggregation_level;
+  tx_precoding_and_beamforming_pdu precoding_and_beamforming;
+  uint8_t                          beta_pdcch_1_0;
+  int8_t                           power_control_offset_ss_profile_nr;
+  dci_payload                      payload;
   // Vendor specific parameters.
   optional<pdcch_context> context;
 };
@@ -294,7 +316,7 @@ struct dl_pdsch_pdu {
   uint8_t                                              start_symbol_index;
   uint8_t                                              nr_of_symbols;
   // :TODO: PTRS
-  // :TODO: beamforming
+  tx_precoding_and_beamforming_pdu         precoding_and_beamforming;
   uint8_t                                  power_control_offset_profile_nr;
   nzp_csi_rs_epre_to_ssb                   power_control_offset_ss_profile_nr;
   uint8_t                                  is_last_cb_present;
@@ -304,7 +326,7 @@ struct dl_pdsch_pdu {
   dl_pdsch_ptrs_maintenance_v3             ptrs_maintenance_v3;
   // :TODO: Rel16 PDSCH params v3
   dl_pdsch_parameters_v4 pdsch_parameters_v4;
-  // Vendor specific parameters.
+  /// Vendor specific parameters.
   optional<pdsch_context> context;
 };
 
@@ -316,22 +338,22 @@ struct dl_csi_rs_maintenance_v3 {
 
 /// Downlink CSI-RS PDU information.
 struct dl_csi_rs_pdu {
-  subcarrier_spacing       scs;
-  cyclic_prefix            cp;
-  uint16_t                 start_rb;
-  uint16_t                 num_rbs;
-  csi_rs_type              type;
-  uint8_t                  row;
-  bounded_bitset<12, true> freq_domain;
-  uint8_t                  symb_L0;
-  uint8_t                  symb_L1;
-  csi_rs_cdm_type          cdm_type;
-  csi_rs_freq_density_type freq_density;
-  uint16_t                 scramb_id;
-  uint8_t                  power_control_offset_profile_nr;
-  nzp_csi_rs_epre_to_ssb   power_control_offset_ss_profile_nr;
-  //: TODO: beamforming struct
-  dl_csi_rs_maintenance_v3 csi_rs_maintenance_v3;
+  subcarrier_spacing                scs;
+  cyclic_prefix                     cp;
+  uint16_t                          start_rb;
+  uint16_t                          num_rbs;
+  csi_rs_type                       type;
+  uint8_t                           row;
+  csi_rs::freq_allocation_mask_type freq_domain;
+  uint8_t                           symb_L0;
+  uint8_t                           symb_L1;
+  csi_rs_cdm_type                   cdm_type;
+  csi_rs_freq_density_type          freq_density;
+  uint16_t                          scramb_id;
+  uint8_t                           power_control_offset_profile_nr;
+  nzp_csi_rs_epre_to_ssb            power_control_offset_ss_profile_nr;
+  tx_precoding_and_beamforming_pdu  precoding_and_beamforming;
+  dl_csi_rs_maintenance_v3          csi_rs_maintenance_v3;
   //: TODO: csi params v4
 };
 
@@ -371,20 +393,25 @@ enum class bch_payload_type : uint8_t { mac_full, phy_timing_info, phy_full };
 
 /// Downlink SSB PDU information.
 struct dl_ssb_pdu {
-  pci_t                 phys_cell_id;
-  beta_pss_profile_type beta_pss_profile_nr;
-  uint8_t               ssb_block_index;
-  uint8_t               ssb_subcarrier_offset;
-  ssb_offset_to_pointA  ssb_offset_pointA;
-  bch_payload_type      bch_payload_flag;
-  dl_ssb_bch_payload    bch_payload;
-  //: TODO: beamforming
-  dl_ssb_maintenance_v3 ssb_maintenance_v3;
+  pci_t                            phys_cell_id;
+  beta_pss_profile_type            beta_pss_profile_nr;
+  uint8_t                          ssb_block_index;
+  uint8_t                          ssb_subcarrier_offset;
+  ssb_offset_to_pointA             ssb_offset_pointA;
+  bch_payload_type                 bch_payload_flag;
+  dl_ssb_bch_payload               bch_payload;
+  tx_precoding_and_beamforming_pdu precoding_and_beamforming;
+  dl_ssb_maintenance_v3            ssb_maintenance_v3;
   //: TODO: params v4 - MU-MIMO
 };
 
 /// Downlink PDU type ID.
 enum class dl_pdu_type : uint16_t { PDCCH, PDSCH, CSI_RS, SSB };
+
+inline unsigned to_value(dl_pdu_type value)
+{
+  return static_cast<unsigned>(value);
+}
 
 /// Common downlink PDU information.
 struct dl_tti_request_pdu {
@@ -412,6 +439,8 @@ struct dl_tti_request_message : public base_message {
   static_vector<dl_tti_request_pdu, MAX_DL_PDUS_PER_SLOT> pdus;
   //: TODO: groups array
   //: TODO: top level rate match patterns
+  /// Vendor specific parameters.
+  bool is_last_message_in_slot;
 };
 
 /// Downlink TTI response pdu information.
@@ -443,61 +472,6 @@ struct ul_prach_maintenance_v3 {
   uint8_t                 start_preamble_index;
   uint8_t                 num_preamble_indices;
 };
-
-enum class prach_format_type : uint8_t {
-  zero,
-  one,
-  two,
-  three,
-  A1,
-  A2,
-  A3,
-  B1,
-  B4,
-  C0,
-  C2,
-  A1_B1,
-  A2_B2,
-  A3_B3,
-};
-
-inline constexpr const char* to_string(prach_format_type format)
-{
-  switch (format) {
-    case prach_format_type::zero:
-      return "0";
-    case prach_format_type::one:
-      return "1";
-    case prach_format_type::two:
-      return "2";
-    case prach_format_type::three:
-      return "3";
-    case prach_format_type::A1:
-      return "A1";
-    case prach_format_type::A1_B1:
-      return "A1/B1";
-    case prach_format_type::A2:
-      return "A2";
-    case prach_format_type::A2_B2:
-      return "A2/B2";
-    case prach_format_type::A3:
-      return "A3";
-    case prach_format_type::A3_B3:
-      return "A3/B3";
-    case prach_format_type::B1:
-      return "B1";
-    case prach_format_type::B4:
-      return "B4";
-    case prach_format_type::C0:
-      return "C0";
-    case prach_format_type::C2:
-      return "C2";
-    default:
-      srsran_assert(0, "Invalid PRACH format={}", format);
-      break;
-  }
-  return "";
-}
 
 /// Uplink PRACH PDU information.
 struct ul_prach_pdu {
@@ -842,6 +816,8 @@ struct ul_dci_request_message : public base_message {
   uint16_t                                    slot;
   std::array<uint16_t, MAX_NUM_DL_TYPES>      num_pdus_of_each_type;
   static_vector<ul_dci_pdu, MAX_NUM_UCI_PDUS> pdus;
+  // Vendor specific parameters.
+  bool is_last_message_in_slot;
 };
 
 /// Encodes the generic information of a TLV.

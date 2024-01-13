@@ -24,16 +24,20 @@ add_executable(bounded_bitset_test bounded_bitset_test.cpp)
 target_link_libraries(bounded_bitset_test srslog gtest gtest_main)
 add_test(bounded_bitset_test bounded_bitset_test)
 
+add_executable(interval_test interval_test.cpp)
+target_link_libraries(interval_test srslog gtest gtest_main)
+add_test(interval_test interval_test)
+
 add_executable(byte_buffer_test
         byte_buffer_segment_test.cpp
         byte_buffer_test.cpp
-        byte_buffer_slice_test.cpp
-        byte_buffer_slice_chain_test.cpp)
-target_link_libraries(byte_buffer_test srslog gtest gtest_main)
+        byte_buffer_chain_test.cpp)
+target_link_libraries(byte_buffer_test srslog srsran_support gtest gtest_main)
+add_test(byte_buffer_test byte_buffer_test)
 gtest_discover_tests(byte_buffer_test)
 
-add_executable(ring_buffer_test ring_buffer_test.cpp blocking_queue_test.cpp)
-target_link_libraries(ring_buffer_test srslog gtest gtest_main)
+add_executable(ring_buffer_test ring_buffer_test.cpp blocking_queue_test.cpp concurrent_queue_test.cpp)
+target_link_libraries(ring_buffer_test srslog srsran_support gtest gtest_main)
 add_test(ring_buffer_test ring_buffer_test)
 set_tests_properties(ring_buffer_test PROPERTIES LABELS "tsan")
 gtest_discover_tests(ring_buffer_test)

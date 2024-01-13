@@ -39,13 +39,13 @@ struct rb_cfg_t {
 };
 
 struct rrc_cfg_t {
-  rrc_ue_cfg_t ue_default_cfg;
-
-  asn1::rrc_nr::pdcp_cfg_s     srb1_pdcp_cfg; ///< PDCP configuration for SRB1.
-  optional<rb_cfg_t>           srb2_cfg;      ///< Optional SRB2 config. SRB1 is configured by DU
-  std::map<uint32_t, rb_cfg_t> five_qi_cfg;   ///< Configuration for available 5QI.
-
-  srslog::basic_logger& logger = srslog::fetch_basic_logger("RRC");
+  asn1::rrc_nr::pdcp_cfg_s                 srb1_pdcp_cfg;      ///< PDCP configuration for SRB1.
+  optional<rb_cfg_t>                       srb2_cfg;           ///< Optional SRB2 config. SRB1 is configured by DU
+  std::map<five_qi_t, cu_cp_qos_config>    drb_config;         ///< Configuration for available 5QI.
+  security::preferred_integrity_algorithms int_algo_pref_list; ///< Integrity protection algorithms preference list
+  security::preferred_ciphering_algorithms enc_algo_pref_list; ///< Encryption algorithms preference list
+  bool                                     force_reestablishment_fallback = false; ///< Force re-establishment fallback.
+  unsigned                                 rrc_procedure_timeout_ms       = 360;   ///< Timeout for RRC procedures.
 };
 
 } // namespace srs_cu_cp

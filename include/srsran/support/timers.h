@@ -24,270 +24,222 @@
 
 #include "srsran/adt/intrusive_list.h"
 #include "srsran/adt/unique_function.h"
-#include <cinttypes>
-#include <cstdint>
+#include "srsran/adt/variant.h"
+#include "srsran/support/executors/task_executor.h"
+#include "srsran/support/srsran_assert.h"
+#include <chrono>
 #include <deque>
-#include <limits>
 #include <mutex>
 
 namespace srsran {
 
+/// Type used to represent a unique timer identifier.
+enum class timer_id_t : unsigned { invalid = std::numeric_limits<unsigned>::max() };
+
+/// Unit used to represent a time duration in terms of timer_manager ticks.
+using timer_duration = std::chrono::milliseconds;
+
 class unique_timer;
 
-/// Type to represent a time difference measured in ticks.
-using timer_tick_difference_t = uint32_t;
-
-/// Type to represent a unique timer identifier.
-using timer_id_t = uint32_t;
-
-/// Class that manages the creation/destruction/start/stop/timeout of unique_timers. Each unique_timer duration,
-/// and callback can be set via the set(...) method. A timer can be started/stopped via run()/stop() methods.
-/// The timers access/alteration is thread-safe. Just beware non-atomic uses of its getters.
-/// Internal Data structures:
-/// - timer_list - std::deque that stores timer objects via push_back() to keep pointer/reference validity.
-///   The timer index in the timer_list matches the timer object id field.
-///   This deque will only grow in size. Erased timers are just tagged in the deque as empty, and can be reused for the
-///   creation of new timers. To avoid unnecessary runtime allocations, the user can set an initial capacity.
-/// - free_list - intrusive forward linked list to keep track of the empty timers and speed up new timer creation.
-/// - A large circular vector of size WHEEL_SIZE which works as a time wheel, storing and circularly indexing the
-///   currently running timers by their respective timeout value.
-///   For a number of running timers N, and uniform distribution of timeout values, the tick_all() complexity
-///   should be O(N/WHEEL_SIZE). Thus, the performance should improve with a larger WHEEL_SIZE, at the expense of more
-///   used memory.
+/// \brief This class implements the service associated with the management of the timers of the application, including
+/// the allocation, destruction, starting/halting and timeout triggering of the registered timers. The user
+/// can check and control the state of an individual timer via the respective \c unique_timer handle object.
+///
+/// The \c timer_manager and \c unique_timer classes follow a publisher/subscriber model. The \c timer_manager,
+/// the publisher, receives periodic ticks from a clock source (e.g. RF front-end or system clock) that advance its
+/// internal clock. It also contains an internal list of subscribed \c unique_timers. Once enough time has passed and
+/// a running timer time-outs, the respective timer gets notified via a callback. The user can control the timer
+/// starting time, duration until timeout and timeout callback function definition via the \c unique_timer interface.
+///
+/// The implementation assumes that the "tick()" method is always called from the same thread and that an unique_timer
+/// object is not accessed concurrently by different threads. However, separate unique_timers can be safely used from
+/// separate threads. An unique_timer object and the timer_manager communicate with one another via thread-safe queues.
 class timer_manager
 {
-  /// This type represents a tick.
-  using timer_tick_t = uint32_t;
+  /// \brief Unambiguous identifier of the last command sent by a unique_timer to the timer_manager.
+  using cmd_id_t = uint32_t;
 
-  /// Wheel configuration parameters.
-  static constexpr size_t WHEEL_SHIFT = 16U;
-  static constexpr size_t WHEEL_SIZE  = 1U << WHEEL_SHIFT;
-  static constexpr size_t WHEEL_MASK  = WHEEL_SIZE - 1U;
+  /// \brief Constant used to represent invalid timer durations.
+  constexpr static timer_duration INVALID_DURATION = std::numeric_limits<timer_duration>::max();
 
-  /// Timer state constant definitions.
-  static constexpr uint64_t                STOPPED_FLAG       = 0U;
-  static constexpr uint64_t                RUNNING_FLAG       = static_cast<uint64_t>(1U) << 63U;
-  static constexpr uint64_t                EXPIRED_FLAG       = static_cast<uint64_t>(1U) << 62U;
-  static constexpr timer_tick_difference_t MAX_TIMER_DURATION = 0x3fffffffU;
+  /// \brief Possible states for a timer.
+  enum class state_t { stopped, running, expired };
 
-  /// Miscellaneous decoding helper functions.
-  static bool                    decode_is_running_flag(uint64_t value) { return (value & RUNNING_FLAG) != 0; }
-  static bool                    decode_is_expired_flag(uint64_t value) { return (value & EXPIRED_FLAG) != 0; }
-  static timer_tick_difference_t decode_duration(uint64_t value) { return (value >> 32U) & MAX_TIMER_DURATION; }
-  static timer_tick_t            decode_timeout(uint64_t value) { return static_cast<uint32_t>(value & 0xffffffffU); }
-  static uint64_t encode_state(uint64_t mode_flag, timer_tick_difference_t duration, timer_tick_t timeout)
-  {
-    return mode_flag + (static_cast<uint64_t>(duration) << 32U) + timeout;
-  }
+  /// Command sent by the unique_timer (front-end) to the timer manager (back-end).
+  struct cmd_t {
+    enum action_t { start, stop, destroy };
 
-  /// Internal timer implementation class.
-  struct timer_handle : public intrusive_double_linked_list_element<>, public intrusive_forward_list_element<> {
+    /// Unique identity of the timer.
+    timer_id_t id;
+
+    /// Identifier associated with this particular command.
+    cmd_id_t cmd_id;
+
+    /// Action Request type sent by the unique_timer.
+    action_t action;
+
+    /// Timer duration used, in case the action type is "start".
+    unsigned duration;
+  };
+
+  /// Data relative to a timer state that is safe to access from the front-end side (the unique_timer).
+  struct timer_frontend {
+    /// Reference to timer manager class.
     timer_manager& parent;
     /// Timer identifier. This identifier should remain constant throughout the timer lifetime.
     const timer_id_t id;
-    /// Whether timer is being used. Writes are protected by backend lock.
-    bool allocated = false;
-    /// The current state of timer (e.g. running/expired/stopped) + duratin + timeout
-    /// Read methods of timer_handle are not mutexed, thus its state updates must be atomic.
-    std::atomic<uint64_t> state{0};
+    /// Task executor used to dispatch expiry callback. When set to nullptr, the timer is not allocated.
+    task_executor* exec = nullptr;
+    /// \brief Identifier of the last command sent from the front-end to the back-end side of the timer_manager. We use
+    /// this value to track whether a timer run has been overwritten and there is no need to trigger an timeout.
+    /// Atomic is used because we let the timer_manager back-end fetch this value to get a coarse estimation of the
+    /// last cmd_id at the front-end side, and avoid an unnecessary timeout callback trigger.
+    std::atomic<cmd_id_t> cmd_id{0};
+    /// The current state of timer (e.g. running/expired/notify_stop) from the perspective of the timer front-end.
+    state_t state = state_t::stopped;
+    /// Duration of each timer run.
+    timer_duration duration = INVALID_DURATION;
     /// Callback triggered when timer expires. Callback updates are protected by backend lock.
-    unique_function<void(timer_id_t)> callback;
+    unique_function<void(timer_id_t)> timeout_callback;
 
-  public:
-    explicit timer_handle(timer_manager& parent_, timer_id_t id_) : parent(parent_), id(id_) {}
-    timer_handle(const timer_handle&)            = delete;
-    timer_handle(timer_handle&&)                 = delete;
-    timer_handle& operator=(const timer_handle&) = delete;
-    timer_handle& operator=(timer_handle&&)      = delete;
-    ~timer_handle()                              = default;
+    timer_frontend(timer_manager& parent_, timer_id_t id_);
 
-    /// Returns true if the timer is currently running, otherwise returns false.
-    bool is_running() const { return decode_is_running_flag(state.load(std::memory_order_relaxed)); }
+    void destroy();
 
-    /// Returns true if the timer has expired, otherwise returns false.
-    bool has_expired() const { return decode_is_expired_flag(state.load(std::memory_order_relaxed)); }
+    void set(timer_duration duration);
 
-    /// Returns the configured duration for this timer measured in ticks.
-    timer_tick_difference_t duration() const { return decode_duration(state.load(std::memory_order_relaxed)); }
+    void set(timer_duration duration, unique_function<void(timer_id_t)> callback);
 
-    /// Returns true if the timer duration has been set, otherwise returns false.
-    bool is_set() const { return duration() > 0; }
+    void run();
 
-    /// Returns the elapsed time in ticks.
-    timer_tick_difference_t time_elapsed() const
-    {
-      uint64_t                state_snapshot = state.load(std::memory_order_relaxed);
-      timer_tick_difference_t duration       = decode_duration(state_snapshot);
-      timer_tick_t            timeout        = decode_timeout(state_snapshot);
+    void stop();
+  };
 
-      bool running = decode_is_running_flag(state_snapshot);
-      bool expired = decode_is_expired_flag(state_snapshot);
-      return running ? duration - (timeout - parent.cur_time) : (expired ? duration : 0);
-    }
+  /// \brief Timer context used solely by the back-end side of the timer manager.
+  struct timer_backend_context {
+    cmd_id_t cmd_id  = 0;
+    state_t  state   = state_t::stopped;
+    unsigned timeout = 0;
+  };
 
-    /// Configures the duration of the timer.
-    void set(timer_tick_difference_t duration)
-    {
-      srsran_assert(duration <= MAX_TIMER_DURATION,
-                    "Invalid timer duration={}>{}",
-                    duration,
-                    (timer_tick_difference_t)MAX_TIMER_DURATION);
-      std::lock_guard<std::mutex> lock(parent.mutex);
-      set_impl(duration);
-    }
+  /// \brief Object holding both the front-end and back-end contexts of the timers.
+  struct timer_handle : public intrusive_double_linked_list_element<>, public intrusive_forward_list_element<> {
+    std::unique_ptr<timer_frontend> frontend;
+    timer_backend_context           backend;
 
-    /// Configures the duration of the timer calling the provided callback upon timer expiration.
-    void set(timer_tick_difference_t duration, unique_function<void(timer_id_t)> cb)
-    {
-      srsran_assert(duration <= MAX_TIMER_DURATION,
-                    "Invalid timer duration={}>{}",
-                    duration,
-                    (timer_tick_difference_t)MAX_TIMER_DURATION);
-      std::lock_guard<std::mutex> lock(parent.mutex);
-      set_impl(duration);
-      callback = std::move(cb);
-    }
-
-    /// Activate the timer to start ticking.
-    void run() { parent.start_run(*this); }
-
-    /// Stops the timer from ticking. The timer callback is not called.
-    void stop() { parent.stop_timer(*this, false); }
-
-    /// Deallocates the timer from its parent.
-    void destroy() { parent.destroy_timer(*this); }
-
-  private:
-    void set_impl(timer_tick_difference_t duration)
-    {
-      // The next step will be one place ahead of current one.
-      duration = std::max(duration, 1U);
-
-      // Called in locked context.
-      uint64_t old_state = state.load(std::memory_order_relaxed);
-      if (decode_is_running_flag(old_state)) {
-        // If already running, just extends timer lifetime.
-        parent.start_run_nolock(*this, duration);
-      } else {
-        state.store(encode_state(STOPPED_FLAG, duration, 0), std::memory_order_relaxed);
-      }
-    }
+    timer_handle() = default;
   };
 
 public:
-  /// Default ctor
+  /// Constructs a timer manager.
   /// \param capacity Number of timers to pre-reserve and speed up timer construction.
   explicit timer_manager(size_t pre_reserve_capacity = 64);
 
-  /// Advances one tick all running timers.
-  void tick_all();
-
-  /// Stops all running timers.
-  void stop_all();
+  /// Advances one tick and triggers any running timer that just expired.
+  void tick();
 
   /// Creates a new instance of a unique timer.
-  unique_timer create_unique_timer();
+  unique_timer create_unique_timer(task_executor& exec);
 
   /// Returns the number of timers handled by this instance.
-  size_t nof_timers() const
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    return timer_list.size() - nof_free_timers;
-  }
+  size_t nof_timers() const;
 
   /// Returns the number of running timers handled by this instance.
-  size_t nof_running_timers() const
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    return nof_timers_running;
-  }
-
-  /// Defer the call of the provided callback until duration ticks have elapsed.
-  template <typename F>
-  void defer_callback(timer_tick_difference_t duration, F f)
-  {
-    timer_handle&                     timer = create_timer();
-    unique_function<void(timer_id_t)> c     = [func = std::move(f), &timer](timer_id_t tid) {
-      func();
-      // Auto-deletes timer.
-      timer.destroy();
-    };
-    timer.set(duration, std::move(c));
-    timer.run();
-  }
-
-  /// Returns the maximum allowed duration value.
-  static constexpr timer_tick_difference_t max_timer_duration() { return MAX_TIMER_DURATION; }
-
-  /// Returns the size of the internal timer wheel.
-  static constexpr size_t get_wheel_size() { return WHEEL_SIZE; }
+  unsigned nof_running_timers() const;
 
 private:
   friend class unique_timer;
 
-  timer_handle& create_timer();
+  /// \brief Create a new front-end context to be used by a newly created unique_timer.
+  timer_frontend& create_frontend_timer(task_executor& exec);
 
-  /// Called when timer is removed. The timer object gets registered in free list for reuse
-  void destroy_timer(timer_handle& timer);
-  void destroy_timer_nolock(timer_handle& timer);
+  /// Push a new timer command (start, stop, destroy) from the front-end execution context to the backend.
+  void push_timer_command(cmd_t cmd);
 
-  /// Called when timer is started.
-  void start_run(timer_handle& timer, timer_tick_difference_t duration = 0);
-  void start_run_nolock(timer_handle& timer, timer_tick_difference_t duration = 0);
+  /// \brief Create a new timer_handle object in the timer manager back-end side and associate it with the provided
+  /// front-end timer.
+  void create_timer_handle(std::unique_ptr<timer_frontend> timer);
 
-  /// Called when user manually stops timer (as an alternative to expiry).
-  void stop_timer(timer_handle& timer, bool expiry);
-  void stop_timer_nolock(timer_handle& timer, bool expiry);
+  /// Start the ticking of a timer with a given duration.
+  void start_timer_backend(timer_handle& timer, unsigned duration);
 
-  /// Current timer absolute tick
-  std::atomic<timer_tick_t> cur_time{0};
+  /// \brief Stop a timer from ticking. If \c expiry_reason is set to true, the timer callback is dispatched to the
+  /// frontend execution context.
+  bool try_stop_timer_backend(timer_handle& timer, bool expiry_reason);
+  void stop_timer_backend(timer_handle& timer, bool expiry_reason);
 
-  /// Number of created timer_impl objects that are currently running.
+  /// Called to destroy a timer context and return it back to the free timer pool.
+  void destroy_timer_backend(timer_handle& timer);
+
+  /// Dispatch timeout handling to the front-end side.
+  bool trigger_timeout_handling(timer_handle& timer);
+
+  /// Handle timers for which the timeout handling dispatch failed and was postponed.
+  void handle_postponed_timeouts();
+
+  srslog::basic_logger& logger;
+
+  /// Counter of the number of ticks elapsed. This counter gets incremented on every \c tick call.
+  unsigned cur_time = 0;
+
+  /// Number of created timer_handle objects that are currently running.
   size_t nof_timers_running = 0;
 
-  /// Number of created timer_impl objects that can be reused.
-  size_t nof_free_timers = 0;
-
-  /// List of created timer_impl objects.
-  /// Note: Using a deque to maintain reference validity on emplace_back. Also, this deque will only grow.
+  /// \brief List of timer_handle objects currently being managed by the timer_manager class. The index of the element
+  /// in this container matches the id of the corresponding unique_timer object.
+  /// This container will only grow in size. "Deleted" unique_timers in the front-end side are just tagged as empty
+  /// in their respective timer_handle, in the back-end side. This allows already created timer_handle objects to be
+  /// reused for the creation of new unique_timers in the front-end. The fact that the timer_handle is not deleted
+  /// also avoids potential dangling pointer when the timer expiry callback is dispatched to the front-end execution
+  /// context.
+  /// Note: we use a deque to maintain reference validity.
   std::deque<timer_handle> timer_list;
 
-  /// Free list of timer_impl objects in timer_list.
-  srsran::intrusive_forward_list<timer_handle> free_list;
+  /// List of timer_handle objects in timer_list that are currently not allocated.
+  mutable std::mutex           free_list_mutex;
+  unsigned                     next_timer_id = 0;
+  std::vector<timer_frontend*> free_list;
 
-  /// Timer wheel, which is circularly indexed via a running timer timeout. Collisions are resolved via an intrusive
-  /// list in timer_impl.
-  std::vector<srsran::intrusive_double_linked_list<timer_handle>> time_wheel;
+  /// \brief Timer wheel, which is circularly indexed via a running timer timeout. Collisions are resolved via an
+  /// intrusive linked list stored in the timer_handle objects.
+  /// For a number of running timers N, and uniform distribution of timeout values, the tick() complexity
+  /// should be O(N/WHEEL_SIZE). Thus, the performance should improve with a larger WHEEL_SIZE, at the expense of more
+  /// used memory.
+  std::vector<intrusive_double_linked_list<timer_handle>> time_wheel;
 
-  /// Protects the addition/modification/removal of timers in timer_manager.
-  mutable std::mutex mutex;
+  /// \brief This is a list of timers that already timeouted, but for some unforeseen reason,
+  /// it was not possible to dispatch their respective timeout handling to the timer front-end.
+  /// The timeout handling will be re-triggered in the next slot.
+  std::deque<std::pair<timer_id_t, cmd_id_t>> failed_to_trigger_timers;
+
+  /// Commands sent by the timer front-end to the backend.
+  std::mutex                                                   cmd_mutex;
+  std::vector<variant<cmd_t, std::unique_ptr<timer_frontend>>> pending_cmds, cmds_to_process;
 };
 
-/// This class represents a timer which invokes a user-provided callback upon timer expiration.
+/// \brief This class represents a timer which invokes a user-provided callback upon timer expiration. To setup a
+/// timer session it needs to connect to a \c timer_manager class.
+/// This class is not thread-safe.
 class unique_timer
 {
-  static constexpr auto INVALID_TIMER_ID = std::numeric_limits<timer_id_t>::max();
-
-  timer_manager::timer_handle* handle = nullptr;
+  using state_t = timer_manager::state_t;
 
 public:
-  unique_timer() = default;
-  explicit unique_timer(timer_manager::timer_handle* pimpl) : handle(pimpl) {}
-
+  unique_timer()                               = default;
   unique_timer(const unique_timer&)            = delete;
   unique_timer& operator=(const unique_timer&) = delete;
 
-  unique_timer(unique_timer&& other) noexcept : handle(other.handle) { other.handle = nullptr; }
+  unique_timer(unique_timer&& other) noexcept : handle(std::exchange(other.handle, nullptr)) {}
   unique_timer& operator=(unique_timer&& other) noexcept
   {
-    if (this != &other) {
-      handle       = other.handle;
-      other.handle = nullptr;
-    }
+    reset();
+    handle = std::exchange(other.handle, nullptr);
     return *this;
   }
+  ~unique_timer() { reset(); }
 
-  ~unique_timer()
+  /// Destroy current unique_timer context, cancelling any pending event.
+  void reset()
   {
     if (is_valid()) {
       handle->destroy();
@@ -299,32 +251,29 @@ public:
   bool is_valid() const { return handle != nullptr; }
 
   /// Returns the unique timer identifier.
-  timer_id_t id() const { return is_valid() ? handle->id : INVALID_TIMER_ID; }
+  timer_id_t id() const { return is_valid() ? handle->id : timer_id_t::invalid; }
 
   /// Returns true if the timer duration has been set, otherwise returns false.
-  bool is_set() const { return is_valid() && handle->is_set(); }
+  bool is_set() const { return is_valid() && handle->duration != timer_manager::INVALID_DURATION; }
 
   /// Returns true if the timer is currently running, otherwise returns false.
-  bool is_running() const { return is_valid() && handle->is_running(); }
+  bool is_running() const { return is_valid() && handle->state == timer_manager::state_t::running; }
 
   /// Returns true if the timer has expired, otherwise returns false.
-  bool has_expired() const { return is_valid() && handle->has_expired(); }
-
-  /// Returns the elapsed time in ticks.
-  timer_tick_difference_t time_elapsed() const { return is_valid() ? handle->time_elapsed() : 0; }
+  bool has_expired() const { return is_valid() && handle->state == timer_manager::state_t::expired; }
 
   /// Returns the configured duration for this timer measured in ticks.
-  timer_tick_difference_t duration() const { return is_valid() ? handle->duration() : 0; }
+  timer_duration duration() const { return is_valid() ? handle->duration : timer_manager::INVALID_DURATION; }
 
   /// Configures the duration of the timer calling the provided callback upon timer expiration.
-  void set(timer_tick_difference_t duration, unique_function<void(timer_id_t)> callback)
+  void set(timer_duration duration, unique_function<void(timer_id_t)> callback)
   {
     srsran_assert(is_valid(), "Trying to setup empty timer pimpl");
     handle->set(duration, std::move(callback));
   }
 
   /// Configures the duration of the timer.
-  void set(timer_tick_difference_t duration)
+  void set(timer_duration duration)
   {
     srsran_assert(is_valid(), "Trying to setup empty timer pimpl");
     handle->set(duration);
@@ -340,10 +289,34 @@ public:
   /// Stops the timer from ticking.
   void stop()
   {
-    if (is_valid()) {
+    if (is_running()) {
       handle->stop();
     }
   }
+
+private:
+  friend class timer_manager;
+
+  explicit unique_timer(timer_manager::timer_frontend& impl) : handle(&impl) {}
+
+  timer_manager::timer_frontend* handle = nullptr;
+};
+
+/// \brief Factory of timers that associates created timers to specific task executors.
+class timer_factory
+{
+public:
+  timer_factory() = default;
+  timer_factory(timer_manager& timer_mng_, task_executor& timer_exec_) :
+    timer_mng(&timer_mng_), timer_exec(&timer_exec_)
+  {
+  }
+
+  unique_timer create_timer() { return timer_mng->create_unique_timer(*timer_exec); }
+
+private:
+  timer_manager* timer_mng  = nullptr;
+  task_executor* timer_exec = nullptr;
 };
 
 } // namespace srsran

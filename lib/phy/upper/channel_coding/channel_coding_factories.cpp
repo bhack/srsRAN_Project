@@ -21,9 +21,10 @@
  */
 
 #include "srsran/phy/upper/channel_coding/channel_coding_factories.h"
+#include "crc_calculator_generic_impl.h"
 #include "crc_calculator_lut_impl.h"
-#include "ldpc/ldpc_decoder_impl.h"
-#include "ldpc/ldpc_encoder_impl.h"
+#include "ldpc/ldpc_decoder_generic.h"
+#include "ldpc/ldpc_encoder_generic.h"
 #include "ldpc/ldpc_rate_dematcher_impl.h"
 #include "ldpc/ldpc_rate_matcher_impl.h"
 #include "ldpc/ldpc_segmenter_impl.h"
@@ -38,26 +39,20 @@
 #include "short/short_block_detector_impl.h"
 #include "srsran/support/cpu_features.h"
 
-#ifdef __AVX2__
-#include "ldpc/ldpc_decoder_avx2.h"
-#include "ldpc/ldpc_encoder_avx2.h"
-#endif // __AVX2__
-
-#ifdef HAVE_AVX512
-#include "ldpc/ldpc_decoder_avx512.h"
-#endif // HAVE_AVX512
-
 #ifdef __x86_64__
 #include "crc_calculator_clmul_impl.h"
+#include "ldpc/ldpc_decoder_avx2.h"
+#include "ldpc/ldpc_decoder_avx512.h"
+#include "ldpc/ldpc_encoder_avx2.h"
 #include "ldpc/ldpc_rate_dematcher_avx2_impl.h"
 #include "ldpc/ldpc_rate_dematcher_avx512_impl.h"
 #endif // __x86_64__
 
-#ifdef HAVE_NEON
+#ifdef __ARM_NEON
 #include "ldpc/ldpc_decoder_neon.h"
 #include "ldpc/ldpc_encoder_neon.h"
 #include "ldpc/ldpc_rate_dematcher_neon_impl.h"
-#endif // HAVE_NEON
+#endif // __ARM_NEON
 
 using namespace srsran;
 
@@ -70,6 +65,11 @@ public:
 
   std::unique_ptr<crc_calculator> create(crc_generator_poly poly) override
   {
+    // Use generic factory if the order is 6 bits or explicitly set to generic.
+    if ((poly == crc_generator_poly::CRC6) || (type == "generic")) {
+      return std::make_unique<crc_calculator_generic_impl>(poly);
+    }
+
 #ifdef __x86_64__
     bool supports_clmul = cpu_supports_feature(cpu_feature::pclmul) && cpu_supports_feature(cpu_feature::sse4_1);
 
@@ -99,21 +99,24 @@ public:
 
   std::unique_ptr<ldpc_decoder> create() override
   {
-#ifdef HAVE_NEON
-    if ((dec_type == "neon") || (dec_type == "auto")) {
-      return std::make_unique<ldpc_decoder_neon>();
-    }
-#endif // HAVE_NEON
-#ifdef HAVE_AVX512
-    if ((dec_type == "auto") || (dec_type == "avx512")) {
+#ifdef __x86_64__
+    bool supports_avx2   = cpu_supports_feature(cpu_feature::avx2);
+    bool supports_avx512 = cpu_supports_feature(cpu_feature::avx512f) && cpu_supports_feature(cpu_feature::avx512bw);
+
+    if (((dec_type == "avx512") || (dec_type == "auto")) && supports_avx512) {
       return std::make_unique<ldpc_decoder_avx512>();
     }
-#endif // HAVE_AVX512
-#ifdef HAVE_AVX2
-    if ((dec_type == "auto") || (dec_type == "avx2")) {
+    if (((dec_type == "avx2") || (dec_type == "auto")) && supports_avx2) {
       return std::make_unique<ldpc_decoder_avx2>();
     }
-#endif // HAVE_AVX2
+#endif // __x86_64__
+#ifdef __aarch64__
+    bool support_neon = cpu_supports_feature(cpu_feature::neon);
+
+    if (((dec_type == "neon") || (dec_type == "auto")) && support_neon) {
+      return std::make_unique<ldpc_decoder_neon>();
+    }
+#endif // __aarch64__
     if ((dec_type == "auto") || (dec_type == "generic")) {
       return std::make_unique<ldpc_decoder_generic>();
     }
@@ -131,16 +134,20 @@ public:
 
   std::unique_ptr<ldpc_encoder> create() override
   {
-#ifdef HAVE_AVX2
-    if ((enc_type == "avx2") || (enc_type == "auto")) {
+#ifdef __x86_64__
+    bool supports_avx2 = cpu_supports_feature(cpu_feature::avx2);
+
+    if (((enc_type == "avx2") || (enc_type == "auto")) && supports_avx2) {
       return std::make_unique<ldpc_encoder_avx2>();
     }
-#endif // HAVE_AVX2
-#ifdef HAVE_NEON
-    if ((enc_type == "neon") || (enc_type == "auto")) {
+#endif // __x86_64__
+#ifdef __aarch64__
+    bool supports_neon = cpu_supports_feature(cpu_feature::neon);
+
+    if (((enc_type == "neon") || (enc_type == "auto")) && supports_neon) {
       return std::make_unique<ldpc_encoder_neon>();
     }
-#endif // HAVE_NEON
+#endif // __aarch64__
     if ((enc_type == "generic") || (enc_type == "auto")) {
       return std::make_unique<ldpc_encoder_generic>();
     }
@@ -169,11 +176,13 @@ public:
       return std::make_unique<ldpc_rate_dematcher_avx2_impl>();
     }
 #endif // __x86_64__
-#ifdef HAVE_NEON
-    if ((dematcher_type == "neon") || (dematcher_type == "auto")) {
+#ifdef __aarch64__
+    bool supports_neon = cpu_supports_feature(cpu_feature::neon);
+
+    if (((dematcher_type == "neon") || (dematcher_type == "auto")) && supports_neon) {
       return std::make_unique<ldpc_rate_dematcher_neon_impl>();
     }
-#endif // HAVE_NEON
+#endif // __aarch64__
     if ((dematcher_type == "generic") || (dematcher_type == "auto")) {
       return std::make_unique<ldpc_rate_dematcher_impl>();
     }

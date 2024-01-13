@@ -25,7 +25,7 @@
 #include "srsran/adt/byte_buffer.h"
 #include "srsran/gateways/sctp_network_gateway.h"
 #include "srsran/ngap/ngap.h"
-#include "srsran/pcap/pcap.h"
+#include "srsran/pcap/dlt_pcap.h"
 #include "srsran/srslog/srslog.h"
 #include <cstdio>
 
@@ -34,7 +34,7 @@ namespace srsran {
 class ngap_asn1_packer : public srs_cu_cp::ngap_message_handler
 {
 public:
-  ngap_asn1_packer(sctp_network_gateway_data_handler& gw, ngap_message_handler& ngap, ngap_pcap& pcap_);
+  ngap_asn1_packer(sctp_network_gateway_data_handler& gw, ngap_message_handler& ngap, dlt_pcap& pcap_);
 
   void handle_packed_pdu(const byte_buffer& pdu);
 
@@ -44,7 +44,7 @@ private:
   srslog::basic_logger&              logger;
   sctp_network_gateway_data_handler& gw;
   ngap_message_handler&              ngap;
-  ngap_pcap&                         pcap;
+  dlt_pcap&                          pcap;
 };
 
 } // namespace srsran

@@ -28,15 +28,15 @@ using namespace srsran;
 using namespace fapi_adaptor;
 using namespace unittests;
 
-TEST(ULPRACHPDUTest, ValidPRACHShouldPass)
+TEST(mac_fapi_ul_prach_pdu_conversor_test, valid_prach_pdu_should_pass)
 {
   const prach_occasion_info& mac_pdu = build_valid_prach_occassion();
   fapi::ul_prach_pdu         fapi_pdu;
 
   convert_prach_mac_to_fapi(fapi_pdu, mac_pdu);
 
-  ASSERT_EQ(static_cast<unsigned>(fapi::prach_format_type::one), static_cast<unsigned>(fapi_pdu.prach_format));
-  ASSERT_EQ(mac_pdu.format.is_long_preamble() ? 1 : mac_pdu.nof_prach_occasions, fapi_pdu.num_prach_ocas);
+  ASSERT_EQ(static_cast<unsigned>(prach_format_type::one), static_cast<unsigned>(fapi_pdu.prach_format));
+  ASSERT_EQ(is_long_preamble(mac_pdu.format) ? 1 : mac_pdu.nof_prach_occasions, fapi_pdu.num_prach_ocas);
   ASSERT_EQ(mac_pdu.index_fd_ra, fapi_pdu.index_fd_ra);
   ASSERT_EQ(mac_pdu.pci, fapi_pdu.phys_cell_id);
   ASSERT_EQ(mac_pdu.nof_fd_ra, fapi_pdu.maintenance_v3.num_fd_ra);

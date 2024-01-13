@@ -27,8 +27,14 @@ using namespace srsran;
 radio_session_zmq_impl::radio_session_zmq_impl(const radio_configuration::radio& config,
                                                task_executor&                    async_task_executor,
                                                radio_notification_handler&       notifier) :
-  logger(srslog::fetch_basic_logger("RF", false)), notification_handler(notifier)
+  logger(srslog::fetch_basic_logger("RF", false))
 {
+  // Make sure the number of streams are equal.
+  srsran_assert(config.tx_streams.size() == config.rx_streams.size(),
+                "The number of transmit streams (i.e., {}) must be equal to the number of receive streams (i.e., {}).",
+                config.tx_streams.size(),
+                config.rx_streams.size());
+
   // Make ZMQ context.
   zmq_context = zmq_ctx_new();
   if (zmq_context == nullptr) {
@@ -36,56 +42,55 @@ radio_session_zmq_impl::radio_session_zmq_impl(const radio_configuration::radio&
     return;
   }
 
-  // For each Tx stream.
-  for (unsigned stream_id = 0; stream_id != config.tx_streams.size(); ++stream_id) {
-    const radio_configuration::stream& radio_stream_config = config.tx_streams[stream_id];
+  unsigned nof_streams = config.tx_streams.size();
 
-    // Prepare transmit stream configuration.
-    radio_zmq_tx_stream::stream_description stream_config;
-    stream_config.socket_type = ZMQ_REP;
-    for (unsigned channel_id = 0; channel_id != config.tx_streams.size(); ++channel_id) {
-      stream_config.address.push_back(radio_stream_config.channels[channel_id].args);
-    }
-    stream_config.stream_id         = stream_id;
-    stream_config.stream_id_str     = "zmq:tx:" + std::to_string(stream_id);
-    stream_config.log_level         = config.log_level;
-    stream_config.trx_timeout_ms    = DEFAULT_TRX_TIMEOUT_MS;
-    stream_config.linger_timeout_ms = DEFAULT_LINGER_TIMEOUT_MS;
-    stream_config.buffer_size       = DEFAULT_BUFFER_SIZE_SAMPLES;
+  // Debug log level is only available if verbose keyword is in the device arguments.
+  bool allow_log_level_debug = (config.args.find("verbose") != std::string::npos);
 
-    // Create stream.
-    tx_streams.push_back(
-        std::make_unique<radio_zmq_tx_stream>(zmq_context, stream_config, async_task_executor, notifier));
-
-    // Check is the stream was created successfully.
-    if (!tx_streams.back()->is_successful()) {
-      return;
-    }
+  // ZMQ logging in debug is extremely verbose. The following lines avoid debug level unless set to paranoid.
+  srslog::basic_levels log_level = srslog::str_to_basic_level(config.log_level);
+  if (!allow_log_level_debug && (log_level >= srslog::basic_levels::debug)) {
+    log_level = srslog::basic_levels::info;
   }
 
-  // For each Rx stream.
-  for (unsigned stream_id = 0; stream_id != config.rx_streams.size(); ++stream_id) {
-    const radio_configuration::stream& radio_stream_config = config.rx_streams[stream_id];
+  // Iterate for each transmission and reception stream.
+  for (unsigned stream_id = 0; stream_id != nof_streams; ++stream_id) {
+    const radio_configuration::stream& tx_radio_stream_config = config.tx_streams[stream_id];
 
     // Prepare transmit stream configuration.
-    radio_zmq_rx_stream::stream_description stream_config;
-    stream_config.socket_type = ZMQ_REQ;
-    for (unsigned channel_id = 0; channel_id != config.rx_streams.size(); ++channel_id) {
-      stream_config.address.push_back(radio_stream_config.channels[channel_id].args);
+    radio_zmq_tx_stream::stream_description tx_stream_config;
+    tx_stream_config.socket_type = ZMQ_REP;
+    for (unsigned channel_id = 0; channel_id != tx_radio_stream_config.channels.size(); ++channel_id) {
+      tx_stream_config.address.push_back(tx_radio_stream_config.channels[channel_id].args);
     }
-    stream_config.stream_id         = stream_id;
-    stream_config.stream_id_str     = "zmq:rx:" + std::to_string(stream_id);
-    stream_config.log_level         = config.log_level;
-    stream_config.trx_timeout_ms    = DEFAULT_TRX_TIMEOUT_MS;
-    stream_config.linger_timeout_ms = DEFAULT_LINGER_TIMEOUT_MS;
-    stream_config.buffer_size       = DEFAULT_BUFFER_SIZE_SAMPLES;
+    tx_stream_config.stream_id         = stream_id;
+    tx_stream_config.stream_id_str     = "zmq:tx:" + std::to_string(stream_id);
+    tx_stream_config.log_level         = log_level;
+    tx_stream_config.trx_timeout_ms    = DEFAULT_TRX_TIMEOUT_MS;
+    tx_stream_config.linger_timeout_ms = DEFAULT_LINGER_TIMEOUT_MS;
+    tx_stream_config.buffer_size       = DEFAULT_STREAM_BUFFER_SIZE;
 
-    // Create stream.
-    rx_streams.push_back(
-        std::make_unique<radio_zmq_rx_stream>(zmq_context, stream_config, async_task_executor, notifier));
+    const radio_configuration::stream& rx_radio_stream_config = config.rx_streams[stream_id];
 
-    // Check is the stream was created successfully.
-    if (!rx_streams.back()->is_successful()) {
+    // Prepare transmit stream configuration.
+    radio_zmq_rx_stream::stream_description rx_stream_config;
+    rx_stream_config.socket_type = ZMQ_REQ;
+    for (unsigned channel_id = 0; channel_id != rx_radio_stream_config.channels.size(); ++channel_id) {
+      rx_stream_config.address.push_back(rx_radio_stream_config.channels[channel_id].args);
+    }
+    rx_stream_config.stream_id         = stream_id;
+    rx_stream_config.stream_id_str     = "zmq:rx:" + std::to_string(stream_id);
+    rx_stream_config.log_level         = log_level;
+    rx_stream_config.trx_timeout_ms    = DEFAULT_TRX_TIMEOUT_MS;
+    rx_stream_config.linger_timeout_ms = DEFAULT_LINGER_TIMEOUT_MS;
+    rx_stream_config.buffer_size       = DEFAULT_STREAM_BUFFER_SIZE;
+
+    // Create baseband gateway.
+    bb_gateways.emplace_back(std::make_unique<radio_zmq_baseband_gateway>(
+        zmq_context, async_task_executor, notifier, tx_stream_config, rx_stream_config));
+
+    // Make sure streams are created successfully.
+    if (!bb_gateways.back()->get_tx_stream().is_successful() || !bb_gateways.back()->get_rx_stream().is_successful()) {
       return;
     }
   }
@@ -96,8 +101,7 @@ radio_session_zmq_impl::radio_session_zmq_impl(const radio_configuration::radio&
 radio_session_zmq_impl::~radio_session_zmq_impl()
 {
   // Destroy transmit and receive streams prior to ZMQ context destruction.
-  tx_streams.clear();
-  rx_streams.clear();
+  bb_gateways.clear();
 
   // Destroy ZMQ context.
   if (zmq_context != nullptr) {
@@ -110,74 +114,20 @@ radio_session_zmq_impl::~radio_session_zmq_impl()
 void radio_session_zmq_impl::stop()
 {
   // Signal stop for each transmit stream.
-  for (auto& stream : tx_streams) {
-    stream->stop();
+  for (auto& gateway : bb_gateways) {
+    gateway->get_tx_stream().stop();
   }
 
   // Signal stop for each receive stream.
-  for (auto& stream : rx_streams) {
-    stream->stop();
+  for (auto& gateway : bb_gateways) {
+    gateway->get_rx_stream().stop();
   }
 
-  // Wait for transmitter streams to join.
-  for (auto& stream : tx_streams) {
-    stream->wait_stop();
+  // Wait for streams to join.
+  for (auto& gateway : bb_gateways) {
+    gateway->get_tx_stream().wait_stop();
+    gateway->get_rx_stream().wait_stop();
   }
-  for (auto& stream : rx_streams) {
-    stream->wait_stop();
-  }
-}
-
-void radio_session_zmq_impl::transmit(unsigned                                      stream_id,
-                                      const baseband_gateway_transmitter::metadata& metadata,
-                                      baseband_gateway_buffer&                      data)
-{
-  report_fatal_error_if_not(stream_id < tx_streams.size(),
-                            "Stream identifier ({}) exceeds the number of transmit streams ({})",
-                            stream_id,
-                            tx_streams.size());
-
-  // Align stream to the new timestamp.
-  bool timestamp_passed = tx_streams[stream_id]->align(metadata.ts);
-
-  // Notify that a timestamp is late.
-  if (timestamp_passed) {
-    radio_notification_handler::event_description event_description;
-    event_description.stream_id  = radio_notification_handler::UNKNOWN_ID;
-    event_description.channel_id = radio_notification_handler::UNKNOWN_ID;
-    event_description.source     = radio_notification_handler::event_source::TRANSMIT;
-    event_description.type       = radio_notification_handler::event_type::LATE;
-    notification_handler.on_radio_rt_event(event_description);
-    return;
-  }
-
-  // Actual transmission.
-  tx_streams[stream_id]->transmit(data);
-}
-
-baseband_gateway_receiver::metadata radio_session_zmq_impl::receive(baseband_gateway_buffer& data, unsigned stream_id)
-{
-  report_fatal_error_if_not(stream_id < rx_streams.size(),
-                            "Stream identifier ({}) exceeds the number of receive streams ({})",
-                            stream_id,
-                            rx_streams.size());
-
-  // Prepare return metadata.
-  baseband_gateway_receiver::metadata ret;
-  ret.ts = rx_streams[stream_id]->get_sample_count();
-
-  // Calculate transmit timestamp that has already expired.
-  uint64_t passed_timestamp = ret.ts + data.get_nof_samples();
-
-  // Align all transmit timestamps.
-  for (auto& tx_stream : tx_streams) {
-    tx_stream->align(passed_timestamp);
-  }
-
-  // Actual reception.
-  rx_streams[stream_id]->receive(data);
-
-  return ret;
 }
 
 bool radio_session_zmq_impl::set_tx_gain(unsigned port_id, double gain_dB)
@@ -188,4 +138,19 @@ bool radio_session_zmq_impl::set_tx_gain(unsigned port_id, double gain_dB)
 bool radio_session_zmq_impl::set_rx_gain(unsigned port_id, double gain_dB)
 {
   return false;
+}
+
+void radio_session_zmq_impl::start(baseband_gateway_timestamp start_time)
+{
+  for (auto& gateway : bb_gateways) {
+    gateway->get_rx_stream().start(start_time);
+  }
+  for (auto& gateway : bb_gateways) {
+    gateway->get_tx_stream().start(start_time);
+  }
+}
+
+baseband_gateway_timestamp radio_session_zmq_impl::read_current_time()
+{
+  return 0;
 }

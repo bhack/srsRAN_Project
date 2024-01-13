@@ -21,24 +21,32 @@
  */
 
 #include "rlc_rx_am_entity.h"
+#include "../support/sdu_window_impl.h"
 #include "srsran/adt/scope_exit.h"
+#include "srsran/instrumentation/traces/up_traces.h"
 
 using namespace srsran;
 
-rlc_rx_am_entity::rlc_rx_am_entity(du_ue_index_t                     du_index,
+rlc_rx_am_entity::rlc_rx_am_entity(uint32_t                          du_index,
+                                   du_ue_index_t                     ue_index,
                                    rb_id_t                           rb_id,
                                    const rlc_rx_am_config&           config,
                                    rlc_rx_upper_layer_data_notifier& upper_dn_,
-                                   timer_manager&                    timers,
-                                   task_executor&                    ue_executor) :
-  rlc_rx_entity(du_index, rb_id, upper_dn_),
+                                   timer_factory                     timers,
+                                   task_executor&                    ue_executor_,
+                                   rlc_pcap&                         pcap_) :
+  rlc_rx_entity(du_index, ue_index, rb_id, upper_dn_, pcap_),
   cfg(config),
   mod(cardinality(to_number(cfg.sn_field_length))),
   am_window_size(window_size(to_number(cfg.sn_field_length))),
   rx_window(create_rx_window(cfg.sn_field_length)),
-  status_report(cfg.sn_field_length),
-  status_prohibit_timer(timers.create_unique_timer()),
-  reassembly_timer(timers.create_unique_timer())
+  status_buf({rlc_am_status_pdu(cfg.sn_field_length),
+              rlc_am_status_pdu(cfg.sn_field_length),
+              rlc_am_status_pdu(cfg.sn_field_length)}),
+  status_prohibit_timer(timers.create_timer()),
+  reassembly_timer(timers.create_timer()),
+  ue_executor(ue_executor_),
+  pcap_context(ue_index, rb_id, config)
 {
   metrics.metrics_set_mode(rlc_mode::am);
 
@@ -49,19 +57,31 @@ rlc_rx_am_entity::rlc_rx_am_entity(du_ue_index_t                     du_index,
 
   // configure status_prohibit_timer
   if (cfg.t_status_prohibit > 0) {
-    status_prohibit_timer.set(static_cast<uint32_t>(cfg.t_status_prohibit),
-                              [this](uint32_t tid) { on_expired_status_prohibit_timer(tid); });
+    status_prohibit_timer.set(std::chrono::milliseconds{cfg.t_status_prohibit},
+                              [this](timer_id_t tid) { on_expired_status_prohibit_timer(); });
   }
 
   // configure reassembly_timer
   if (cfg.t_reassembly > 0) {
-    reassembly_timer.set(static_cast<uint32_t>(cfg.t_reassembly), [this, &ue_executor](uint32_t tid) {
-      ue_executor.execute([this, tid]() { on_expired_reassembly_timer(tid); });
-    });
+    reassembly_timer.set(std::chrono::milliseconds{cfg.t_reassembly},
+                         [this](timer_id_t tid) { on_expired_reassembly_timer(); });
+  }
+
+  // configure status report limits
+  if (cfg.max_sn_per_status.has_value()) {
+    uint32_t max_sn_per_status = cfg.max_sn_per_status.value();
+    srsran_assert(max_sn_per_status <= window_size(to_number(cfg.sn_field_length)),
+                  "Cannot create RLC RX AM, max_sn_per_status exceeds window_size. {}",
+                  cfg);
+    srsran_assert(max_sn_per_status > 0, "Cannot create RLC RX AM, max_sn_per_status must not be zero. {}", cfg);
+    max_nof_sn_per_status_report = max_sn_per_status;
+  } else {
+    max_nof_sn_per_status_report = window_size(to_number(cfg.sn_field_length));
   }
 
   // initialize status report
-  status_report.ack_sn = st.rx_next_highest;
+  status_cached->ack_sn = st.rx_next_highest;
+  status_report_size.store(status_cached->get_packed_size(), std::memory_order_relaxed);
 
   logger.log_info("RLC AM configured. {}", cfg);
 }
@@ -69,13 +89,22 @@ rlc_rx_am_entity::rlc_rx_am_entity(du_ue_index_t                     du_index,
 // Interfaces for lower layers
 void rlc_rx_am_entity::handle_pdu(byte_buffer_slice buf)
 {
+  trace_point rx_tp = up_tracer.now();
   metrics.metrics_add_pdus(1, buf.length());
-  metrics.metrics_add_sdus(1, buf.length());
+  if (buf.empty()) {
+    logger.log_warning("Dropped empty PDU.");
+    return;
+  }
+
+  pcap.push_pdu(pcap_context, buf);
+
   if (rlc_am_status_pdu::is_control_pdu(buf.view())) {
+    metrics.metrics_add_ctrl_pdus(1, buf.length());
     handle_control_pdu(std::move(buf));
   } else {
     handle_data_pdu(std::move(buf));
   }
+  up_tracer << trace_event{"rlc_rx_pdu", rx_tp};
 }
 
 void rlc_rx_am_entity::handle_control_pdu(byte_buffer_slice buf)
@@ -116,9 +145,14 @@ void rlc_rx_am_entity::handle_data_pdu(byte_buffer_slice buf)
   }
   logger.log_info(buf.begin(), buf.end(), "RX PDU. pdu_len={} {}", buf.length(), header);
 
+  // length check: there must be at least one payload byte
+  size_t header_len = header.get_packed_size();
+  if (buf.length() <= header_len) {
+    logger.log_warning("Dropped malformed PDU without payload. pdu_len={} header_len={}", buf.length(), header_len);
+    return;
+  }
   // strip header, extract payload
-  size_t            header_len = header.get_packed_size();
-  byte_buffer_slice payload    = buf.make_slice(header_len, buf.length() - header_len);
+  byte_buffer_slice payload = buf.make_slice(header_len, buf.length() - header_len);
 
   // Store the poll bit for later evaluation on_function_exit.
   // We do this before checking if the PDU is inside the RX window,
@@ -335,7 +369,7 @@ bool rlc_rx_am_entity::handle_segment_data_sdu(const rlc_am_pdu_header& header, 
     // Assemble SDU from segments
     for (const rlc_rx_am_sdu_segment& segm : rx_sdu.segments) {
       logger.log_debug("Chaining segment. so={} len={}", segm.so, segm.payload.length());
-      rx_sdu.sdu.push_back(segm.payload.copy());
+      rx_sdu.sdu.append(segm.payload.copy());
     }
     rx_sdu.segments.clear();
     logger.log_debug("Assembled SDU from segments. sn={} sdu_len={}", header.sn, rx_sdu.sdu.length());
@@ -452,16 +486,21 @@ void rlc_rx_am_entity::update_segment_inventory(rlc_rx_am_sdu_info& rx_sdu) cons
 
 void rlc_rx_am_entity::refresh_status_report()
 {
-  std::unique_lock<std::mutex> lock(status_report_mutex);
-  status_report.reset();
+  status_builder->reset();
   /*
    * - for the RLC SDUs with SN such that RX_Next <= SN < RX_Highest_Status that has not been completely
    *   received yet, in increasing SN order of RLC SDUs and increasing byte segment order within RLC SDUs,
    *   starting with SN = RX_Next up to the point where the resulting STATUS PDU still fits to the total size of RLC
    *   PDU(s) indicated by lower layer:
    */
-  logger.log_debug("Generating status PDU. rx_next={} rx_highest_status={}", st.rx_next, st.rx_highest_status);
-  for (uint32_t i = st.rx_next; rx_mod_base(i) < rx_mod_base(st.rx_highest_status); i = (i + 1) % mod) {
+  uint32_t stop_sn = st.rx_highest_status;
+  // Restrict execution time by limiting the number of visited SNs in the RX window
+  if (rx_mod_base(st.rx_highest_status) > rx_mod_base((st.rx_next + max_nof_sn_per_status_report) % mod)) {
+    stop_sn = (st.rx_next + max_nof_sn_per_status_report) % mod;
+  }
+  logger.log_debug(
+      "Generating status PDU. rx_next={} rx_highest_status={} stop_sn={}", st.rx_next, st.rx_highest_status, stop_sn);
+  for (uint32_t i = st.rx_next; rx_mod_base(i) < rx_mod_base(stop_sn); i = (i + 1) % mod) {
     if ((rx_window->has_sn(i) && (*rx_window)[i].fully_received)) {
       logger.log_debug("SDU complete. sn={}", i);
     } else {
@@ -471,7 +510,7 @@ void rlc_rx_am_entity::refresh_status_report()
         nack.nack_sn = i;
         nack.has_so  = false;
         logger.log_debug("Adding nack={}.", nack);
-        status_report.push_nack(nack);
+        status_builder->push_nack(nack);
       } else if (not(*rx_window)[i].fully_received) {
         // Some segments were received, but not all.
         // NACK non consecutive missing bytes
@@ -486,7 +525,7 @@ void rlc_rx_am_entity::refresh_status_report()
             nack.so_start = last_so;
             nack.so_end   = segm->so - 1; // set to last missing byte
             logger.log_debug("Adding nack={}.", nack);
-            status_report.push_nack(nack);
+            status_builder->push_nack(nack);
 
             // Sanity check
             if (nack.so_start > nack.so_end) {
@@ -516,7 +555,7 @@ void rlc_rx_am_entity::refresh_status_report()
           nack.so_start = last_so;
           nack.so_end   = rlc_am_status_nack::so_end_of_sdu;
           logger.log_debug("Adding nack={}.", nack);
-          status_report.push_nack(nack);
+          status_builder->push_nack(nack);
           // Sanity check
           srsran_assert(nack.so_start <= nack.so_end, "Invalid segment offsets in nack={}.", nack);
         }
@@ -528,29 +567,41 @@ void rlc_rx_am_entity::refresh_status_report()
    * - set the ACK_SN to the SN of the next not received RLC SDU which is not
    * indicated as missing in the resulting STATUS PDU.
    */
-  status_report.ack_sn = st.rx_highest_status;
-  logger.log_debug("Refreshed status_report. {}", status_report);
+  status_builder->ack_sn = stop_sn;
+  logger.log_debug("Refreshed status_report. {}", *status_builder);
+  store_status_report();
 }
 
-rlc_am_status_pdu rlc_rx_am_entity::get_status_pdu()
+void rlc_rx_am_entity::store_status_report()
+{
+  std::unique_lock<std::mutex> lock(status_report_mutex);
+  std::swap(status_builder, status_cached);
+  status_report_size.store(status_cached->get_packed_size(), std::memory_order_relaxed);
+}
+
+rlc_am_status_pdu& rlc_rx_am_entity::get_status_pdu()
 {
   do_status.store(false, std::memory_order_relaxed);
   if (status_prohibit_timer.is_valid() && cfg.t_status_prohibit > 0) {
-    status_prohibit_timer.run();
+    if (not ue_executor.defer([&]() { status_prohibit_timer.run(); })) {
+      logger.log_error("Unable to start prohibit timer");
+    }
+    status_prohibit_timer_is_running.store(true, std::memory_order_relaxed);
   }
   std::unique_lock<std::mutex> lock(status_report_mutex);
-  return status_report;
+  std::swap(status_shared, status_cached);
+  return *status_shared;
 }
 
 uint32_t rlc_rx_am_entity::get_status_pdu_length()
 {
-  std::unique_lock<std::mutex> lock(status_report_mutex);
-  return status_report.get_packed_size();
+  return status_report_size.load(std::memory_order_relaxed);
 }
 
 bool rlc_rx_am_entity::status_report_required()
 {
-  return do_status.load(std::memory_order_relaxed) && not status_prohibit_timer.is_running();
+  return do_status.load(std::memory_order_relaxed) &&
+         not status_prohibit_timer_is_running.load(std::memory_order_relaxed);
 }
 
 void rlc_rx_am_entity::notify_status_report_changed()
@@ -561,19 +612,19 @@ void rlc_rx_am_entity::notify_status_report_changed()
   }
 }
 
-std::unique_ptr<rlc_am_window_base<rlc_rx_am_sdu_info>> rlc_rx_am_entity::create_rx_window(rlc_am_sn_size sn_size)
+std::unique_ptr<sdu_window<rlc_rx_am_sdu_info>> rlc_rx_am_entity::create_rx_window(rlc_am_sn_size sn_size)
 {
-  std::unique_ptr<rlc_am_window_base<rlc_rx_am_sdu_info>> rx_window_;
+  std::unique_ptr<sdu_window<rlc_rx_am_sdu_info>> rx_window_;
   switch (sn_size) {
     case rlc_am_sn_size::size12bits:
-      rx_window_ =
-          std::make_unique<rlc_am_window<rlc_rx_am_sdu_info, window_size(to_number(rlc_am_sn_size::size12bits))>>(
-              logger);
+      rx_window_ = std::make_unique<
+          sdu_window_impl<rlc_rx_am_sdu_info, window_size(to_number(rlc_am_sn_size::size12bits)), rlc_bearer_logger>>(
+          logger);
       break;
     case rlc_am_sn_size::size18bits:
-      rx_window_ =
-          std::make_unique<rlc_am_window<rlc_rx_am_sdu_info, window_size(to_number(rlc_am_sn_size::size18bits))>>(
-              logger);
+      rx_window_ = std::make_unique<
+          sdu_window_impl<rlc_rx_am_sdu_info, window_size(to_number(rlc_am_sn_size::size18bits)), rlc_bearer_logger>>(
+          logger);
       break;
     default:
       srsran_assertion_failure("Cannot create rx_window for unsupported sn_size={}.", to_number(sn_size));
@@ -585,77 +636,74 @@ std::unique_ptr<rlc_am_window_base<rlc_rx_am_sdu_info>> rlc_rx_am_entity::create
  * Timer handling functions
  */
 
-void rlc_rx_am_entity::on_expired_status_prohibit_timer(uint32_t timeout_id)
+void rlc_rx_am_entity::on_expired_status_prohibit_timer()
 {
-  if (status_prohibit_timer.is_valid() && status_prohibit_timer.id() == timeout_id) {
-    logger.log_debug("Status prohibit timer expired after {}ms.", status_prohibit_timer.duration());
-    notify_status_report_changed();
-    return;
-  }
+  logger.log_debug("Status prohibit timer expired after {}ms.", status_prohibit_timer.duration().count());
+
+  status_prohibit_timer_is_running.store(false, std::memory_order_relaxed);
+  notify_status_report_changed();
 }
 
-void rlc_rx_am_entity::on_expired_reassembly_timer(uint32_t timeout_id)
+void rlc_rx_am_entity::on_expired_reassembly_timer()
 {
   // Reassembly
-  if (reassembly_timer.is_valid() && reassembly_timer.id() == timeout_id) {
-    logger.log_debug("Reassembly timer expired after {}ms.", reassembly_timer.duration());
-    // Check if timer has been restarted by the PDU handling routine between expiration and execution of this handler.
-    if (reassembly_timer.is_running()) {
-      logger.log_info("Reassembly timer has been already restarted. Skipping outdated event. {}", st);
-      return;
-    }
-    if (not valid_ack_sn(st.rx_next_status_trigger)) {
-      logger.log_info("rx_next_status_trigger is outside RX window. Skipping outdated event. {}", st);
-      return;
-    }
-    /*
-     * 5.2.3.2.4 Actions when t-Reassembly expires:
-     * - update RX_Highest_Status to the SN of the first RLC SDU with SN >= RX_Next_Status_Trigger for which not
-     *   all bytes have been received;
-     * - if RX_Next_Highest> RX_Highest_Status +1: or
-     * - if RX_Next_Highest = RX_Highest_Status + 1 and there is at least one missing byte segment of the SDU
-     *   associated with SN = RX_Highest_Status before the last byte of all received segments of this SDU:
-     *   - start t-Reassembly;
-     *   - set RX_Next_Status_Trigger to RX_Next_Highest.
-     */
-    uint32_t sn_upd = st.rx_next_status_trigger;
-    for (; rx_mod_base(sn_upd) < rx_mod_base(st.rx_next_highest); sn_upd = (sn_upd + 1) % mod) {
-      if (not rx_window->has_sn(sn_upd) || (rx_window->has_sn(sn_upd) && not(*rx_window)[sn_upd].fully_received)) {
-        break;
-      }
-    }
-    if (not valid_ack_sn(sn_upd)) {
-      logger.log_error("Invalid rx_highest_status={} outside RX window. {}", sn_upd, st);
-    }
-    srsran_assert(valid_ack_sn(sn_upd), "Error: rx_highest_status={} outside RX window. {}", sn_upd, st);
-    st.rx_highest_status = sn_upd;
-
-    bool restart_reassembly_timer = false;
-    if (rx_mod_base(st.rx_next_highest) > rx_mod_base(st.rx_highest_status + 1)) {
-      restart_reassembly_timer = true;
-    }
-    if (rx_mod_base(st.rx_next_highest) == rx_mod_base(st.rx_highest_status + 1)) {
-      if (rx_window->has_sn(st.rx_highest_status) && (*rx_window)[st.rx_highest_status].has_gap) {
-        restart_reassembly_timer = true;
-      }
-    }
-    if (restart_reassembly_timer) {
-      reassembly_timer.run();
-      st.rx_next_status_trigger = st.rx_next_highest;
-      logger.log_debug("Restarted t-Reassmebly. {}", st);
-    }
-
-    /* 5.3.4 Status reporting:
-     * - The receiving side of an AM RLC entity shall trigger a STATUS report when t-Reassembly expires.
-     *   NOTE 2: The expiry of t-Reassembly triggers both RX_Highest_Status to be updated and a STATUS report to be
-     *   triggered, but the STATUS report shall be triggered after RX_Highest_Status is updated.
-     */
-    refresh_status_report();
-    do_status.store(true, std::memory_order_relaxed);
-    notify_status_report_changed();
-
-    log_state(srslog::basic_levels::debug);
-    logger.log_debug("RX window state: nof_sdus={}", rx_window->size());
+  logger.log_debug("Reassembly timer expired after {}ms.", reassembly_timer.duration().count());
+  // Check if timer has been restarted by the PDU handling routine between expiration and execution of this handler.
+  if (reassembly_timer.is_running()) {
+    logger.log_info("Reassembly timer has been already restarted. Skipping outdated event. {}", st);
     return;
   }
+  if (not valid_ack_sn(st.rx_next_status_trigger)) {
+    logger.log_info("rx_next_status_trigger is outside RX window. Skipping outdated event. {}", st);
+    return;
+  }
+  /*
+   * 5.2.3.2.4 Actions when t-Reassembly expires:
+   * - update RX_Highest_Status to the SN of the first RLC SDU with SN >= RX_Next_Status_Trigger for which not
+   *   all bytes have been received;
+   * - if RX_Next_Highest> RX_Highest_Status +1: or
+   * - if RX_Next_Highest = RX_Highest_Status + 1 and there is at least one missing byte segment of the SDU
+   *   associated with SN = RX_Highest_Status before the last byte of all received segments of this SDU:
+   *   - start t-Reassembly;
+   *   - set RX_Next_Status_Trigger to RX_Next_Highest.
+   */
+  uint32_t sn_upd = st.rx_next_status_trigger;
+  for (; rx_mod_base(sn_upd) < rx_mod_base(st.rx_next_highest); sn_upd = (sn_upd + 1) % mod) {
+    if (not rx_window->has_sn(sn_upd) || (rx_window->has_sn(sn_upd) && not(*rx_window)[sn_upd].fully_received)) {
+      break;
+    }
+  }
+  if (not valid_ack_sn(sn_upd)) {
+    logger.log_error("Invalid rx_highest_status={} outside RX window. {}", sn_upd, st);
+  }
+  srsran_assert(valid_ack_sn(sn_upd), "Error: rx_highest_status={} outside RX window. {}", sn_upd, st);
+  st.rx_highest_status = sn_upd;
+
+  bool restart_reassembly_timer = false;
+  if (rx_mod_base(st.rx_next_highest) > rx_mod_base(st.rx_highest_status + 1)) {
+    restart_reassembly_timer = true;
+  }
+  if (rx_mod_base(st.rx_next_highest) == rx_mod_base(st.rx_highest_status + 1)) {
+    if (rx_window->has_sn(st.rx_highest_status) && (*rx_window)[st.rx_highest_status].has_gap) {
+      restart_reassembly_timer = true;
+    }
+  }
+  if (restart_reassembly_timer) {
+    reassembly_timer.run();
+    st.rx_next_status_trigger = st.rx_next_highest;
+    logger.log_debug("Restarted t-Reassmebly. {}", st);
+  }
+
+  /* 5.3.4 Status reporting:
+   * - The receiving side of an AM RLC entity shall trigger a STATUS report when t-Reassembly expires.
+   *   NOTE 2: The expiry of t-Reassembly triggers both RX_Highest_Status to be updated and a STATUS report to be
+   *   triggered, but the STATUS report shall be triggered after RX_Highest_Status is updated.
+   */
+  refresh_status_report();
+  do_status.store(true, std::memory_order_relaxed);
+  notify_status_report_changed();
+
+  log_state(srslog::basic_levels::debug);
+  logger.log_debug("RX window state: nof_sdus={}", rx_window->size());
+  return;
 }

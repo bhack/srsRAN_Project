@@ -22,7 +22,8 @@
 
 #pragma once
 
-#include "lib/du_manager/du_ue/ue_manager_ctrl_configurator.h"
+#include "lib/du_manager/du_ue/du_ue_manager_repository.h"
+#include "srsran/du/du_cell_config_helpers.h"
 #include "srsran/du_manager/du_manager_params.h"
 #include "srsran/support/async/async_test_utils.h"
 #include "srsran/support/executors/manual_task_worker.h"
@@ -31,12 +32,34 @@
 namespace srsran {
 namespace srs_du {
 
+class dummy_teid_pool final : public gtpu_teid_pool
+{
+public:
+  SRSRAN_NODISCARD expected<gtpu_teid_t> request_teid() override
+  {
+    expected<gtpu_teid_t> ret{int_to_gtpu_teid(next_gtpu_teid)};
+    next_gtpu_teid++;
+    return ret;
+  }
+
+  SRSRAN_NODISCARD bool release_teid(gtpu_teid_t teid) override { return true; }
+
+  bool full() const override { return false; }
+
+  uint32_t get_max_teids() override { return std::numeric_limits<uint32_t>::max(); }
+
+private:
+  uint32_t next_gtpu_teid = 0;
+};
+
 class dummy_ue_executor_mapper : public du_high_ue_executor_mapper
 {
 public:
   explicit dummy_ue_executor_mapper(task_executor& exec_) : exec(exec_) {}
-  task_executor& rebind_executor(du_ue_index_t ue_index, du_cell_index_t pcell_index) override { return exec; }
-  task_executor& executor(du_ue_index_t ue_index) override { return exec; }
+  void           rebind_executors(du_ue_index_t ue_index, du_cell_index_t pcell_index) override {}
+  task_executor& ctrl_executor(du_ue_index_t ue_index) override { return exec; }
+  task_executor& f1u_dl_pdu_executor(du_ue_index_t ue_index) override { return exec; }
+  task_executor& mac_ul_pdu_executor(du_ue_index_t ue_index) override { return exec; }
 
   task_executor& exec;
 };
@@ -47,6 +70,7 @@ public:
   explicit dummy_cell_executor_mapper(task_executor& exec_) : exec(exec_) {}
   task_executor& executor(du_cell_index_t cell_index) override { return exec; }
   task_executor& slot_ind_executor(du_cell_index_t cell_index) override { return exec; }
+  task_executor& error_ind_executor(du_cell_index_t cell_index) override { return exec; }
 
   task_executor& exec;
 };
@@ -54,11 +78,13 @@ public:
 class dummy_f1c_bearer : public f1c_bearer
 {
 public:
-  byte_buffer             last_rx_pdu;
-  byte_buffer_slice_chain last_tx_sdu;
+  byte_buffer       last_rx_pdu;
+  byte_buffer_chain last_tx_sdu;
 
   void handle_pdu(byte_buffer pdu) override { last_rx_pdu = std::move(pdu); }
-  void handle_sdu(byte_buffer_slice_chain sdu) override { last_tx_sdu = std::move(sdu); }
+  void handle_sdu(byte_buffer_chain sdu) override { last_tx_sdu = std::move(sdu); }
+  void handle_transmit_notification(uint32_t highest_pdcp_sn) override {}
+  void handle_delivery_notification(uint32_t highest_pdcp_sn) override {}
 };
 
 class dummy_f1u_bearer : public f1u_bearer,
@@ -67,10 +93,10 @@ class dummy_f1u_bearer : public f1u_bearer,
                          public f1u_tx_sdu_handler
 {
 public:
-  nru_dl_message          last_msg;
-  optional<uint32_t>      last_highest_transmitted_pdcp_sn;
-  optional<uint32_t>      last_highest_delivered_pdcp_sn;
-  byte_buffer_slice_chain last_sdu;
+  nru_dl_message     last_msg;
+  optional<uint32_t> last_highest_transmitted_pdcp_sn;
+  optional<uint32_t> last_highest_delivered_pdcp_sn;
+  byte_buffer_chain  last_sdu;
 
   f1u_rx_pdu_handler&      get_rx_pdu_handler() override { return *this; }
   f1u_tx_delivery_handler& get_tx_delivery_handler() override { return *this; }
@@ -85,7 +111,7 @@ public:
   {
     last_highest_delivered_pdcp_sn = highest_pdcp_sn;
   }
-  void handle_sdu(byte_buffer_slice_chain sdu) override { last_sdu = std::move(sdu); }
+  void handle_sdu(byte_buffer_chain sdu) override { last_sdu = std::move(sdu); }
 };
 
 class f1ap_test_dummy : public f1ap_connection_manager,
@@ -105,13 +131,16 @@ public:
 
   slotted_id_table<du_ue_index_t, f1ap_ue_context, MAX_NOF_DU_UES> f1ap_ues;
 
-  wait_manual_event_tester<f1_setup_response_message>                     wait_f1_setup;
-  optional<f1ap_ue_creation_request>                                      last_ue_create{};
-  f1ap_ue_creation_response                                               next_ue_create_response;
-  optional<f1ap_ue_configuration_request>                                 last_ue_config{};
-  f1ap_ue_configuration_response                                          next_ue_config_response;
-  optional<f1ap_ue_context_release_request_message>                       last_ue_release{};
-  wait_manual_event_tester<f1ap_ue_context_modification_response_message> wait_ue_mod;
+  wait_manual_event_tester<f1_setup_response_message>            wait_f1_setup;
+  optional<f1ap_ue_creation_request>                             last_ue_create;
+  f1ap_ue_creation_response                                      next_ue_create_response;
+  optional<f1ap_ue_configuration_request>                        last_ue_config;
+  f1ap_ue_configuration_response                                 next_ue_config_response;
+  optional<du_ue_index_t>                                        last_ue_deleted;
+  optional<f1ap_ue_context_release_request>                      last_ue_release_req;
+  wait_manual_event_tester<f1ap_ue_context_modification_confirm> wait_ue_mod;
+
+  bool connect_to_cu_cp() override { return true; }
 
   async_task<f1_setup_response_message> handle_f1_setup_request(const f1_setup_request_message& request) override
   {
@@ -131,13 +160,15 @@ public:
     return next_ue_config_response;
   }
 
-  void handle_ue_context_release_request(const f1ap_ue_context_release_request_message& request) override
+  void handle_ue_deletion_request(du_ue_index_t ue_index) override { last_ue_deleted = ue_index; }
+
+  void handle_ue_context_release_request(const f1ap_ue_context_release_request& msg) override
   {
-    last_ue_release = request;
+    last_ue_release_req = msg;
   }
 
-  async_task<f1ap_ue_context_modification_response_message>
-  handle_ue_context_modification_required(const f1ap_ue_context_modification_required_message& msg) override
+  async_task<f1ap_ue_context_modification_confirm>
+  handle_ue_context_modification_required(const f1ap_ue_context_modification_required& msg) override
   {
     return wait_ue_mod.launch();
   }
@@ -162,7 +193,7 @@ public:
   optional<nru_dl_message> last_pdu;
   optional<uint32_t>       last_highest_transmitted_pdcp_sn;
   optional<uint32_t>       last_highest_delivered_pdcp_sn;
-  byte_buffer_slice_chain  last_sdu;
+  byte_buffer_chain        last_sdu;
 
   f1u_bearer_dummy(srs_du::f1u_rx_sdu_notifier& du_rx_) : du_rx(du_rx_) {}
 
@@ -179,7 +210,7 @@ public:
   {
     last_highest_delivered_pdcp_sn = highest_pdcp_sn;
   }
-  void handle_sdu(byte_buffer_slice_chain sdu) override { last_sdu = std::move(sdu); }
+  void handle_sdu(byte_buffer_chain sdu) override { last_sdu = std::move(sdu); }
 };
 
 class f1u_gateway_dummy : public f1u_du_gateway
@@ -187,31 +218,40 @@ class f1u_gateway_dummy : public f1u_du_gateway
 public:
   bool next_bearer_is_created = true;
 
-  srs_du::f1u_bearer*
-  create_du_bearer(uint32_t ue_index, uint32_t dl_teid, uint32_t ul_teid, srs_du::f1u_rx_sdu_notifier& du_rx) override
+  srs_du::f1u_bearer* create_du_bearer(uint32_t                       ue_index,
+                                       drb_id_t                       drb_id,
+                                       srs_du::f1u_config             config,
+                                       const up_transport_layer_info& dl_tnl_info,
+                                       const up_transport_layer_info& ul_tnl_info,
+                                       srs_du::f1u_rx_sdu_notifier&   du_rx,
+                                       timer_factory                  timers) override
   {
-    if (next_bearer_is_created and f1u_bearers.count(dl_teid) == 0) {
-      f1u_bearers.insert(std::make_pair(dl_teid, std::map<uint32_t, f1u_bearer_dummy>{}));
-      f1u_bearers[dl_teid].emplace(ul_teid, du_rx);
-      return &f1u_bearers.at(dl_teid).at(ul_teid);
+    if (next_bearer_is_created and f1u_bearers.count(dl_tnl_info) == 0) {
+      f1u_bearers.insert(std::make_pair(dl_tnl_info, std::map<up_transport_layer_info, f1u_bearer_dummy>{}));
+      f1u_bearers[dl_tnl_info].emplace(ul_tnl_info, du_rx);
+      return &f1u_bearers.at(dl_tnl_info).at(ul_tnl_info);
     }
     return nullptr;
   }
 
-  void remove_du_bearer(uint32_t dl_teid) override
+  void remove_du_bearer(const up_transport_layer_info& dl_tnl_info) override
   {
-    auto bearer_it = f1u_bearers.find(dl_teid);
+    auto bearer_it = f1u_bearers.find(dl_tnl_info);
     if (bearer_it == f1u_bearers.end()) {
-      srslog::fetch_basic_logger("TEST").warning("Could not find DL-TEID at DU to remove. DL-TEID={}", dl_teid);
+      srslog::fetch_basic_logger("TEST").warning("Could not find DL-TEID at DU to remove. DL-TEID={}",
+                                                 dl_tnl_info.gtp_teid);
       return;
     }
     f1u_bearers.erase(bearer_it);
   }
 
-  std::map<uint32_t, std::map<uint32_t, f1u_bearer_dummy>> f1u_bearers;
+  std::map<up_transport_layer_info, std::map<up_transport_layer_info, f1u_bearer_dummy>> f1u_bearers;
 };
 
-class mac_test_dummy : public mac_cell_manager, public mac_ue_configurator, public mac_ue_control_information_handler
+class mac_test_dummy : public mac_cell_manager,
+                       public mac_ue_configurator,
+                       public mac_ue_control_information_handler,
+                       public mac_paging_information_handler
 {
 public:
   class mac_cell_dummy : public mac_cell_controller
@@ -225,40 +265,48 @@ public:
 
   mac_cell_dummy mac_cell;
 
-  optional<mac_ue_create_request_message>                           last_ue_create_msg{};
-  optional<mac_ue_reconfiguration_request_message>                  last_ue_reconf_msg{};
-  optional<mac_ue_delete_request_message>                           last_ue_delete_msg{};
-  byte_buffer                                                       last_pushed_ul_ccch_msg;
-  wait_manual_event_tester<mac_ue_create_response_message>          wait_ue_create;
-  wait_manual_event_tester<mac_ue_reconfiguration_response_message> wait_ue_reconf;
-  wait_manual_event_tester<mac_ue_delete_response_message>          wait_ue_delete;
+  optional<mac_ue_create_request>                           last_ue_create_msg{};
+  optional<mac_ue_reconfiguration_request>                  last_ue_reconf_msg{};
+  optional<mac_ue_delete_request>                           last_ue_delete_msg{};
+  optional<mac_dl_buffer_state_indication_message>          last_dl_bs;
+  byte_buffer                                               last_pushed_ul_ccch_msg;
+  wait_manual_event_tester<mac_ue_create_response>          wait_ue_create;
+  wait_manual_event_tester<mac_ue_reconfiguration_response> wait_ue_reconf;
+  wait_manual_event_tester<mac_ue_delete_response>          wait_ue_delete;
+  bool                                                      next_ul_ccch_msg_result = true;
 
   void                 add_cell(const mac_cell_creation_request& cell_cfg) override {}
   void                 remove_cell(du_cell_index_t cell_index) override {}
   mac_cell_controller& get_cell_controller(du_cell_index_t cell_index) override { return mac_cell; }
 
-  async_task<mac_ue_create_response_message> handle_ue_create_request(const mac_ue_create_request_message& msg) override
+  async_task<mac_ue_create_response> handle_ue_create_request(const mac_ue_create_request& msg) override
   {
     last_ue_create_msg = msg;
     return wait_ue_create.launch();
   }
-  async_task<mac_ue_reconfiguration_response_message>
-  handle_ue_reconfiguration_request(const mac_ue_reconfiguration_request_message& msg) override
+  async_task<mac_ue_reconfiguration_response>
+  handle_ue_reconfiguration_request(const mac_ue_reconfiguration_request& msg) override
   {
     last_ue_reconf_msg = msg;
     return wait_ue_reconf.launch();
   }
-  async_task<mac_ue_delete_response_message> handle_ue_delete_request(const mac_ue_delete_request_message& msg) override
+  async_task<mac_ue_delete_response> handle_ue_delete_request(const mac_ue_delete_request& msg) override
   {
     last_ue_delete_msg = msg;
     return wait_ue_delete.launch();
   }
-  void handle_ul_ccch_msg(du_ue_index_t ue_index, byte_buffer pdu) override
+  bool handle_ul_ccch_msg(du_ue_index_t ue_index, byte_buffer pdu) override
   {
     last_pushed_ul_ccch_msg = std::move(pdu);
+    return next_ul_ccch_msg_result;
   }
 
-  void handle_dl_buffer_state_update_required(const mac_dl_buffer_state_indication_message& dl_bs) override {}
+  void handle_dl_buffer_state_update(const mac_dl_buffer_state_indication_message& dl_bs) override
+  {
+    last_dl_bs = dl_bs;
+  }
+
+  void handle_paging_information(const paging_information& msg) override {}
 };
 
 class dummy_ue_resource_configurator_factory : public du_ran_resource_manager
@@ -296,24 +344,7 @@ f1ap_ue_context_update_request create_f1ap_ue_context_update_request(du_ue_index
 class du_manager_test_bench
 {
 public:
-  du_manager_test_bench(span<const du_cell_config> cells) :
-    du_cells(cells.begin(), cells.end()),
-    worker(128),
-    du_mng_exec(worker),
-    ue_exec_mapper(worker),
-    cell_exec_mapper(worker),
-    params{{"srsgnb", 1, 1, du_cells},
-           {timers, du_mng_exec, ue_exec_mapper, cell_exec_mapper},
-           {f1ap, f1ap},
-           {f1u_gw},
-           {mac, f1ap, f1ap},
-           {mac, mac}},
-    logger(srslog::fetch_basic_logger("DU-MNG"))
-  {
-    logger.set_level(srslog::basic_levels::debug);
-
-    srslog::init();
-  }
+  du_manager_test_bench(span<const du_cell_config> cells);
 
   std::vector<du_cell_config>            du_cells;
   timer_manager                          timers;
@@ -324,6 +355,7 @@ public:
   f1ap_test_dummy                        f1ap;
   f1u_gateway_dummy                      f1u_gw;
   mac_test_dummy                         mac;
+  null_rlc_pcap                          rlc_pcap;
   du_manager_params                      params;
   dummy_ue_resource_configurator_factory cell_res_alloc;
   srslog::basic_logger&                  logger;

@@ -24,7 +24,7 @@
 
 #include "radio_zmq_rx_channel_fsm.h"
 #include "srsran/adt/blocking_queue.h"
-#include "srsran/gateways/baseband/baseband_gateway_buffer.h"
+#include "srsran/gateways/baseband/buffer/baseband_gateway_buffer_writer.h"
 #include "srsran/radio/radio_notification_handler.h"
 #include "srsran/srslog/srslog.h"
 #include "srsran/support/async/async_queue.h"
@@ -41,10 +41,9 @@ private:
   /// Lists the supported socket types.
   static const std::set<int> VALID_SOCKET_TYPES;
   /// Wait time after a buffer try push failed.
-  static constexpr unsigned CIRC_BUFFER_TRY_PUSH_SLEEP_FOR_MS = 1;
+  const std::chrono::microseconds circ_buffer_try_push_sleep{1};
   /// Wait time after a buffer try pop failed.
-  static constexpr unsigned CIRC_BUFFER_TRY_POP_SLEEP_FOR_MS = 1;
-
+  const std::chrono::microseconds circ_buffer_try_pop_sleep{1};
   /// Indicates the stream identifier. Used for notifying events.
   unsigned stream_id;
   /// Channel identifier. Used for notifying events.
@@ -58,9 +57,9 @@ private:
   /// Logger.
   srslog::basic_logger& logger;
   /// Stores transmit buffer.
-  blocking_queue<radio_sample_type> circular_buffer;
+  blocking_queue<cf_t> circular_buffer;
   /// Transmission buffer.
-  std::vector<radio_sample_type> buffer;
+  std::vector<cf_t> buffer;
   /// Notification handler.
   radio_notification_handler& notification_handler;
   /// Asynchronous task executor.
@@ -80,7 +79,7 @@ public:
     /// Stream identifier string.
     std::string channel_id_str;
     /// Logging level.
-    std::string log_level;
+    srslog::basic_levels log_level;
     /// Indicates the socket send and receive timeout in milliseconds. It is ignored if it is zero.
     unsigned trx_timeout_ms;
     /// Indicates the socket linger timeout in milliseconds. If is ignored if trx_timeout_ms is zero.
@@ -104,7 +103,9 @@ public:
 
   void run_async();
 
-  void receive(span<radio_sample_type> buffer);
+  void receive(span<cf_t> buffer);
+
+  void start();
 
   void stop();
 

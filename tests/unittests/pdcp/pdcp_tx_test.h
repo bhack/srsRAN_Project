@@ -26,7 +26,6 @@
 #include "pdcp_test_vectors.h"
 #include "pdcp_tx_test_helpers.h"
 #include "srsran/pdcp/pdcp_config.h"
-#include "srsran/support/timers.h"
 #include <gtest/gtest.h>
 #include <queue>
 
@@ -36,7 +35,7 @@ namespace srsran {
 /// It requires TEST_P() and INSTANTIATE_TEST_SUITE_P() to create/spawn tests for each supported SN size
 class pdcp_tx_test : public pdcp_tx_test_helper,
                      public ::testing::Test,
-                     public ::testing::WithParamInterface<pdcp_sn_size>
+                     public ::testing::WithParamInterface<std::tuple<pdcp_sn_size, unsigned>>
 {
 protected:
   void SetUp() override
@@ -56,4 +55,32 @@ protected:
     srslog::flush();
   }
 };
+
+/// Fixture class for PDCP TX tests with short RLC queue size
+/// It requires TEST_P() and INSTANTIATE_TEST_SUITE_P() to create/spawn tests for each supported SN size
+class pdcp_tx_test_short_rlc_queue : public pdcp_tx_test_helper,
+                                     public ::testing::Test,
+                                     public ::testing::WithParamInterface<std::tuple<pdcp_sn_size, unsigned>>
+{
+protected:
+  void SetUp() override
+  {
+    // init test's logger
+    srslog::init();
+    logger.set_level(srslog::basic_levels::debug);
+
+    // init RLC logger
+    srslog::fetch_basic_logger("PDCP", false).set_level(srslog::basic_levels::debug);
+    srslog::fetch_basic_logger("PDCP", false).set_hex_dump_max_size(100);
+  }
+
+  void TearDown() override
+  {
+    // flush logger after each test
+    srslog::flush();
+  }
+
+  void init_adjustments() override { config.custom.rlc_sdu_queue = 5; }
+};
+
 } // namespace srsran

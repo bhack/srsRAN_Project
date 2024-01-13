@@ -22,9 +22,9 @@
 
 #pragma once
 
+#include "adapters/sdap_adapters.h"
 #include "srsran/e1ap/common/e1ap_types.h"
 #include "srsran/pdcp/pdcp_rx.h"
-#include "srsran/pdcp/pdcp_tx.h"
 #include "srsran/ran/cu_types.h"
 
 namespace srsran {
@@ -37,21 +37,21 @@ struct qos_flow_context {
     if (qos_params.non_dyn_5qi.has_value()) {
       five_qi = qos_params.non_dyn_5qi.value().five_qi;
     }
+    srsran_assert(qos_params.dyn_5qi.has_value() == false, "Dynamic 5QI not supported.");
+    srsran_assert(five_qi != five_qi_t::invalid, "FiveQI must be set.");
   };
 
-  qos_flow_id_t qos_flow_id; // The QoS flow ID.
-  uint16_t      five_qi;     // The FiveQI assigned to this flow.
+  qos_flow_id_t qos_flow_id = qos_flow_id_t::invalid; // The QoS flow ID.
+  five_qi_t     five_qi     = five_qi_t::invalid;     // The FiveQI assigned to this flow.
 
   // TODO: add other fields contained in:
   // * qos_flow_level_qos_params_s
   // * ngran_alloc_and_retention_prio_s
   // * etc.
 
-  std::unique_ptr<pdcp_tx_lower_notifier>      pdcp_tx_notifier;
-  std::unique_ptr<pdcp_rx_upper_data_notifier> sdap_rx_notifier;
+  sdap_pdcp_adapter sdap_to_pdcp_adapter;
 
-  // std::unique_ptr<f1u_message_notifier> rx_notifier      = std::make_unique<f1u_message_null_notifier>();
-  // std::unique_ptr<rrc_pdu_notifier>     sdap_tx_notifier = std::make_unique<rrc_pdu_null_notifier>();
+  std::unique_ptr<pdcp_rx_upper_data_notifier> sdap_rx_notifier;
 };
 
 } // namespace srs_cu_up

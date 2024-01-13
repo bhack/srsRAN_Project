@@ -27,72 +27,41 @@
 
 #include "srsran/adt/expected.h"
 #include "srsran/adt/optional.h"
+#include "srsran/ran/band_helper_constants.h"
+#include "srsran/ran/bs_channel_bandwidth.h"
+#include "srsran/ran/n_ta_offset.h"
+#include "srsran/ran/nr_band.h"
 #include "srsran/ran/ssb_properties.h"
-#include <stdint.h>
+#include <cstdint>
 
 namespace srsran {
 
 enum class duplex_mode;
 enum class subcarrier_spacing;
 enum class ssb_pattern_case;
-enum class bs_channel_bandwidth_fr1;
 enum class frequency_range;
 enum class min_channel_bandwidth;
 
 struct ssb_freq_location;
 
-const unsigned KHZ_TO_HZ = 1000U;
-const double   HZ_TO_KHZ = 1e-3;
-
-/// \brief NR operating bands in FR1 and FR2.
-///
-/// This enumeration abstracts the NR operating bands for FR1 and FR2 described in TS 38.104, Table 5.2-1 and
-/// Table 5.2-2, respectively.
-enum class nr_band {
-  invalid = 0,
-  // FR1 bands.
-  n1  = 1,
-  n2  = 2,
-  n3  = 3,
-  n5  = 5,
-  n7  = 7,
-  n8  = 8,
-  n12 = 12,
-  n20 = 20,
-  n25 = 25,
-  n28 = 28,
-  n34 = 34,
-  n38 = 38,
-  n39 = 39,
-  n40 = 40,
-  n41 = 41,
-  n50 = 50,
-  n51 = 51,
-  n66 = 66,
-  n70 = 70,
-  n71 = 71,
-  n74 = 74,
-  n75 = 75,
-  n76 = 76,
-  n77 = 77,
-  n78 = 78,
-  n79 = 79,
-  n80 = 80,
-  n81 = 81,
-  n82 = 82,
-  n83 = 83,
-  n84 = 84,
-  n86 = 86,
-  // FR2 bands.
-  n257 = 257,
-  n258 = 258,
-  n260 = 260,
-  n261 = 261
-};
+const std::array<nr_band, 60> all_nr_bands_fr1 = std::array<nr_band, 60>{
+    {nr_band::n1,   nr_band::n2,   nr_band::n3,   nr_band::n5,  nr_band::n7,  nr_band::n8,  nr_band::n12, nr_band::n13,
+     nr_band::n14,  nr_band::n18,  nr_band::n20,  nr_band::n24, nr_band::n25, nr_band::n26, nr_band::n28, nr_band::n29,
+     nr_band::n30,  nr_band::n34,  nr_band::n38,  nr_band::n39, nr_band::n40, nr_band::n41, nr_band::n46, nr_band::n48,
+     nr_band::n50,  nr_band::n51,  nr_band::n53,  nr_band::n65, nr_band::n66, nr_band::n67, nr_band::n70, nr_band::n71,
+     nr_band::n74,  nr_band::n75,  nr_band::n76,  nr_band::n77, nr_band::n78, nr_band::n79, nr_band::n80, nr_band::n81,
+     nr_band::n82,  nr_band::n83,  nr_band::n84,  nr_band::n85, nr_band::n86, nr_band::n89, nr_band::n90, nr_band::n91,
+     nr_band::n92,  nr_band::n93,  nr_band::n94,  nr_band::n95, nr_band::n96, nr_band::n97, nr_band::n98, nr_band::n99,
+     nr_band::n100, nr_band::n101, nr_band::n102, nr_band::n104}};
 
 constexpr inline uint16_t nr_band_to_uint(nr_band band)
 {
   return static_cast<uint16_t>(band);
+}
+
+constexpr inline nr_band uint_to_nr_band(unsigned band)
+{
+  return static_cast<nr_band>(band);
 }
 
 namespace band_helper {
@@ -108,13 +77,25 @@ duplex_mode get_duplex_mode(nr_band band);
 /// \return    The band number if the ARFCN is bounded in a band, UINT16_MAX otherwise.
 nr_band get_band_from_dl_arfcn(uint32_t arfcn);
 
+/// \brief     Returns true if the band is used for shared spectrum channel access.
+/// \remark    As per TS 38.104, Table 5.2-1, only bands where Note 3 or Note 4 apply.
+bool is_band_for_shared_spectrum(nr_band band);
+
+/// \brief     Returns true if the band should be considered as for 40MHz minimum channel BW.
+/// \remark    As per TS 38.101, Table 5.2-1, only bands where Note 17 applies.
+bool is_band_40mhz_min_ch_bw_equivalent(nr_band band);
+
 /// \brief     Checks whether a Downlink ARFCN is valid for a given band.
 /// \param[in] band Given NR band.
 /// \param[in] arfcn Given Downlink ARFCN.
 /// \param[in] scs is the subcarrier spacing of reference for \f$N_{RB}\f$, as per TS 38.104, Table 5.3.2-1. Only used
 /// for bands n41, n77, n78, n79.
+/// \param[in] bw Channel Bandwidth in MHz, which is required to validate some bands' ARFCN values.
 /// \return    If the DL ARFCN is invalid for the band, a std::string value is returned with the reason.
-error_type<std::string> is_dl_arfcn_valid_given_band(nr_band band, uint32_t arfcn, subcarrier_spacing scs);
+error_type<std::string> is_dl_arfcn_valid_given_band(nr_band                  band,
+                                                     uint32_t                 arfcn,
+                                                     subcarrier_spacing       scs,
+                                                     bs_channel_bandwidth_fr1 bw = bs_channel_bandwidth_fr1::MHz10);
 
 /// @brief Get the respective UL ARFCN of a DL ARFCN.
 ///
@@ -122,8 +103,9 @@ error_type<std::string> is_dl_arfcn_valid_given_band(nr_band band, uint32_t arfc
 /// For unparied spectrum (TDD) the function returns the same ARFCN.
 ///
 /// \param[in] dl_arfcn The DL ARFCN.
+/// \param[in] band     NR Band. If not given, the band is derived from the dl_arfcn.
 /// \return uint32_t the UL ARFCN.
-uint32_t get_ul_arfcn_from_dl_arfcn(uint32_t dl_arfcn);
+uint32_t get_ul_arfcn_from_dl_arfcn(uint32_t dl_arfcn, optional<nr_band> band);
 
 /// \brief Return frequency of given NR-ARFCN in Hz as per TS38.104 5.4.2.1.
 /// \param[in] nr_arfcn Given NR-ARFCN.
@@ -139,7 +121,8 @@ uint32_t freq_to_nr_arfcn(double freq);
 /// \remark    Described by TS 38.101-1 Table 5.4.3.3-1: Applicable SS raster entries per operating band.
 /// \param[in] band NR Band number.
 /// \param[in] scs SSB Subcarrier spacing.
-/// \return    The SSB pattern case if band and subcarrier spacing match, invalid otherwise.
+/// \return    The SSB pattern case if band and subcarrier spacing match, \c invalid otherwise.
+/// \remark    The functionr returns \c invalid if the band has SUL duplexing.
 ssb_pattern_case get_ssb_pattern(nr_band band, subcarrier_spacing scs);
 
 /// \brief Selects the most suitable SSB subcarrier spacing valid for this band.
@@ -257,6 +240,7 @@ struct ssb_coreset0_freq_location {
 /// \param[in] scs_common is <em>subCarrierSpacingCommon<\em>, as per TS 38.331.
 /// \param[in] scs_ssb is ssb subcarrier spacing.
 /// \param[in] ss0_idx SearchSpace#0 index.
+/// \param[in] max_coreset0_duration Maximum CORESET#0 duration to consider while choosing CORESET#0 index.
 /// \return The parameters defining the position of the SSB within the band and Coreset0 and SS0 indices for
 /// Table 13-[1-6] and Table 13-11, respectively, in TS 38.213.
 optional<ssb_coreset0_freq_location> get_ssb_coreset0_freq_location(unsigned           dl_arfcn,
@@ -264,7 +248,27 @@ optional<ssb_coreset0_freq_location> get_ssb_coreset0_freq_location(unsigned    
                                                                     unsigned           n_rbs,
                                                                     subcarrier_spacing scs_common,
                                                                     subcarrier_spacing scs_ssb,
-                                                                    uint8_t            ss0_idx);
+                                                                    uint8_t            ss0_idx,
+                                                                    uint8_t            max_coreset0_duration);
+
+/// \brief Fetches parameters defining the position of the SSB within the band for a given Coreset0 and SS0 indices.
+///
+/// \param[in] dl_arfcn is <em>DL-ARFCN<\em> corresponding to \f$F_{REF}\f$, as per TS 38.104, Section 5.4.2.1.
+/// \param[in] nr_band is <em>NR operating band<\em>, as per TS 38.104, Table 5.2-1. Only FR1 values are supported.
+/// \param[in] n_rbs is <em>Transmission bandwidth<\em> or \f$N_{RB}\f$ in number of RBs, as per TS 38.104, Table 5.2-1.
+/// \param[in] scs_common is <em>subCarrierSpacingCommon<\em>, as per TS 38.331.
+/// \param[in] scs_ssb is ssb subcarrier spacing.
+/// \param[in] ss0_idx SearchSpace#0 index.
+/// \param[in] cset0_idx CORESET#0 index.
+/// \return The parameters defining the position of the SSB within the band for Table 13-[1-6] and Table 13-11,
+/// respectively, in TS 38.213 if CORESET#0 RBs does not completely intersect with the SSB. Returns nullopt otherwise.
+optional<ssb_coreset0_freq_location> get_ssb_coreset0_freq_location_for_cset0_idx(unsigned           dl_arfcn,
+                                                                                  nr_band            band,
+                                                                                  unsigned           n_rbs,
+                                                                                  subcarrier_spacing scs_common,
+                                                                                  subcarrier_spacing scs_ssb,
+                                                                                  uint8_t            ss0_idx,
+                                                                                  unsigned           cset0_idx);
 
 /// \brief Searches the CORESET#0 index that maximizes the number of CORESET#0 RBs that do not intersect with the SSB,
 /// given an SSB configuration and the following restrictions:
@@ -299,6 +303,42 @@ unsigned get_nof_coreset0_rbs_not_intersecting_ssb(unsigned              cset0_i
                                                    subcarrier_spacing    scs_ssb,
                                                    ssb_offset_to_pointA  offset_to_point_A,
                                                    ssb_subcarrier_offset k_ssb);
+
+/// \brief Returns the n_ta_offset for a given band.
+/// \param[in] band is <em>NR operating band<\em>, as per TS 38.104, Table 5.2-1. Only FR1 values are supported.
+/// \return Value of n_ta_offset.
+n_ta_offset get_ta_offset(nr_band band);
+
+/// \brief Returns SSB ARFCN for a given cell configuration.
+/// \param[in] dl_arfcn is <em>DL-ARFCN<\em> corresponding to \f$F_{REF}\f$, as per TS 38.104, Section 5.4.2.1.
+/// \param[in] nr_band is <em>NR operating band<\em>, as per TS 38.104, Table 5.2-1. Only FR1 values are supported.
+/// \param[in] n_rbs is <em>Transmission bandwidth<\em> or \f$N_{RB}\f$ in number of RBs, as per TS 38.104, Table 5.2-1.
+/// \param[in] scs_common is <em>subCarrierSpacingCommon<\em>, as per TS 38.331.
+/// \param[in] scs_ssb is ssb subcarrier spacing.
+/// \param[in] offset_to_point_A SSB Offset to PointA.
+/// \param[in] k_ssb Subcarrier offset of SSB.
+/// \return SSB ARFCN if cell configuration is valid, nullopt otherwise.
+optional<unsigned> get_ssb_arfcn(unsigned              dl_arfcn,
+                                 nr_band               band,
+                                 unsigned              n_rbs,
+                                 subcarrier_spacing    scs_common,
+                                 subcarrier_spacing    scs_ssb,
+                                 ssb_offset_to_pointA  offset_to_point_A,
+                                 ssb_subcarrier_offset k_ssb);
+
+/// \brief Validate the SSB ARFCN for a given band.
+///
+/// \remark The validity of the GSCN raster is based on the GSCN value, as per Section 5.4.3.1, TS 38.104. The ARFCN is
+/// considered valid if the corresponding \f$SS_{ref}\f$ maps to a valid GSCN value.
+/// \param[in] ssb_arfcn ARFCN value of the SSB.
+/// \param[in] band NR band.
+/// \param[in] ssb_scs SSB subcarrier spacing.
+/// \param[in] bw Channel Bandwidth in MHz, which is required to validate some bands' ARFCN values.
+/// \return If the ARFCN (GSCN) is invalid for the band, a std::string value is returned with the reason.
+error_type<std::string> is_ssb_arfcn_valid_given_band(uint32_t                 ssb_arfcn,
+                                                      nr_band                  band,
+                                                      subcarrier_spacing       scs,
+                                                      bs_channel_bandwidth_fr1 bw = bs_channel_bandwidth_fr1::invalid);
 
 } // namespace band_helper
 

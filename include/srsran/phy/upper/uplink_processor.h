@@ -27,7 +27,7 @@
 
 #include "srsran/phy/upper/channel_processors/prach_detector.h"
 #include "srsran/phy/upper/channel_processors/pucch_processor.h"
-#include "srsran/phy/upper/channel_processors/pusch_processor.h"
+#include "srsran/phy/upper/channel_processors/pusch/pusch_processor.h"
 #include "srsran/phy/upper/unique_rx_softbuffer.h"
 #include "srsran/phy/upper/uplink_processor_context.h"
 
@@ -52,8 +52,8 @@ public:
   struct pusch_pdu {
     /// HARQ process number.
     unsigned harq_id;
-    /// Transport block size in bytes.
-    unsigned tb_size;
+    /// Transport block size.
+    units::bytes tb_size;
     /// PUSCH processor PDU.
     pusch_processor::pdu_t pdu;
   };

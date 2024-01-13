@@ -68,7 +68,7 @@ public:
   };
 
   /// Default constructor: reserves internal memory.
-  channel_estimate() : nof_subcarriers(0), nof_symbols(0), nof_rx_ports(0), nof_tx_layers(0)
+  channel_estimate() : max_dims(), nof_subcarriers(0), nof_symbols(0), nof_rx_ports(0), nof_tx_layers(0)
   {
     ce.reserve({MAX_RB * NRE, MAX_NSYMB_PER_SLOT, MAX_RX_PORTS, MAX_TX_LAYERS});
     noise_variance.reserve(MAX_TX_RX_PATHS);
@@ -80,10 +80,12 @@ public:
 
   /// Constructor: sets the size of the internal buffers.
   explicit channel_estimate(const channel_estimate_dimensions& dims) :
+    max_dims(dims),
     nof_subcarriers(dims.nof_prb * NRE),
     nof_symbols(dims.nof_symbols),
     nof_rx_ports(dims.nof_rx_ports),
-    nof_tx_layers(dims.nof_tx_layers)
+    nof_tx_layers(dims.nof_tx_layers),
+    ce({nof_subcarriers, nof_symbols, nof_rx_ports, nof_tx_layers})
   {
     srsran_assert(dims.nof_prb <= MAX_RB, "Requested {} RBs, but at most {} are allowed.", dims.nof_prb, MAX_RB);
     srsran_assert(dims.nof_symbols <= MAX_NSYMB_PER_SLOT,
@@ -163,6 +165,26 @@ public:
   /// Returns the estimated SNR for the path between the given Rx port and Tx layer (linear scale).
   float get_snr(unsigned rx_port, unsigned tx_layer = 0) const { return snr[path_to_index(rx_port, tx_layer)]; }
 
+  /// Returns the estimated average SNR for a given layer (linear scale).
+  float get_layer_average_snr(unsigned tx_layer = 0) const
+  {
+    float noise_var_all_ports = 0.0F;
+    float rsrp_all_ports      = 0.0F;
+
+    // Add the noise and signal power contributions of all Rx ports.
+    for (unsigned i_rx_port = 0; i_rx_port != nof_rx_ports; ++i_rx_port) {
+      noise_var_all_ports += noise_variance[path_to_index(i_rx_port, tx_layer)];
+      rsrp_all_ports += rsrp[path_to_index(i_rx_port, tx_layer)];
+    }
+
+    if (std::isnormal(noise_var_all_ports)) {
+      return rsrp_all_ports / noise_var_all_ports;
+    }
+
+    // If noise variance is 0, report and SNR of 60 dB.
+    return 1e6;
+  }
+
   /// Returns the estimated SNR for the path between the given Rx port and Tx layer (dB scale).
   float get_snr_dB(unsigned rx_port, unsigned tx_layer = 0) const
   {
@@ -207,18 +229,41 @@ public:
     return ce.get_view<1>({i_symbol, rx_port, tx_layer});
   }
 
-  /// Returns the general Channel State Information.
-  channel_state_information get_channel_state_information() const
+  /// \brief Gets the general Channel State Information.
+  ///
+  /// param[in] csi Channel State Information object where the CSI parameters are stored.
+  void get_channel_state_information(channel_state_information& csi) const
   {
-    channel_state_information csi = {};
+    // EPRE, RSRP and time alignment are reported as a linear average of the results for all Rx ports.
+    float    epre_lin      = 0.0F;
+    float    rsrp_lin      = 0.0F;
+    unsigned best_rx_port  = 0;
+    float    best_path_snr = 0.0F;
+    for (unsigned i_rx_port = 0; i_rx_port != nof_rx_ports; ++i_rx_port) {
+      // Accumulate EPRE and RSRP values.
+      epre_lin += get_epre(i_rx_port, 0);
+      rsrp_lin += get_rsrp(i_rx_port, 0);
 
-    srsran_assert(nof_rx_ports == 1, "For now, only one Rx port is supported.");
-    srsran_assert(nof_tx_layers == 1, "For now, only one Tx layer is supported.");
-    csi.epre_dB        = get_epre_dB(0, 0);
-    csi.rsrp_dB        = get_rsrp_dB(0, 0);
-    csi.sinr_dB        = get_snr_dB(0, 0);
-    csi.time_alignment = get_time_alignment(0, 0);
-    return csi;
+      // Determine the Rx port with better SNR.
+      float port_snr = get_snr(i_rx_port, 0);
+      if (port_snr > best_path_snr) {
+        best_path_snr = port_snr;
+        best_rx_port  = i_rx_port;
+      }
+    }
+
+    epre_lin /= static_cast<float>(nof_rx_ports);
+    rsrp_lin /= static_cast<float>(nof_rx_ports);
+
+    csi.set_epre(convert_power_to_dB(epre_lin));
+    csi.set_rsrp(convert_power_to_dB(rsrp_lin));
+
+    // Use the time alignment of the channel path with better SNR.
+    csi.set_time_alignment(get_time_alignment(best_rx_port, 0));
+
+    // SINR is reported by averaging the signal and noise power contributions of all Rx ports.
+    csi.set_sinr_dB(channel_state_information::sinr_type::channel_estimator,
+                    convert_power_to_dB(get_layer_average_snr(0)));
   }
 
   ///@}
@@ -299,7 +344,13 @@ public:
     return tmp;
   }
 
+  /// Returns channel estimate maximum dimensions.
+  const channel_estimate_dimensions& capacity() const { return max_dims; }
+
 private:
+  /// Maximum channel state dimensions, it is set once during initialization.
+  const channel_estimate_dimensions max_dims;
+
   /// Number of subcarriers considered for channel estimation.
   unsigned nof_subcarriers;
 

@@ -33,11 +33,15 @@ namespace srsran {
 class dl_logical_channel_manager
 {
 public:
-  dl_logical_channel_manager()
-  {
-    // SRB0 is always activated.
-    set_status(LCID_SRB0, true);
-  }
+  /// Holds the MAC CE information.
+  struct mac_ce_info {
+    /// LCID of the MAC CE.
+    lcid_dl_sch_t ce_lcid;
+    /// Holds payload of CE except UE Contention Resolution Identity.
+    variant<ta_cmd_ce_payload, dummy_ce_payload> ce_payload;
+  };
+
+  dl_logical_channel_manager();
 
   /// \brief Activate/Deactivate Bearer.
   void set_status(lcid_t lcid, bool active) { channels[lcid].active = active; }
@@ -49,7 +53,7 @@ public:
   bool is_active(lcid_t lcid) const { return channels[lcid].active; }
 
   /// \brief Checks whether the UE has pending data.
-  /// \remark Excludes data for SRB0 and UE Contention Resolution Identity CE.
+  /// \remark Excludes data for SRB0.
   bool has_pending_bytes() const
   {
     return has_pending_ces() or std::any_of(channels.begin() + 1, channels.end(), [](const auto& ch) {
@@ -60,8 +64,14 @@ public:
   /// \brief Checks whether a logical channel has pending data.
   bool has_pending_bytes(lcid_t lcid) const { return pending_bytes(lcid) > 0; }
 
-  /// \brief Checks whether UE has pending CEs to be scheduled.
-  /// \remark Excludes UE Contention Resolution Identity CE.
+  /// \brief Checks whether a ConRes CE is pending for transmission.
+  /// \remark ConRes CE is only sent when there is pending data for SRB0 or SRB1.
+  bool is_con_res_id_pending() const
+  {
+    return (pending_con_res_id and (has_pending_bytes(LCID_SRB0) or has_pending_bytes(LCID_SRB1)));
+  }
+
+  /// \brief Checks whether UE has pending CEs to be scheduled (ConRes excluded).
   bool has_pending_ces() const { return not pending_ces.empty(); }
 
   /// \brief Calculates total number of DL bytes, including MAC header overhead.
@@ -77,13 +87,12 @@ public:
   }
 
   /// \brief Checks whether UE has pending CEs to be scheduled.
-  /// \remark Excludes UE Contention Resolution Identity CE.
   unsigned pending_ce_bytes() const
   {
-    unsigned bytes = 0;
-    for (const lcid_dl_sch_t& ce : pending_ces) {
-      bytes += ce.is_var_len_ce() ? get_mac_sdu_required_bytes(ce.sizeof_ce())
-                                  : FIXED_SIZED_MAC_CE_SUBHEADER_SIZE + ce.sizeof_ce();
+    unsigned bytes = pending_ue_con_res_id_ce_bytes();
+    for (const auto& ce : pending_ces) {
+      bytes += ce.ce_lcid.is_var_len_ce() ? get_mac_sdu_required_bytes(ce.ce_lcid.sizeof_ce())
+                                          : FIXED_SIZED_MAC_CE_SUBHEADER_SIZE + ce.ce_lcid.sizeof_ce();
     }
     return bytes;
   }
@@ -91,12 +100,8 @@ public:
   /// \brief Checks whether UE has pending UE Contention Resolution Identity CE to be scheduled.
   unsigned pending_ue_con_res_id_ce_bytes() const
   {
-    unsigned          bytes   = 0;
     static const auto ce_size = lcid_dl_sch_t{lcid_dl_sch_t::UE_CON_RES_ID}.sizeof_ce();
-    if (pending_con_res_id) {
-      bytes += FIXED_SIZED_MAC_CE_SUBHEADER_SIZE + ce_size;
-    }
-    return bytes;
+    return is_con_res_id_pending() ? FIXED_SIZED_MAC_CE_SUBHEADER_SIZE + ce_size : 0;
   }
 
   /// \brief Last DL buffer status for given LCID (MAC subheader included).
@@ -112,9 +117,9 @@ public:
   }
 
   /// \brief Enqueue new MAC CE to be scheduled.
-  void handle_mac_ce_indication(lcid_dl_sch_t ce)
+  void handle_mac_ce_indication(const mac_ce_info& ce)
   {
-    if (ce == lcid_dl_sch_t::UE_CON_RES_ID) {
+    if (ce.ce_lcid == lcid_dl_sch_t::UE_CON_RES_ID) {
       pending_con_res_id = true;
     } else {
       pending_ces.push_back(ce);
@@ -155,7 +160,7 @@ private:
   bool pending_con_res_id{false};
 
   /// \brief List of pending CEs except UE Contention Resolution Identity.
-  std::deque<lcid_dl_sch_t> pending_ces;
+  std::deque<mac_ce_info> pending_ces;
 };
 
 /// \brief Allocate MAC SDUs and corresponding MAC subPDU subheaders.

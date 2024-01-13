@@ -23,13 +23,20 @@
 #pragma once
 
 #include "radio_zmq_rx_channel.h"
+#include "radio_zmq_tx_align_interface.h"
+#include "srsran/gateways/baseband/baseband_gateway_receiver.h"
 #include <memory>
 
 namespace srsran {
 
-class radio_zmq_rx_stream
+/// Implements a gateway receiver based on ZMQ receive socket.
+class radio_zmq_rx_stream : public baseband_gateway_receiver
 {
 private:
+  /// Alignment timeout. Waits this time before padding zeros.
+  const std::chrono::milliseconds RECEIVE_TS_ALIGN_TIMEOUT = std::chrono::milliseconds(100);
+  /// Transmitter alignment interface.
+  radio_zmq_tx_align_interface& tx_align;
   /// Indicates whether the class was initialized successfully.
   bool successful = false;
   /// Stores independent channels.
@@ -49,7 +56,7 @@ public:
     /// Stream identifier string.
     std::string stream_id_str;
     /// Logging level.
-    std::string log_level;
+    srslog::basic_levels log_level;
     /// Indicates the socket send and receive timeout in milliseconds. It is ignored if it is zero.
     unsigned trx_timeout_ms;
     /// Indicates the socket linger timeout in milliseconds. If is ignored if trx_timeout_ms is zero.
@@ -58,16 +65,20 @@ public:
     unsigned buffer_size;
   };
 
-  radio_zmq_rx_stream(void*                       zmq_context,
-                      const stream_description&   config,
-                      task_executor&              async_executor_,
-                      radio_notification_handler& notification_handler);
+  radio_zmq_rx_stream(void*                         zmq_context,
+                      const stream_description&     config,
+                      task_executor&                async_executor_,
+                      radio_zmq_tx_align_interface& tx_align_,
+                      radio_notification_handler&   notification_handler);
 
   bool is_successful() const { return successful; }
 
   uint64_t get_sample_count() const { return sample_count; }
 
-  void receive(baseband_gateway_buffer& data);
+  // See interface for documentation.
+  metadata receive(baseband_gateway_buffer_writer& data) override;
+
+  void start(baseband_gateway_timestamp init_time);
 
   void stop();
 

@@ -90,11 +90,9 @@ static optional<float> convert_fapi_to_mac_ul_sinr(int16_t fapi_ul_sinr)
 }
 
 fapi_to_mac_data_msg_translator::fapi_to_mac_data_msg_translator(subcarrier_spacing scs_) :
-  rach_handler(dummy_mac_rach_handler), pdu_handler(dummy_pdu_handler), crc_handler(dummy_crc_handler), scs(scs_)
+  scs(scs_), rach_handler(dummy_mac_rach_handler), pdu_handler(dummy_pdu_handler), crc_handler(dummy_crc_handler)
 {
 }
-
-void fapi_to_mac_data_msg_translator::on_dl_tti_response(const fapi::dl_tti_response_message& msg) {}
 
 void fapi_to_mac_data_msg_translator::on_rx_data_indication(const fapi::rx_data_indication_message& msg)
 {
@@ -130,6 +128,9 @@ void fapi_to_mac_data_msg_translator::on_crc_indication(const fapi::crc_indicati
     pdu.rnti           = fapi_pdu.rnti;
     pdu.tb_crc_success = fapi_pdu.tb_crc_status_ok;
     pdu.ul_sinr_metric = convert_fapi_to_mac_ul_sinr(fapi_pdu.ul_sinr_metric);
+    if (fapi_pdu.timing_advance_offset_ns != std::numeric_limits<decltype(fapi_pdu.timing_advance_offset_ns)>::min()) {
+      pdu.time_advance_offset = phy_time_unit::from_seconds(fapi_pdu.timing_advance_offset_ns * 1e-9);
+    }
   }
 
   crc_handler.get().handle_crc(indication);
@@ -164,8 +165,6 @@ static optional<float> convert_fapi_to_mac_rsrp(uint16_t fapi_rsrp)
 static void convert_fapi_to_mac_pucch_f0_f1_uci_ind(mac_uci_pdu::pucch_f0_or_f1_type&     mac_pucch,
                                                     const fapi::uci_pucch_pdu_format_0_1& fapi_pucch)
 {
-  mac_pucch.is_f1 = fapi_pucch.pucch_format == fapi::uci_pucch_pdu_format_0_1::format_type::format_1;
-
   mac_pucch.ul_sinr = convert_fapi_to_mac_ul_sinr(fapi_pucch.ul_sinr_metric);
   mac_pucch.rssi    = convert_fapi_to_mac_rssi(fapi_pucch.rssi);
   mac_pucch.rsrp    = convert_fapi_to_mac_rsrp(fapi_pucch.rsrp);
@@ -193,13 +192,12 @@ static void convert_fapi_to_mac_pusch_uci_ind(mac_uci_pdu::pusch_type& mac_pusch
 
   // Fill HARQ.
   if (fapi_pusch.pdu_bitmap.test(fapi::uci_pusch_pdu::HARQ_BIT)) {
-    mac_uci_pdu::pusch_type::harq_information& harq = mac_pusch.harq_info.emplace();
-    harq.harq_status                                = fapi_pusch.harq.detection_status;
-    if (fapi_pusch.harq.payload.size() > 0) {
-      harq.payload = fapi_pusch.harq.payload;
+    if (fapi_pusch.harq.payload.empty()) {
+      mac_pusch.harq_info.emplace(mac_uci_pdu::pusch_type::harq_information::create_undetected_harq_info(
+          fapi_pusch.harq.detection_status, fapi_pusch.harq.expected_bit_length));
     } else {
-      harq.payload.resize(fapi_pusch.harq.expected_bit_length);
-      harq.payload.reset();
+      mac_pusch.harq_info.emplace(mac_uci_pdu::pusch_type::harq_information::create_detected_harq_info(
+          fapi_pusch.harq.detection_status, fapi_pusch.harq.payload));
     }
   }
 
@@ -234,9 +232,13 @@ static void convert_fapi_to_mac_pucch_f2_f3_f4_uci_ind(mac_uci_pdu::pucch_f2_or_
 
   // Fill HARQ.
   if (fapi_pucch.pdu_bitmap.test(fapi::uci_pucch_pdu_format_2_3_4::HARQ_BIT)) {
-    mac_uci_pdu::pucch_f2_or_f3_or_f4_type::harq_information& harq = mac_pucch.harq_info.emplace();
-    harq.harq_status                                               = fapi_pucch.harq.detection_status;
-    harq.payload                                                   = fapi_pucch.harq.payload;
+    if (fapi_pucch.harq.payload.empty()) {
+      mac_pucch.harq_info.emplace(mac_uci_pdu::pucch_f2_or_f3_or_f4_type::harq_information::create_undetected_harq_info(
+          fapi_pucch.harq.detection_status, fapi_pucch.harq.expected_bit_length));
+    } else {
+      mac_pucch.harq_info.emplace(mac_uci_pdu::pucch_f2_or_f3_or_f4_type::harq_information::create_detected_harq_info(
+          fapi_pucch.harq.detection_status, fapi_pucch.harq.payload));
+    }
   }
 
   // Fill CSI Part 1.
@@ -269,7 +271,7 @@ void fapi_to_mac_data_msg_translator::on_uci_indication(const fapi::uci_indicati
       case fapi::uci_pdu_type::PUSCH: {
         mac_uci_pdu& mac_pdu = mac_msg.ucis.emplace_back();
         mac_pdu.rnti         = to_rnti(pdu.pusch_pdu.rnti);
-        mac_uci_pdu::pusch_type pusch{};
+        mac_uci_pdu::pusch_type pusch;
         convert_fapi_to_mac_pusch_uci_ind(pusch, pdu.pusch_pdu);
         mac_pdu.pdu = pusch;
         break;
@@ -277,7 +279,7 @@ void fapi_to_mac_data_msg_translator::on_uci_indication(const fapi::uci_indicati
       case fapi::uci_pdu_type::PUCCH_format_0_1: {
         mac_uci_pdu& mac_pdu = mac_msg.ucis.emplace_back();
         mac_pdu.rnti         = to_rnti(pdu.pucch_pdu_f01.rnti);
-        mac_uci_pdu::pucch_f0_or_f1_type pucch{};
+        mac_uci_pdu::pucch_f0_or_f1_type pucch;
         convert_fapi_to_mac_pucch_f0_f1_uci_ind(pucch, pdu.pucch_pdu_f01);
         mac_pdu.pdu = pucch;
         break;
@@ -285,7 +287,7 @@ void fapi_to_mac_data_msg_translator::on_uci_indication(const fapi::uci_indicati
       case fapi::uci_pdu_type::PUCCH_format_2_3_4: {
         mac_uci_pdu& mac_pdu = mac_msg.ucis.emplace_back();
         mac_pdu.rnti         = to_rnti(pdu.pucch_pdu_f234.rnti);
-        mac_uci_pdu::pucch_f2_or_f3_or_f4_type pucch{};
+        mac_uci_pdu::pucch_f2_or_f3_or_f4_type pucch;
         convert_fapi_to_mac_pucch_f2_f3_f4_uci_ind(pucch, pdu.pucch_pdu_f234);
         mac_pdu.pdu = pucch;
         break;
@@ -321,7 +323,7 @@ void fapi_to_mac_data_msg_translator::on_rach_indication(const fapi::rach_indica
   mac_rach_indication indication;
   indication.slot_rx = slot_point(scs, msg.sfn, msg.slot);
   for (const auto& pdu : msg.pdus) {
-    srsran_assert(pdu.avg_rssi != std::numeric_limits<uint16_t>::max(), "Average RSSI field not set");
+    srsran_assert(pdu.avg_rssi != std::numeric_limits<decltype(pdu.avg_rssi)>::max(), "Average RSSI field not set");
 
     mac_rach_indication::rach_occasion& occas = indication.occasions.emplace_back();
     occas.frequency_index                     = pdu.ra_index;
@@ -329,8 +331,10 @@ void fapi_to_mac_data_msg_translator::on_rach_indication(const fapi::rach_indica
     occas.start_symbol                        = pdu.symbol_index;
     occas.rssi_dB                             = to_prach_rssi_dB(pdu.avg_rssi);
     for (const auto& preamble : pdu.preambles) {
-      srsran_assert(preamble.preamble_pwr != std::numeric_limits<uint32_t>::max(), "Preamble power field not set");
-      srsran_assert(preamble.preamble_snr != std::numeric_limits<uint8_t>::max(), "Preamble SNR field not set");
+      srsran_assert(preamble.preamble_pwr != std::numeric_limits<decltype(preamble.preamble_pwr)>::max(),
+                    "Preamble power field not set");
+      srsran_assert(preamble.preamble_snr != std::numeric_limits<decltype(preamble.preamble_snr)>::max(),
+                    "Preamble SNR field not set");
 
       mac_rach_indication::rach_preamble& mac_pream = occas.preambles.emplace_back();
       mac_pream.index                               = preamble.preamble_index;

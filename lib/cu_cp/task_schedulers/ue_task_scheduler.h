@@ -24,9 +24,8 @@
 
 #include "srsran/adt/slotted_array.h"
 #include "srsran/cu_cp/cu_cp_types.h"
-#include "srsran/support/async/async_task_loop.h"
+#include "srsran/support/async/fifo_async_task_scheduler.h"
 #include "srsran/support/executors/task_executor.h"
-#include "srsran/support/executors/task_worker.h"
 #include "srsran/support/timers.h"
 #include <unordered_map>
 
@@ -37,20 +36,26 @@ namespace srs_cu_cp {
 class ue_task_scheduler
 {
 public:
-  explicit ue_task_scheduler(timer_manager& timers_);
+  explicit ue_task_scheduler(timer_manager& timers_, task_executor& exec_, srslog::basic_logger& logger_);
   ~ue_task_scheduler() = default;
 
   // UE task scheduler
   void handle_ue_async_task(ue_index_t ue_index, async_task<void>&& task);
 
+  void clear_pending_tasks(ue_index_t ue_index);
+
+  async_task<bool> dispatch_and_await_task_completion(ue_index_t ue_index, unique_task task);
+
   unique_timer   make_unique_timer();
   timer_manager& get_timer_manager();
 
 private:
-  timer_manager& timers;
+  timer_manager&        timers;
+  task_executor&        exec;
+  srslog::basic_logger& logger;
 
   // task event loops indexed by ue_index
-  std::unordered_map<ue_index_t, async_task_sequencer> ue_ctrl_loop;
+  std::unordered_map<ue_index_t, fifo_async_task_scheduler> ue_ctrl_loop;
 };
 
 } // namespace srs_cu_cp

@@ -24,11 +24,13 @@
 
 using namespace srsran;
 
-std::vector<byte_buffer_slice_chain> mac_dummy::run_tx_tti(uint32_t tti)
+std::vector<byte_buffer_chain> mac_dummy::run_tx_tti(uint32_t tti)
 {
   logger.log_info("Running TX TTI={}. Generating list of {} PDUs", tti, args.nof_pdu_tti);
-  std::vector<byte_buffer_slice_chain> pdu_list;
+  std::vector<byte_buffer_chain> pdu_list;
+
   // Pull a number of RLC PDUs
+  std::vector<uint8_t> tx_pdu;
   for (uint32_t i = 0; i < args.nof_pdu_tti; i++) {
     // Get MAC opportunity size (maximum size of the RLC PDU)
     float factor = 1.0f;
@@ -36,10 +38,12 @@ std::vector<byte_buffer_slice_chain> mac_dummy::run_tx_tti(uint32_t tti)
       factor = 0.5f + real_dist(rgen);
     }
     int opp_size = static_cast<int>(args.avg_opp_size * factor);
+    tx_pdu.resize(opp_size);
 
     // Request data to transmit
     if (bsr.load(std::memory_order_relaxed) > 0) {
-      byte_buffer_slice_chain pdu = rlc_tx_lower->pull_pdu(opp_size);
+      unsigned          nwritten = rlc_tx_lower->pull_pdu(tx_pdu);
+      byte_buffer_chain pdu      = byte_buffer_slice{span<uint8_t>(tx_pdu.data(), nwritten)};
       logger.log_debug("Pulled PDU. PDU size={}, MAC opportunity={}, buffer_state={}",
                        pdu.length(),
                        opp_size,
@@ -66,7 +70,7 @@ void mac_dummy::run_rx_tti()
     float rnd = real_dist(rgen);
     if (std::isnan(rnd) || ((rnd > args.pdu_drop_rate) || skip_action)) {
       // Cut/Trim
-      byte_buffer_slice_chain::iterator pdu_end = pdu_it->end();
+      byte_buffer_chain::iterator pdu_end = pdu_it->end();
       if ((real_dist(rgen) < args.pdu_cut_rate)) {
         size_t pdu_len     = pdu_it->length();
         size_t trimmed_len = static_cast<size_t>(pdu_len * real_dist(rgen));
@@ -100,7 +104,7 @@ void mac_dummy::run_rx_tti()
   pdu_rx_list.clear();
 }
 
-void mac_dummy::push_rx_pdus(std::vector<byte_buffer_slice_chain> list_pdus)
+void mac_dummy::push_rx_pdus(std::vector<byte_buffer_chain> list_pdus)
 {
   pdu_rx_list.insert(
       pdu_rx_list.end(), std::make_move_iterator(list_pdus.begin()), std::make_move_iterator(list_pdus.end()));

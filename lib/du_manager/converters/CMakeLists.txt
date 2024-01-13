@@ -20,11 +20,10 @@
 
 
 set(SOURCES f1ap_configuration_helpers.cpp
-        asn1_cell_group_config_helpers.cpp
+        asn1_rrc_config_helpers.cpp
         asn1_csi_meas_config_helpers.cpp
         rlc_config_helpers.cpp
-        mac_config_helpers.cpp
         scheduler_configuration_helpers.cpp)
 
 add_library(du_manager_converters STATIC ${SOURCES})
-target_link_libraries(du_manager_converters rrc_nr_asn1 srsran_support srsran_ran srsran_sched f1ap_asn1)
+target_link_libraries(du_manager_converters rrc_nr_asn1 srsran_support srsran_ran srsran_sched)

@@ -76,7 +76,8 @@ rlc_um_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_um_sn_size sn
 {
   byte_buffer_reader pdu_reader = pdu;
   if (pdu_reader.empty()) {
-    srslog::fetch_basic_logger("RLC").warning("Cannot read header of empty PDU.");
+    srslog::fetch_basic_logger("RLC").warning(
+        "UMD PDU too small. pdu_len={} hdr_len={}", pdu.length(), rlc_um_pdu_header_size_no_so(sn_size));
     return false;
   }
 
@@ -112,6 +113,10 @@ rlc_um_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_um_sn_size sn
     if (header->si != rlc_si_field::full_sdu) {
       // continue unpacking remaining SN
       ++pdu_reader;
+      if (pdu_reader.empty()) {
+        srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing lower byte of SN.");
+        return false;
+      }
       header->sn |= (*pdu_reader & 0xffU); // 8 bits SN
     }
 
@@ -124,8 +129,16 @@ rlc_um_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_um_sn_size sn
   // Read optional part
   if (header->si == rlc_si_field::last_segment || header->si == rlc_si_field::middle_segment) {
     // read SO
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing upper byte of SO.");
+      return false;
+    }
     header->so = (*pdu_reader & 0xffU) << 8U;
     ++pdu_reader;
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing lower byte of SO.");
+      return false;
+    }
     header->so |= (*pdu_reader & 0xffU);
     ++pdu_reader;
   }
@@ -155,31 +168,35 @@ inline size_t rlc_um_nr_packed_length(const rlc_um_pdu_header& header)
   return len;
 }
 
-inline void rlc_um_write_data_pdu_header(const rlc_um_pdu_header& header, byte_buffer& pdu)
+inline size_t rlc_um_write_data_pdu_header(span<uint8_t> buf, const rlc_um_pdu_header& header)
 {
-  byte_buffer        hdr_buf;
-  byte_buffer_writer hdr_writer = hdr_buf;
-  // write SI field
-  hdr_writer.append((to_number(header.si) & 0x03U) << 6U); // 2 bits SI
+  span<uint8_t>::iterator buf_it = buf.begin();
+
+  *buf_it = (to_number(header.si) & 0x03U) << 6U; // 2 bits SI
 
   if (header.si == rlc_si_field::full_sdu) {
-    // that's all
-  } else {
-    if (header.sn_size == rlc_um_sn_size::size6bits) {
-      // write SN
-      hdr_writer.back() |= (header.sn & 0x3fU); // 6 bit SN
-    } else {
-      // 12bit SN
-      hdr_writer.back() |= (header.sn >> 8U) & 0xfU; // high part of SN (4 bit)
-      hdr_writer.append(header.sn & 0xffU);          // remaining 8 bit SN
-    }
-    if (header.so != 0) {
-      // write SO
-      hdr_writer.append((header.so) >> 8U); // first part of SO
-      hdr_writer.append(header.so & 0xffU); // second part of SO
-    }
+    return 1; // that's all
   }
-  pdu.chain_before(std::move(hdr_buf));
+
+  if (header.sn_size == rlc_um_sn_size::size6bits) {
+    // 6-bit SN
+    *buf_it |= (header.sn & 0x3fU); // write SN (6 bit)
+    buf_it++;
+  } else {
+    // 12-bit SN
+    *buf_it |= (header.sn >> 8U) & 0xfU; // upper 4 bits of SN
+    buf_it++;
+    *buf_it = header.sn & 0xffU; // lower part 8 bits of SN
+    buf_it++;
+  }
+  if (header.so != 0) {
+    // write SO
+    *buf_it = header.so >> 8U; // upper part of SO
+    buf_it++;
+    *buf_it = header.so & 0xffU; // lower part of SO
+    buf_it++;
+  }
+  return std::distance(buf.begin(), buf_it);
 }
 
 } // namespace srsran
@@ -196,6 +213,10 @@ struct formatter<srsran::rlc_um_pdu_header> {
   template <typename FormatContext>
   auto format(const srsran::rlc_um_pdu_header& hdr, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
   {
+    if (hdr.si == srsran::rlc_si_field::full_sdu) {
+      // Header of full SDU only has SI; no SN and no SO.
+      return format_to(ctx.out(), "si={}", hdr.si, hdr.sn, hdr.so);
+    }
     return format_to(ctx.out(), "si={} sn={} so={}", hdr.si, hdr.sn, hdr.so);
   }
 };

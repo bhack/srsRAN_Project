@@ -20,7 +20,9 @@
  *
  */
 
+#include "../../support/resource_grid_mapper_test_doubles.h"
 #include "dmrs_pdsch_processor_test_data.h"
+#include "srsran/phy/support/support_factories.h"
 #include "srsran/phy/upper/signal_processors/signal_processor_factories.h"
 
 using namespace srsran;
@@ -41,14 +43,16 @@ int main()
   for (const test_case_t& test_case : dmrs_pdsch_processor_test_data) {
     int prb_idx_high = test_case.config.rb_mask.find_highest();
     TESTASSERT(prb_idx_high > 1);
-    unsigned max_prb  = static_cast<unsigned>(prb_idx_high + 1);
-    unsigned max_symb = get_nsymb_per_slot(cyclic_prefix::NORMAL);
+    unsigned max_prb   = static_cast<unsigned>(prb_idx_high + 1);
+    unsigned max_symb  = get_nsymb_per_slot(cyclic_prefix::NORMAL);
+    unsigned max_ports = test_case.config.precoding.get_nof_ports();
 
-    // Create resource grid spy.
-    resource_grid_writer_spy grid(MAX_PORTS, max_symb, max_prb);
+    // Prepare resource grid and resource grid mapper spies.
+    resource_grid_writer_spy              grid(max_ports, max_symb, max_prb);
+    std::unique_ptr<resource_grid_mapper> mapper = create_resource_grid_mapper(max_ports, NRE * max_prb, grid);
 
     // Map DMRS-PDSCH using the test case arguments.
-    dmrs_pdsch->map(grid, test_case.config);
+    dmrs_pdsch->map(*mapper, test_case.config);
 
     // Load output golden data.
     const std::vector<resource_grid_writer_spy::expected_entry_t> testvector_symbols = test_case.symbols.read();

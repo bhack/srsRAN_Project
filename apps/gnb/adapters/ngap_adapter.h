@@ -23,9 +23,8 @@
 #pragma once
 
 #include "lib/ngap/ngap_asn1_packer.h"
-#include "srsran/gateways/sctp_network_gateway_factory.h"
 #include "srsran/ngap/ngap.h"
-#include "srsran/support/io_broker/io_broker.h"
+#include "srsran/support/io/io_broker.h"
 
 namespace srsran {
 
@@ -38,7 +37,7 @@ class ngap_network_adapter : public ngap_message_notifier,
                              public network_gateway_data_notifier
 {
 public:
-  ngap_network_adapter(io_broker& broker_, ngap_pcap& pcap_) : broker(broker_), pcap(pcap_)
+  ngap_network_adapter(io_broker& broker_, dlt_pcap& pcap_) : broker(broker_), pcap(pcap_)
   {
     if (gateway_ctrl_handler != nullptr) {
       broker.unregister_fd(gateway_ctrl_handler->get_socket_fd());
@@ -53,7 +52,9 @@ public:
 
     packer = std::make_unique<ngap_asn1_packer>(*gateway_data_handler, *this, pcap);
 
-    gateway_ctrl_handler->create_and_connect();
+    if (!gateway_ctrl_handler->create_and_connect()) {
+      report_error("Failed to create SCTP gateway.\n");
+    }
     broker.register_fd(gateway_ctrl_handler->get_socket_fd(), [this](int fd) { gateway_ctrl_handler->receive(); });
   }
 
@@ -115,7 +116,7 @@ private:
   }
 
   io_broker&                         broker;
-  ngap_pcap&                         pcap;
+  dlt_pcap&                          pcap;
   std::unique_ptr<ngap_asn1_packer>  packer;
   sctp_network_gateway_controller*   gateway_ctrl_handler = nullptr;
   sctp_network_gateway_data_handler* gateway_data_handler = nullptr;

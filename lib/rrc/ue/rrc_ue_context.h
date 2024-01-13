@@ -22,15 +22,14 @@
 
 #pragma once
 
-#include "drb_manager_impl.h"
+#include "rrc_ue_srb_context.h"
 #include "srsran/asn1/rrc_nr/rrc_nr.h"
-#include "srsran/rrc/drb_manager.h"
+#include "srsran/cu_cp/up_resource_manager.h"
 #include "srsran/rrc/rrc_cell_context.h"
 #include "srsran/rrc/rrc_ue.h"
 #include "srsran/rrc/rrc_ue_config.h"
 
 namespace srsran {
-
 namespace srs_cu_cp {
 
 /// RRC states (3GPP 38.331 v15.5.1 Sec 4.2.1)
@@ -40,32 +39,29 @@ enum class rrc_state { idle = 0, connected, connected_inactive };
 class rrc_ue_context_t
 {
 public:
-  rrc_ue_context_t(const ue_index_t       ue_index_,
-                   const rnti_t           c_rnti_,
-                   const rrc_cell_context cell_,
-                   const rrc_ue_cfg_t&    cfg_) :
-    ue_index(ue_index_),
-    c_rnti(c_rnti_),
-    cell(cell_),
-    cfg(cfg_),
-    drb_mng(std::make_unique<drb_manager_impl>(cfg_.drb_cfg))
-  {
-  }
+  rrc_ue_context_t(const ue_index_t                  ue_index_,
+                   const rnti_t                      c_rnti_,
+                   const rrc_cell_context&           cell_,
+                   const rrc_ue_cfg_t&               cfg_,
+                   optional<rrc_ue_transfer_context> rrc_context_);
 
-  drb_manager& get_drb_manager() { return *drb_mng; }
-
-  const ue_index_t                       ue_index; // UE index assigned by the DU processor
-  const rnti_t                           c_rnti;   // current C-RNTI
-  const rrc_cell_context                 cell;     // current cell
-  const rrc_ue_cfg_t&                    cfg;
-  rrc_state                              state = rrc_state::idle;
-  std::unique_ptr<drb_manager>           drb_mng;
-  guami                                  current_guami; // current GUAMI
-  uint64_t                               setup_ue_id = -1;
-  asn1::rrc_nr::establishment_cause_opts connection_cause;
-  security::sec_as_config                sec_cfg;
+  const ue_index_t                                    ue_index; // UE index assigned by the DU processor
+  const rnti_t                                        c_rnti;   // current C-RNTI
+  const rrc_cell_context                              cell;     // current cell
+  const rrc_ue_cfg_t                                  cfg;
+  rrc_state                                           state = rrc_state::idle;
+  optional<rrc_meas_cfg>                              meas_cfg;
+  optional<uint32_t>                                  five_g_tmsi;
+  uint64_t                                            setup_ue_id;
+  asn1::rrc_nr::establishment_cause_opts              connection_cause;
+  security::security_context                          sec_context;
+  std::map<srb_id_t, ue_srb_context>                  srbs;
+  bool                                                security_enabled = false;
+  optional<asn1::rrc_nr::ue_nr_cap_s>                 capabilities;
+  optional<asn1::rrc_nr::ue_cap_rat_container_list_l> capabilities_list;
+  optional<rrc_ue_transfer_context> transfer_context; // Context of old UE when created through mobility.
+  srslog::basic_logger&             logger;
 };
 
 } // namespace srs_cu_cp
-
 } // namespace srsran

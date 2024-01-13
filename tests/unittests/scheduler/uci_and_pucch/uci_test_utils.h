@@ -22,13 +22,14 @@
 
 #pragma once
 
-#include "lib/du_manager/converters/mac_config_helpers.h"
 #include "lib/scheduler/pucch_scheduling/pucch_allocator_impl.h"
 #include "lib/scheduler/uci_scheduling/uci_allocator_impl.h"
 #include "lib/scheduler/uci_scheduling/uci_scheduler_impl.h"
 #include "tests/unittests/scheduler/test_utils/config_generators.h"
+#include "tests/unittests/scheduler/test_utils/dummy_test_components.h"
 #include "tests/unittests/scheduler/test_utils/scheduler_test_suite.h"
 #include "srsran/du/du_cell_config_helpers.h"
+#include "srsran/mac/config/mac_config_helpers.h"
 #include <gtest/gtest.h>
 
 namespace srsran {
@@ -38,48 +39,18 @@ namespace srsran {
 inline sched_cell_configuration_request_message
 make_default_sched_cell_configuration_request_scs(subcarrier_spacing scs, bool tdd_mode = false)
 {
-  cell_config_builder_params               params{.scs_common = scs, .channel_bw_mhz = bs_channel_bandwidth_fr1::MHz20};
-  sched_cell_configuration_request_message msg{test_helpers::make_default_sched_cell_configuration_request(params)};
-  msg.ssb_config.scs                               = scs;
-  msg.scs_common                                   = scs;
-  msg.ul_cfg_common.init_ul_bwp.generic_params.scs = scs;
-  msg.dl_cfg_common.init_dl_bwp.generic_params.scs = scs;
-  // Change Carrier parameters when SCS is 15kHz.
+  cell_config_builder_params params{
+      .scs_common = scs, .channel_bw_mhz = bs_channel_bandwidth_fr1::MHz20, .nof_dl_ports = 1};
   if (scs == subcarrier_spacing::kHz15) {
     // Band n5 for FDD, band n41 for TDD.
-    msg.dl_carrier.arfcn = tdd_mode ? 499200 : 530000;
-    msg.ul_carrier.arfcn = tdd_mode ? 499200 : band_helper::get_ul_arfcn_from_dl_arfcn(msg.ul_carrier.arfcn);
-    msg.dl_cfg_common.freq_info_dl.scs_carrier_list.front().carrier_bandwidth = 106;
-    msg.dl_cfg_common.init_dl_bwp.generic_params.crbs =
-        crb_interval{0, msg.dl_cfg_common.freq_info_dl.scs_carrier_list.front().carrier_bandwidth};
-    msg.ul_cfg_common.freq_info_ul.scs_carrier_list.front().carrier_bandwidth = 106;
-    msg.ul_cfg_common.init_ul_bwp.generic_params.crbs =
-        crb_interval{0, msg.ul_cfg_common.freq_info_ul.scs_carrier_list.front().carrier_bandwidth};
-  }
-  // Change Carrier parameters when SCS is 30kHz.
-  else if (scs == subcarrier_spacing::kHz30) {
+    params.dl_arfcn = tdd_mode ? 499200 : 530000;
+    params.band     = band_helper::get_band_from_dl_arfcn(params.dl_arfcn);
+  } else if (scs == subcarrier_spacing::kHz30) {
     // Band n5 for FDD, band n77 or n78 for TDD.
-    msg.dl_carrier.arfcn = tdd_mode ? 630000 : 176000;
-    msg.ul_carrier.arfcn = tdd_mode ? 630000 : band_helper::get_ul_arfcn_from_dl_arfcn(msg.ul_carrier.arfcn);
-    msg.dl_cfg_common.freq_info_dl.scs_carrier_list.emplace_back(
-        scs_specific_carrier{0, subcarrier_spacing::kHz30, 52});
-    msg.dl_cfg_common.init_dl_bwp.generic_params.crbs = {
-        0, msg.dl_cfg_common.freq_info_dl.scs_carrier_list[1].carrier_bandwidth};
-    msg.ul_cfg_common.freq_info_ul.scs_carrier_list.emplace_back(
-        scs_specific_carrier{0, subcarrier_spacing::kHz30, 52});
-    msg.ul_cfg_common.init_ul_bwp.generic_params.crbs = {
-        0, msg.ul_cfg_common.freq_info_ul.scs_carrier_list[1].carrier_bandwidth};
+    params.dl_arfcn = tdd_mode ? 630000 : 176000;
+    params.band     = band_helper::get_band_from_dl_arfcn(params.dl_arfcn);
   }
-  msg.dl_carrier.carrier_bw_mhz = 20;
-  msg.dl_carrier.nof_ant        = 1;
-  msg.ul_carrier.carrier_bw_mhz = 20;
-  msg.ul_carrier.nof_ant        = 1;
-
-  if (tdd_mode) {
-    msg.tdd_ul_dl_cfg_common.emplace(config_helpers::make_default_tdd_ul_dl_config_common());
-  }
-
-  return msg;
+  return sched_cell_configuration_request_message{test_helpers::make_default_sched_cell_configuration_request(params)};
 }
 
 ////////////    Builder of PUCCH scheduler output     ////////////
@@ -112,7 +83,7 @@ inline sched_cell_configuration_request_message make_custom_sched_cell_configura
                                                                                              bool     is_tdd = false)
 {
   sched_cell_configuration_request_message req = test_helpers::make_default_sched_cell_configuration_request(
-      cell_config_builder_params{.scs_common     = subcarrier_spacing::kHz15,
+      cell_config_builder_params{.scs_common     = is_tdd ? subcarrier_spacing::kHz30 : subcarrier_spacing::kHz15,
                                  .channel_bw_mhz = bs_channel_bandwidth_fr1::MHz10,
                                  .dl_arfcn       = is_tdd ? 520000U : 365000U});
   req.ul_cfg_common.init_ul_bwp.pucch_cfg_common->pucch_resource_common = pucch_res_common;
@@ -122,13 +93,15 @@ inline sched_cell_configuration_request_message make_custom_sched_cell_configura
 /////////        TEST BENCH for PUCCH scheduler        /////////
 
 struct test_bench_params {
-  unsigned               pucch_res_common = 11;
-  unsigned               n_cces           = 0;
-  sr_periodicity         period           = sr_periodicity::sl_40;
-  unsigned               offset           = 0;
-  csi_report_periodicity csi_period       = csi_report_periodicity::slots320;
-  unsigned               csi_offset       = 9;
-  bool                   is_tdd           = false;
+  unsigned               pucch_res_common   = 11;
+  unsigned               n_cces             = 0;
+  sr_periodicity         period             = sr_periodicity::sl_40;
+  unsigned               offset             = 0;
+  csi_report_periodicity csi_period         = csi_report_periodicity::slots320;
+  unsigned               csi_offset         = 9;
+  bool                   is_tdd             = false;
+  bool                   pucch_f2_more_prbs = false;
+  bool                   cfg_for_mimo_4x4   = false;
 };
 
 // Test bench with all that is needed for the PUCCH.
@@ -146,14 +119,23 @@ public:
 
   void slot_indication(slot_point slot_tx);
 
-  scheduler_expert_config expert_cfg;
-  cell_configuration      cell_cfg;
+  void fill_all_grid(slot_point slot_tx);
+
+  scheduler_expert_config                        expert_cfg;
+  sched_cfg_dummy_notifier                       mac_notif;
+  scheduler_harq_timeout_dummy_handler           harq_timeout_handler;
+  cell_common_configuration_list                 cell_cfg_list{};
+  const cell_configuration&                      cell_cfg;
+  std::vector<std::unique_ptr<ue_configuration>> ue_ded_cfgs;
+
   cell_resource_allocator res_grid{cell_cfg};
   pdcch_dl_information    dci_info;
   const unsigned          k0;
   const unsigned          k1{4};
   du_ue_index_t           main_ue_idx{du_ue_index_t::MIN_DU_UE_INDEX};
-  ue_list                 ues;
+  ue_repository           ues;
+  bool                    pucch_f2_more_prbs;
+
   // last_allocated_rnti keeps track of the last RNTI allocated.
   rnti_t                last_allocated_rnti;
   du_ue_index_t         last_allocated_ue_idx;

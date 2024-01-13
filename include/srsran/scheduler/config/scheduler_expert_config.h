@@ -25,35 +25,81 @@
 /// \file
 /// \brief Configuration structs passed to scheduler implementation.
 
+#include "srsran/adt/interval.h"
 #include "srsran/adt/optional.h"
+#include "srsran/ran/direct_current_offset.h"
 #include "srsran/ran/pdcch/aggregation_level.h"
 #include "srsran/ran/pdsch/pdsch_mcs.h"
+#include "srsran/ran/resource_block.h"
 #include "srsran/ran/sch_mcs.h"
-#include "srsran/ran/sib_configuration.h"
+#include "srsran/ran/sib/sib_configuration.h"
+#include "srsran/ran/slot_pdu_capacity_constants.h"
 
 namespace srsran {
 
 /// \brief UE scheduling statically configurable expert parameters.
 struct scheduler_ue_expert_config {
-  optional<sch_mcs_index> fixed_dl_mcs;
-  unsigned                initial_cqi;
-  optional<sch_mcs_index> fixed_ul_mcs;
-  unsigned                max_nof_harq_retxs;
+  /// Range of allowed MCS indices for DL UE scheduling. To use a fixed mcs, set the minimum mcs equal to the maximum.
+  interval<sch_mcs_index, true> dl_mcs;
+  /// Sequence of redundancy versions used for PDSCH scheduling. Possible values: {0, 1, 2, 3}.
+  std::vector<uint8_t> pdsch_rv_sequence;
+  /// Range of allowed MCS indices for UL UE scheduling. To use a fixed mcs, set the minimum mcs equal to the maximum.
+  interval<sch_mcs_index, true> ul_mcs;
+  /// Sequence of redundancy versions used for PUSCH scheduling. Possible values: {0, 1, 2, 3}.
+  std::vector<uint8_t> pusch_rv_sequence;
+  unsigned             initial_cqi;
+  unsigned             max_nof_harq_retxs;
   /// Maximum MCS index that can be assigned when scheduling MSG4.
   sch_mcs_index max_msg4_mcs;
-  /// Maximum consecutive PUSCH KOs, before scheduler de-prioritizes UE.
-  unsigned max_consecutive_pusch_kos;
   /// Initial UL SINR value used for Dynamic UL MCS computation (in dB).
   double initial_ul_sinr;
+  /// Enable multiplexing of CSI-RS and PDSCH.
+  bool enable_csi_rs_pdsch_multiplexing;
+  /// Set boundaries, in number of RBs, for UE PDSCH grants.
+  interval<unsigned> pdsch_nof_rbs{1, MAX_NOF_PRBS};
+  /// Measurements periodicity in nof. slots over which the new Timing Advance Command is computed.
+  unsigned ta_measurement_slot_period{80};
+  /// Timing Advance Command (T_A) offset threshold above which Timing Advance Command is triggered. Possible valid
+  /// values {0,...,32}. If set to less than zero, issuing of TA Command is disabled.
+  int8_t ta_cmd_offset_threshold;
+  /// UL SINR threshold (in dB) above which reported N_TA update measurement is considered valid.
+  float ta_update_measurement_ul_sinr_threshold;
+  /// Direct Current (DC) offset, in number of subcarriers, used in PUSCH, by default. The gNB may supersede this DC
+  /// offset value through RRC messaging. See TS38.331 - "txDirectCurrentLocation".
+  dc_offset_t initial_ul_dc_offset{dc_offset_t::center};
+  /// Maximum number of PDSCH grants per slot.
+  unsigned max_pdschs_per_slot = MAX_PDSCH_PDUS_PER_SLOT;
+  /// Maximum number of PUSCH grants per slot.
+  unsigned max_puschs_per_slot = MAX_PUSCH_PDUS_PER_SLOT;
+  /// Maximum number of PDCCH grant allocation attempts per slot. Default: Unlimited.
+  unsigned max_pdcch_alloc_attempts_per_slot = std::max(MAX_DL_PDCCH_PDUS_PER_SLOT, MAX_UL_PDCCH_PDUS_PER_SLOT);
+  /// CQI offset increment used in outer loop link adaptation (OLLA) algorithm. If set to zero, OLLA is disabled.
+  float olla_cqi_inc{0.001};
+  /// DL Target BLER to be achieved with OLLA.
+  float olla_dl_target_bler{0.01};
+  /// Maximum CQI offset that the OLLA algorithm can apply to the reported CQI.
+  float olla_max_cqi_offset{4.0};
+  /// UL SNR offset increment in dBs used in OLLA algorithm. If set to zero, OLLA is disabled.
+  float olla_ul_snr_inc{0.001};
+  /// UL Target BLER to be achieved with OLLA.
+  float olla_ul_target_bler{0.01};
+  /// Maximum UL SNR offset that the OLLA algorithm can apply on top of the estimated UL SINR.
+  float olla_max_ul_snr_offset{5.0};
+  /// Threshold for drop in CQI of the first HARQ transmission above which HARQ retransmissions are cancelled.
+  uint8_t dl_harq_la_cqi_drop_threshold{2};
+  /// Threshold for drop in nof. layers of the first HARQ transmission above which HARQ retransmission is cancelled.
+  uint8_t dl_harq_la_ri_drop_threshold{1};
 };
 
 /// \brief System Information scheduling statically configurable expert parameters.
 struct scheduler_si_expert_config {
   /// As per TS 38.214, Section 5.1.3.1, only an MCS with modulation order 2 allowed for SIB1.
-  sch_mcs_index     sib1_mcs_index;
-  aggregation_level sib1_dci_aggr_lev;
+  sch_mcs_index     sib1_mcs_index          = 5;
+  aggregation_level sib1_dci_aggr_lev       = aggregation_level::n4;
+  sch_mcs_index     si_message_mcs_index    = 5;
+  aggregation_level si_message_dci_aggr_lev = aggregation_level::n4;
   /// SIB1 retx period.
-  sib1_rtx_periodicity sib1_retx_period;
+  sib1_rtx_periodicity sib1_retx_period = sib1_rtx_periodicity::ms160;
 };
 
 /// \brief Random Access scheduling statically configurable expert parameters.
@@ -66,9 +112,9 @@ struct scheduler_ra_expert_config {
 /// \brief Paging scheduling statically configurable expert parameters.
 struct scheduler_paging_expert_config {
   /// As per TS 38.214, Section 5.1.3.1, only an MCS with modulation order 2 allowed for Paging.
-  sch_mcs_index     paging_mcs_index;
-  aggregation_level paging_dci_aggr_lev;
-  unsigned          max_paging_retries;
+  sch_mcs_index     paging_mcs_index    = 5;
+  aggregation_level paging_dci_aggr_lev = aggregation_level::n4;
+  unsigned          max_paging_retries  = 2;
 };
 
 /// \brief Scheduling statically configurable expert parameters.

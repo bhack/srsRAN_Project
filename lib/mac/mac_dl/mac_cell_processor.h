@@ -22,30 +22,31 @@
 
 #pragma once
 
-#include "../mac_config.h"
+#include "../mac_ctrl/mac_config.h"
 #include "dl_sch_pdu_assembler.h"
 #include "mac_dl_ue_manager.h"
+#include "mac_scheduler_cell_info_handler.h"
+#include "paging_pdu_assembler.h"
 #include "rar_pdu_assembler.h"
 #include "sib_pdu_assembler.h"
 #include "ssb_assembler.h"
 #include "srsran/mac/mac.h"
-#include "srsran/pcap/pcap.h"
+#include "srsran/pcap/dlt_pcap.h"
 #include "srsran/scheduler/mac_scheduler.h"
 #include "srsran/support/memory_pool/ring_buffer_pool.h"
 
 namespace srsran {
 
-class mac_cell_processor final : public mac_cell_slot_handler,
-                                 public mac_cell_controller,
-                                 public mac_cell_control_information_handler
+class mac_cell_processor final : public mac_cell_slot_handler, public mac_cell_controller
 {
 public:
   mac_cell_processor(const mac_cell_creation_request& cell_cfg_req,
-                     mac_scheduler&                   sched,
+                     mac_scheduler_cell_info_handler& sched,
                      mac_dl_ue_manager&               ue_mng,
                      mac_cell_result_notifier&        phy_notifier,
                      task_executor&                   cell_exec,
                      task_executor&                   slot_exec,
+                     task_executor&                   err_ind_exec,
                      task_executor&                   ctrl_exec,
                      mac_pcap&                        pcap);
 
@@ -56,10 +57,7 @@ public:
   async_task<void> stop() override;
 
   void handle_slot_indication(slot_point sl_tx) override;
-
-  void handle_crc(const mac_crc_indication_message& msg) override;
-
-  void handle_uci(const mac_uci_indication_message& msg) override;
+  void handle_error_indication(slot_point sl_tx, error_event event) override;
 
 private:
   void handle_slot_indication_impl(slot_point sl_tx);
@@ -81,12 +79,13 @@ private:
   /// Update DL buffer states of the allocated DL bearers.
   void update_logical_channel_dl_buffer_states(const dl_sched_result& dl_res);
 
-  void write_tx_pdu_pcap(const slot_point& sl_tx, const sched_result* sl_res, const mac_dl_data_result& dl_res);
+  void write_tx_pdu_pcap(const slot_point& sl_tx, const sched_result& sl_res, const mac_dl_data_result& dl_res);
 
   srslog::basic_logger&           logger;
   const mac_cell_creation_request cell_cfg;
   task_executor&                  cell_exec;
   task_executor&                  slot_exec;
+  task_executor&                  err_ind_exec;
   task_executor&                  ctrl_exec;
   mac_cell_result_notifier&       phy_cell;
 
@@ -99,15 +98,18 @@ private:
   sib_pdu_assembler    sib_assembler;
   rar_pdu_assembler    rar_assembler;
   dl_sch_pdu_assembler dlsch_assembler;
+  paging_pdu_assembler paging_assembler;
 
-  mac_scheduler&     sched_obj;
-  mac_dl_ue_manager& ue_mng;
+  mac_scheduler_cell_info_handler& sched;
+  mac_dl_ue_manager&               ue_mng;
 
   /// Represents activation cell state.
   // Note: For now, cells start active.
   enum class cell_state { inactive, active } state = cell_state::active;
 
   mac_pcap& pcap;
+
+  bool sib1_pcap_dumped = false;
 };
 
 } // namespace srsran

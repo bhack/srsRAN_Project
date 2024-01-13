@@ -21,26 +21,19 @@
  */
 
 #include "mac_controller.h"
-#include "../du_rnti_table.h"
+#include "../rnti_manager.h"
 #include "ue_creation_procedure.h"
 #include "ue_delete_procedure.h"
 #include "ue_reconfiguration_procedure.h"
 
 using namespace srsran;
 
-mac_controller::mac_controller(mac_common_config_t&        cfg_,
+mac_controller::mac_controller(const mac_control_config&   cfg_,
                                mac_ul_configurator&        ul_unit_,
                                mac_dl_configurator&        dl_unit_,
-                               rach_handler_configurator&  rach_unit_,
-                               du_rnti_table&              rnti_table_,
+                               rnti_manager&               rnti_table_,
                                mac_scheduler_configurator& sched_cfg_) :
-  cfg(cfg_),
-  logger(cfg.logger),
-  ul_unit(ul_unit_),
-  dl_unit(dl_unit_),
-  rach_unit(rach_unit_),
-  rnti_table(rnti_table_),
-  sched_cfg(sched_cfg_)
+  cfg(cfg_), logger(cfg.logger), ul_unit(ul_unit_), dl_unit(dl_unit_), rnti_table(rnti_table_), sched_cfg(sched_cfg_)
 {
 }
 
@@ -51,17 +44,14 @@ void mac_controller::add_cell(const mac_cell_creation_request& cell_cfg)
 
   // > Create MAC Cell DL Handler.
   dl_unit.add_cell(cell_cfg);
-
-  // > Create RACH Cell Handler.
-  rach_unit.add_cell(cell_cfg.cell_index);
 }
 
 void mac_controller::remove_cell(du_cell_index_t cell_index)
 {
-  // 1. Remove cell from MAC Cell Handler.
+  // > Remove cell from MAC Cell Handler.
   dl_unit.remove_cell(cell_index);
 
-  // 2. Remove cell from scheduler.
+  // > Remove cell from scheduler.
   sched_cfg.remove_cell(cell_index);
 }
 
@@ -70,44 +60,52 @@ mac_cell_controller& mac_controller::get_cell_controller(du_cell_index_t cell_in
   return dl_unit.get_cell_controller(cell_index);
 }
 
-async_task<mac_ue_create_response_message>
-mac_controller::handle_ue_create_request(const mac_ue_create_request_message& msg)
+async_task<mac_ue_create_response> mac_controller::handle_ue_create_request(const mac_ue_create_request& msg)
 {
   return launch_async<mac_ue_create_request_procedure>(msg, cfg, *this, ul_unit, dl_unit, sched_cfg);
 }
 
-async_task<mac_ue_delete_response_message>
-mac_controller::handle_ue_delete_request(const mac_ue_delete_request_message& msg)
+async_task<mac_ue_delete_response> mac_controller::handle_ue_delete_request(const mac_ue_delete_request& msg)
 {
   return launch_async<mac_ue_delete_procedure>(msg, cfg, *this, ul_unit, dl_unit, sched_cfg);
 }
 
-async_task<mac_ue_reconfiguration_response_message>
-mac_controller::handle_ue_reconfiguration_request(const mac_ue_reconfiguration_request_message& msg)
+async_task<mac_ue_reconfiguration_response>
+mac_controller::handle_ue_reconfiguration_request(const mac_ue_reconfiguration_request& msg)
 {
   return launch_async<mac_ue_reconfiguration_procedure>(msg, cfg, ul_unit, dl_unit, sched_cfg);
 }
 
-bool mac_controller::add_ue(du_ue_index_t ue_index, rnti_t crnti, du_cell_index_t cell_index)
+rnti_t mac_controller::add_ue(du_ue_index_t ue_index, du_cell_index_t cell_index, rnti_t tc_rnti)
 {
   srsran_assert(is_du_ue_index_valid(ue_index), "Invalid ue_index={}", ue_index);
 
   if (ue_db.contains(ue_index)) {
-    // UE already existed with same rnti.
-    return false;
+    // UE already existed with same ue_index.
+    return rnti_t::INVALID_RNTI;
   }
 
   // Create UE object.
   ue_db.emplace(ue_index);
   mac_ue_context& u = ue_db[ue_index];
-  u.rnti            = crnti;
   u.du_ue_index     = ue_index;
   u.pcell_idx       = cell_index;
 
-  // Update RNTI -> UE index map.
-  rnti_table.add_ue(crnti, ue_index);
+  if (tc_rnti != rnti_t::INVALID_RNTI) {
+    // We reuse the TC-RNTI as the C-RNTI, if it was already chosen.
+    u.rnti = tc_rnti;
+  } else {
+    // Otherwise, we generate a new C-RNTI.
+    u.rnti = rnti_table.allocate();
+  }
 
-  return true;
+  // Update RNTI -> UE index map.
+  if (not rnti_table.add_ue(u.rnti, ue_index)) {
+    logger.error("ue={} rnti={}: The update of the RNTI table overwrote a previous entry", ue_index, u.rnti);
+    rnti_table.rem_ue(u.rnti);
+    return rnti_t::INVALID_RNTI;
+  }
+  return u.rnti;
 }
 
 void mac_controller::remove_ue(du_ue_index_t ue_index)
@@ -116,8 +114,8 @@ void mac_controller::remove_ue(du_ue_index_t ue_index)
     logger.warning("Failed to find ue_index={:#x}", ue_index);
     return;
   }
-  logger.debug("Removing ue_index={:#x}", ue_index);
 
+  // Remove RNTI from the RNTI entry.
   rnti_table.rem_ue(ue_db[ue_index].rnti);
 
   ue_db.erase(ue_index);

@@ -20,20 +20,56 @@
  *
  */
 
-#include "gtpu_test.h"
-#include "srsran/gtpu/gtpu_tunnel_factory.h"
+#include "gtpu_test_shared.h"
+#include "lib/gtpu/gtpu_pdu.h"
 #include "srsran/support/test_utils.h"
 #include <gtest/gtest.h>
 #include <queue>
 
 using namespace srsran;
 
+/// Fixture class for GTP-U PDU tests
+class gtpu_test : public ::testing::Test
+{
+public:
+  gtpu_test() :
+    logger(srslog::fetch_basic_logger("TEST", false)), gtpu_logger(srslog::fetch_basic_logger("GTPU", false))
+  {
+  }
+
+protected:
+  void SetUp() override
+  {
+    // init test's logger
+    srslog::init();
+    logger.set_level(srslog::basic_levels::debug);
+
+    // init GTPU logger
+    gtpu_logger.set_level(srslog::basic_levels::debug);
+    gtpu_logger.set_hex_dump_max_size(100);
+  }
+
+  void TearDown() override
+  {
+    // flush logger after each test
+    srslog::flush();
+  }
+
+  // Test logger
+  srslog::basic_logger& logger;
+
+  // GTP-U logger
+  srslog::basic_logger& gtpu_logger;
+  gtpu_tunnel_logger    gtpu_rx_logger{"GTPU", {srs_cu_up::ue_index_t{}, gtpu_teid_t{1}, "DL"}};
+  gtpu_tunnel_logger    gtpu_tx_logger{"GTPU", {srs_cu_up::ue_index_t{}, gtpu_teid_t{1}, "UL"}};
+};
+
 /// \brief Test correct read TEID helper function
 TEST_F(gtpu_test, read_teid)
 {
   srsran::test_delimit_logger delimiter("GTP-U read TEID test");
-  byte_buffer                 orig_vec{gtpu_ping_vec};
-  byte_buffer                 test_vec{gtpu_ping_vec};
+  byte_buffer                 orig_vec{gtpu_ping_vec_teid_1};
+  byte_buffer                 test_vec{gtpu_ping_vec_teid_1};
   uint32_t                    teid = {};
 
   // Unpack SDU
@@ -50,38 +86,39 @@ TEST_F(gtpu_test, read_teid)
 TEST_F(gtpu_test, pack_unpack)
 {
   srsran::test_delimit_logger delimiter("GTP-U unpack/pack test");
-  byte_buffer                 orig_vec{gtpu_ping_vec};
-  byte_buffer                 tst_vec{gtpu_ping_vec};
+  byte_buffer                 orig_vec{gtpu_ping_vec_teid_1};
+  byte_buffer                 tst_vec{gtpu_ping_vec_teid_1};
   byte_buffer                 tst_vec_no_header{tst_vec.begin() + 8, tst_vec.end()};
-  gtpu_header                 hdr;
+  gtpu_dissected_pdu          dissected_pdu;
 
   // Unpack SDU
   logger.info(orig_vec.begin(), orig_vec.end(), "Original SDU");
-  bool read_ok = gtpu_read_and_strip_header(hdr, tst_vec, gtpu_rx_logger);
+  bool read_ok = gtpu_dissect_pdu(dissected_pdu, tst_vec.deep_copy(), gtpu_rx_logger);
   ASSERT_EQ(read_ok, true);
-  logger.info(tst_vec.begin(), tst_vec.end(), "Unpacked PDU");
 
   // Check flags
-  ASSERT_EQ(hdr.flags.version, GTPU_FLAGS_VERSION_V1);
-  ASSERT_EQ(hdr.flags.protocol_type, GTPU_FLAGS_GTP_PROTOCOL);
-  ASSERT_EQ(hdr.flags.ext_hdr, false);
-  ASSERT_EQ(hdr.flags.seq_number, false);
-  ASSERT_EQ(hdr.flags.n_pdu, false);
+  ASSERT_EQ(dissected_pdu.hdr.flags.version, GTPU_FLAGS_VERSION_V1);
+  ASSERT_EQ(dissected_pdu.hdr.flags.protocol_type, GTPU_FLAGS_GTP_PROTOCOL);
+  ASSERT_EQ(dissected_pdu.hdr.flags.ext_hdr, false);
+  ASSERT_EQ(dissected_pdu.hdr.flags.seq_number, false);
+  ASSERT_EQ(dissected_pdu.hdr.flags.n_pdu, false);
 
   // Check message type
-  ASSERT_EQ(hdr.message_type, GTPU_MSG_DATA_PDU);
+  ASSERT_EQ(dissected_pdu.hdr.message_type, GTPU_MSG_DATA_PDU);
 
   // Check length
-  ASSERT_EQ(hdr.length, tst_vec_no_header.length());
+  ASSERT_EQ(dissected_pdu.hdr.length, tst_vec_no_header.length());
 
   // Check TEID
-  ASSERT_EQ(hdr.teid, 1);
+  ASSERT_EQ(dissected_pdu.hdr.teid, 1);
 
-  // Check PDU after striping header
-  ASSERT_EQ(tst_vec.length(), tst_vec_no_header.length());
-  ASSERT_EQ(tst_vec, tst_vec_no_header);
+  logger.info("Unpacked GTP-U header: {}", dissected_pdu.hdr);
+  gtpu_header hdr = dissected_pdu.hdr;
 
-  logger.info("Unpacked GTP-U header: {}", hdr);
+  // Check SDU after striping header
+  byte_buffer sdu = gtpu_extract_t_pdu(std::move(dissected_pdu));
+  ASSERT_EQ(sdu.length(), tst_vec_no_header.length());
+  ASSERT_EQ(sdu, tst_vec_no_header);
 
   byte_buffer repack_buf = tst_vec_no_header.deep_copy();
 
@@ -99,52 +136,65 @@ TEST_F(gtpu_test, pack_unpack_ext_hdr)
   byte_buffer                 orig_vec{gtpu_ping_two_ext_vec};
   byte_buffer                 tst_vec{gtpu_ping_two_ext_vec};
   uint16_t                    ext_size = 4;
-  byte_buffer tst_vec_no_header{tst_vec.begin() + GTPU_EXTENDED_HEADER_LEN + 2 * ext_size, tst_vec.end()};
-  gtpu_header hdr;
+  byte_buffer        tst_vec_no_header{tst_vec.begin() + GTPU_EXTENDED_HEADER_LEN + 2 * ext_size, tst_vec.end()};
+  gtpu_dissected_pdu dissected_pdu;
 
   // Unpack SDU
   logger.info(orig_vec.begin(), orig_vec.end(), "Original SDU");
-  bool read_ok = gtpu_read_and_strip_header(hdr, tst_vec, gtpu_rx_logger);
+  bool read_ok = gtpu_dissect_pdu(dissected_pdu, tst_vec.deep_copy(), gtpu_rx_logger);
   ASSERT_EQ(read_ok, true);
-  logger.info(tst_vec.begin(), tst_vec.end(), "Unpacked PDU");
 
   // Check flags
-  ASSERT_EQ(hdr.flags.version, GTPU_FLAGS_VERSION_V1);
-  ASSERT_EQ(hdr.flags.protocol_type, GTPU_FLAGS_GTP_PROTOCOL);
-  ASSERT_EQ(hdr.flags.ext_hdr, true);
-  ASSERT_EQ(hdr.flags.seq_number, false);
-  ASSERT_EQ(hdr.flags.n_pdu, false);
+  ASSERT_EQ(dissected_pdu.hdr.flags.version, GTPU_FLAGS_VERSION_V1);
+  ASSERT_EQ(dissected_pdu.hdr.flags.protocol_type, GTPU_FLAGS_GTP_PROTOCOL);
+  ASSERT_EQ(dissected_pdu.hdr.flags.ext_hdr, true);
+  ASSERT_EQ(dissected_pdu.hdr.flags.seq_number, false);
+  ASSERT_EQ(dissected_pdu.hdr.flags.n_pdu, false);
 
   // Check message type
-  ASSERT_EQ(hdr.message_type, GTPU_MSG_DATA_PDU);
+  ASSERT_EQ(dissected_pdu.hdr.message_type, GTPU_MSG_DATA_PDU);
 
   // Check length
-  ASSERT_EQ(hdr.length, tst_vec_no_header.length() + ext_size + GTPU_NON_MANDATORY_HEADER_LEN);
+  ASSERT_EQ(dissected_pdu.hdr.length, tst_vec_no_header.length() + (2 * ext_size) + GTPU_NON_MANDATORY_HEADER_LEN);
 
   // Check TEID
-  ASSERT_EQ(hdr.teid, 1);
-
-  // Check PDU after striping header
-  ASSERT_EQ(tst_vec.length(), tst_vec_no_header.length());
-  ASSERT_EQ(tst_vec, tst_vec_no_header);
+  ASSERT_EQ(dissected_pdu.hdr.teid, 1);
 
   // Check extension header is correct
-  ASSERT_EQ(hdr.ext_list.size(), 2);
-  ASSERT_EQ(hdr.ext_list[0].extension_header_type, gtpu_extension_header_type::pdcp_pdu_number);
+  ASSERT_EQ(dissected_pdu.hdr.ext_list.size(), 2);
+  ASSERT_EQ(dissected_pdu.hdr.ext_list[0].extension_header_type, gtpu_extension_header_type::pdcp_pdu_number);
   {
-    const gtpu_extension_header& ext = hdr.ext_list[0];
-    ASSERT_EQ(ext.container.size(), 2);
+    const gtpu_extension_header& ext = dissected_pdu.hdr.ext_list[0];
+    ASSERT_EQ(ext.container.length(), 2);
     ASSERT_EQ(ext.container[0], 0x00);
     ASSERT_EQ(ext.container[1], 0x01);
   }
-  ASSERT_EQ(hdr.ext_list[1].extension_header_type, gtpu_extension_header_type::pdu_session_container);
+  ASSERT_EQ(dissected_pdu.hdr.ext_list[1].extension_header_type, gtpu_extension_header_type::pdu_session_container);
   {
-    const gtpu_extension_header& ext = hdr.ext_list[1];
-    ASSERT_EQ(ext.container.size(), 2);
+    const gtpu_extension_header& ext = dissected_pdu.hdr.ext_list[1];
+    ASSERT_EQ(ext.container.length(), 2);
     ASSERT_EQ(ext.container[0], 0x00);
     ASSERT_EQ(ext.container[1], 0x01);
   }
-  logger.info("Unpacked GTP-U header: {}", hdr);
+
+  logger.info("Unpacked GTP-U header: {}", dissected_pdu.hdr);
+
+  gtpu_header hdr = dissected_pdu.hdr;
+
+  byte_buffer container0                = {dissected_pdu.hdr.ext_list[0].container.begin(),
+                                           dissected_pdu.hdr.ext_list[0].container.end()};
+  hdr.ext_list[0].container             = container0;
+  hdr.ext_list[0].extension_header_type = dissected_pdu.hdr.ext_list[0].extension_header_type;
+
+  byte_buffer container1                = {dissected_pdu.hdr.ext_list[1].container.begin(),
+                                           dissected_pdu.hdr.ext_list[1].container.end()};
+  hdr.ext_list[1].container             = container1;
+  hdr.ext_list[1].extension_header_type = dissected_pdu.hdr.ext_list[1].extension_header_type;
+
+  // Check SDU after striping header
+  byte_buffer sdu = gtpu_extract_t_pdu(std::move(dissected_pdu));
+  ASSERT_EQ(sdu.length(), tst_vec_no_header.length());
+  ASSERT_EQ(sdu, tst_vec_no_header);
 
   byte_buffer repack_buf = tst_vec_no_header.deep_copy();
 
@@ -153,67 +203,6 @@ TEST_F(gtpu_test, pack_unpack_ext_hdr)
   ASSERT_EQ(repack_buf.length(), orig_vec.length());
   ASSERT_EQ(repack_buf, orig_vec);
 }
-
-/// \brief Test correct creation of GTP-U entity
-TEST_F(gtpu_test, entity_creation)
-{
-  srsran::test_delimit_logger  delimiter("GTP-U entity creation test");
-  gtpu_tunnel_creation_message msg  = {};
-  msg.cfg.tx.peer_addr              = "127.0.0.1";
-  std::unique_ptr<gtpu_tunnel> gtpu = create_gtpu_tunnel(msg);
-
-  ASSERT_NE(gtpu, nullptr);
-};
-
-/// \brief Test correct reception of GTP-U packet
-TEST_F(gtpu_test, rx_sdu)
-{
-  srsran::test_delimit_logger delimiter("GTP-U entity creation test");
-
-  gtpu_test_rx_lower           gtpu_rx = {};
-  gtpu_test_tx_upper           gtpu_tx = {};
-  gtpu_tunnel_creation_message msg     = {};
-  msg.cfg.rx.local_teid                = 0x1;
-  msg.cfg.tx.peer_addr                 = "127.0.0.1";
-  msg.rx_lower                         = &gtpu_rx;
-  msg.tx_upper                         = &gtpu_tx;
-  std::unique_ptr<gtpu_tunnel> gtpu    = create_gtpu_tunnel(msg);
-
-  byte_buffer orig_vec{gtpu_ping_vec};
-  byte_buffer strip_vec{gtpu_ping_vec};
-  gtpu_header tmp;
-  bool        read_ok = gtpu_read_and_strip_header(tmp, strip_vec, gtpu_rx_logger);
-  ASSERT_EQ(read_ok, true);
-
-  gtpu_tunnel_rx_upper_layer_interface* rx = gtpu->get_rx_upper_layer_interface();
-  rx->handle_pdu(std::move(orig_vec));
-  ASSERT_EQ(strip_vec, gtpu_rx.last_rx);
-};
-
-/// \brief Test correct transmission of GTP-U packet
-TEST_F(gtpu_test, tx_pdu)
-{
-  srsran::test_delimit_logger delimiter("GTP-U entity creation test");
-
-  gtpu_test_tx_upper           gtpu_tx = {};
-  gtpu_test_rx_lower           gtpu_rx = {};
-  gtpu_tunnel_creation_message msg     = {};
-  msg.cfg.tx.peer_teid                 = 0x1;
-  msg.cfg.tx.peer_addr                 = "127.0.0.1";
-  msg.rx_lower                         = &gtpu_rx;
-  msg.tx_upper                         = &gtpu_tx;
-  std::unique_ptr<gtpu_tunnel> gtpu    = create_gtpu_tunnel(msg);
-
-  byte_buffer orig_vec{gtpu_ping_vec};
-  byte_buffer strip_vec{gtpu_ping_vec};
-  gtpu_header tmp;
-  bool        read_ok = gtpu_read_and_strip_header(tmp, strip_vec, gtpu_rx_logger);
-  ASSERT_EQ(read_ok, true);
-
-  gtpu_tunnel_tx_lower_layer_interface* tx = gtpu->get_tx_lower_layer_interface();
-  tx->handle_sdu(std::move(strip_vec));
-  ASSERT_EQ(orig_vec, gtpu_tx.last_tx);
-};
 
 int main(int argc, char** argv)
 {

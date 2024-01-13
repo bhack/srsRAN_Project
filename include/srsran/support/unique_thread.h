@@ -109,15 +109,39 @@ struct os_sched_affinity_bitmask {
 public:
   os_sched_affinity_bitmask() : cpu_bitset(compute_host_nof_hardware_threads()) {}
 
+  explicit os_sched_affinity_bitmask(size_t cpu_idx) : cpu_bitset(compute_host_nof_hardware_threads()) { set(cpu_idx); }
+
+  os_sched_affinity_bitmask(size_t bitset_size, size_t cpu_idx) : cpu_bitset(bitset_size) { set(cpu_idx); }
+
   size_t size() const { return cpu_bitset.size(); }
 
   void set(size_t cpu_idx) { cpu_bitset.set(cpu_idx); }
+
+  /// \brief Finds, within a range of CPU indexes, the lowest CPU enabled.
+  /// \param[in] start_cpu_index Starting CPU index for the search.
+  /// \param[in] end_cpu_index End CPU index for the search.
+  /// \return Returns the lowest found bit index or -1 in case no bit was found with the provided value argument.
+  int find_lowest(size_t start_cpu_index, size_t end_cpu_index)
+  {
+    return cpu_bitset.find_lowest(start_cpu_index, end_cpu_index);
+  }
+
+  /// Returns true if no CPU is enabled.
+  bool none() const { return cpu_bitset.none(); }
+
+  /// \brief Fills range of bits to true.
+  /// \param[in] start Starting bit index that will be set.
+  /// \param[in] end End bit index (excluding) where the bits stop being set.
+  void fill(size_t start, size_t end) { cpu_bitset.fill(start, end); }
 
   bool test(size_t cpu_idx) const { return cpu_bitset.test(cpu_idx); }
 
   bool any() const { return cpu_bitset.any(); }
 
   uint64_t to_uint64() const { return cpu_bitset.to_uint64(); }
+
+  /// \brief Number of CPUs enabled in the bitmask.
+  size_t count() const { return cpu_bitset.count(); }
 
 private:
   bounded_bitset<1024> cpu_bitset;

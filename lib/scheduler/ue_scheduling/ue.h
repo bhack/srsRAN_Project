@@ -23,20 +23,30 @@
 #pragma once
 
 #include "dl_logical_channel_manager.h"
+#include "ta_manager.h"
 #include "ue_cell.h"
 #include "ul_logical_channel_manager.h"
-#include "srsran/adt/stable_id_map.h"
 #include "srsran/ran/du_types.h"
 #include "srsran/scheduler/mac_scheduler.h"
 
 namespace srsran {
 
+/// Parameters used to create a UE.
+struct ue_creation_command {
+  const ue_configuration& cfg;
+  bool                    starts_in_fallback;
+  harq_timeout_handler&   harq_timeout_notifier;
+};
+
+/// Parameters used to reconfigure a UE.
+struct ue_reconf_command {
+  const ue_configuration& cfg;
+};
+
 class ue
 {
 public:
-  ue(const scheduler_ue_expert_config&        expert_cfg_,
-     const cell_configuration&                cell_cfg_common_,
-     const sched_ue_creation_request_message& req);
+  ue(const ue_creation_command& cmd);
   ue(const ue&)            = delete;
   ue(ue&&)                 = delete;
   ue& operator=(const ue&) = delete;
@@ -46,6 +56,8 @@ public:
   const rnti_t        crnti;
 
   void slot_indication(slot_point sl_tx);
+
+  void deactivate();
 
   ue_cell* find_cell(du_cell_index_t cell_index)
   {
@@ -82,7 +94,12 @@ public:
   void activate_cells(bounded_bitset<MAX_NOF_DU_CELLS> activ_bitmap) {}
 
   /// \brief Handle received SR indication.
-  void handle_sr_indication() { ul_lc_ch_mgr.handle_sr_indication(); }
+  void handle_sr_indication()
+  {
+    // Reception of SR means that the UE has applied its dedicated configuration.
+    ue_cells[0]->set_fallback_state(false);
+    ul_lc_ch_mgr.handle_sr_indication();
+  }
 
   /// \brief Once an UL grant is given, the SR status of the UE must be reset.
   void reset_sr_indication() { ul_lc_ch_mgr.reset_sr_indication(); }
@@ -90,23 +107,26 @@ public:
   /// \brief Handles received BSR indication by updating UE UL logical channel states.
   void handle_bsr_indication(const ul_bsr_indication_message& msg) { ul_lc_ch_mgr.handle_bsr_indication(msg); }
 
+  /// \brief Handles received N_TA update indication by forwarding it to Timing Advance manager.
+  void handle_ul_n_ta_update_indication(du_cell_index_t cell_index, float ul_sinr, phy_time_unit n_ta_diff)
+  {
+    const ue_cell* ue_cc = find_cell(cell_index);
+    ta_mgr.handle_ul_n_ta_update_indication(ue_cc->cfg().cfg_dedicated().tag_id, n_ta_diff.to_Tc(), ul_sinr);
+  }
+
   /// \brief Handles MAC CE indication.
   void handle_dl_mac_ce_indication(const dl_mac_ce_indication& msg)
   {
-    dl_lc_ch_mgr.handle_mac_ce_indication(msg.ce_lcid);
+    dl_lc_ch_mgr.handle_mac_ce_indication({.ce_lcid = msg.ce_lcid, .ce_payload = dummy_ce_payload{}});
   }
 
   /// \brief Handles DL Buffer State indication.
   void handle_dl_buffer_state_indication(const dl_buffer_state_indication_message& msg)
   {
     dl_lc_ch_mgr.handle_dl_buffer_status_indication(msg.lcid, msg.bs);
-    if (msg.lcid == LCID_SRB0 and msg.bs > 0) {
-      // Enqueue a UE Contention Resolution ID.
-      dl_lc_ch_mgr.handle_mac_ce_indication(lcid_dl_sch_t::UE_CON_RES_ID);
-    }
   }
 
-  void handle_reconfiguration_request(const sched_ue_reconfiguration_message& msg);
+  void handle_reconfiguration_request(const ue_reconf_command& params);
 
   /// \brief Checks if there are DL pending bytes that are yet to be allocated in a DL HARQ.
   /// This method is faster than computing \c pending_dl_newtx_bytes() > 0.
@@ -116,22 +136,28 @@ public:
   /// \brief Checks if there are DL pending bytes for a specific LCID that are yet to be allocated in a DL HARQ.
   bool has_pending_dl_newtx_bytes(lcid_t lcid) const { return dl_lc_ch_mgr.has_pending_bytes(lcid); }
 
+  /// \brief Whether MAC ConRes CE is pending.
+  bool is_conres_ce_pending() const { return dl_lc_ch_mgr.is_con_res_id_pending(); }
+
   /// \brief Computes the number of DL pending bytes that are not already allocated in a DL HARQ. The value is used
   /// to derive the required transport block size for an DL grant.
-  /// \remark Excludes SRB0 and UE Contention Resolution Identity CE.
+  /// \remark Excludes SRB0.
   unsigned pending_dl_newtx_bytes() const;
 
-  /// \brief Computes the number of DL pending bytes that are not already allocated in a DL HARQ for SRB0. The value is
-  /// used to derive the required transport block size for an DL grant.
+  /// \brief Computes the number of DL pending bytes that are not already allocated in a DL HARQ for SRB0. The value
+  /// is used to derive the required transport block size for an DL grant.
   unsigned pending_dl_srb0_newtx_bytes() const;
 
   /// \brief Computes the number of UL pending bytes that are not already allocated in a UL HARQ. The value is used
   /// to derive the required transport block size for an UL grant.
   unsigned pending_ul_newtx_bytes() const;
 
+  /// \brief Returns whether a SR indication handling is pending.
+  bool has_pending_sr() const;
+
   /// \brief Defines the list of subPDUs, including LCID and payload size, that will compose the transport block.
   /// \return Returns the number of bytes reserved in the TB for subPDUs (other than padding).
-  /// \remark Excludes SRB0 and UE Contention Resolution Identity CE.
+  /// \remark Excludes SRB0.
   unsigned build_dl_transport_block_info(dl_msg_tb_info& tb_info, unsigned tb_size_bytes);
 
   /// \brief Defines the list of subPDUs, including LCID and payload size, that will compose the transport block for
@@ -146,11 +172,11 @@ private:
   /// Cell configuration. This is common to all UEs within the same cell.
   const cell_configuration& cell_cfg_common;
 
-  /// List of \c mac-LogicalChannelConfig, TS 38.331; \ref sched_ue_creation_request_message.
-  std::vector<logical_channel_config> log_channels_configs;
+  /// Dedicated configuration for the UE.
+  const ue_configuration* ue_ded_cfg = nullptr;
 
-  /// \c schedulingRequestToAddModList, TS 38.331; \ref sched_ue_creation_request_message.
-  std::vector<scheduling_request_to_addmod> sched_request_configs;
+  /// Notifier used by HARQ processes to signal timeouts due to undetected HARQ ACKs/CRCs.
+  ue_harq_timeout_notifier harq_timeout_notif;
 
   srslog::basic_logger& logger;
 
@@ -168,9 +194,9 @@ private:
 
   /// UE UL Logical Channel Manager.
   ul_logical_channel_manager ul_lc_ch_mgr;
-};
 
-/// Container that stores all scheduler UEs.
-using ue_list = stable_id_map<du_ue_index_t, ue, MAX_NOF_DU_UES>;
+  /// UE Timing Advance Manager.
+  ta_manager ta_mgr;
+};
 
 } // namespace srsran

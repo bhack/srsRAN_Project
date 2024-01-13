@@ -1,5 +1,5 @@
 #
-# Copyright 2013-2023 Software Radio Systems Limited
+# Copyright 2021-2023 Software Radio Systems Limited
 #
 # By using this file, you agree to the terms and conditions set
 # forth in the LICENSE file which can be found at the top level of
@@ -9,8 +9,10 @@
 """
 Pytest configuration
 """
+from pytest_html.html_report import HTMLReport
 
-def pytest_html_report_title(report):
+
+def pytest_html_report_title(report: HTMLReport):
     """
     Change title
     """

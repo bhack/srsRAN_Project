@@ -21,6 +21,7 @@
  */
 
 #include "radio_zmq_rx_channel.h"
+#include "srsran/srsvec/zero.h"
 
 using namespace srsran;
 
@@ -35,12 +36,12 @@ radio_zmq_rx_channel::radio_zmq_rx_channel(void*                       zmq_conte
   socket_type(config.socket_type),
   logger(srslog::fetch_basic_logger(config.channel_id_str, false)),
   circular_buffer(config.buffer_size),
-  buffer(config.buffer_size * sizeof(radio_sample_type)),
+  buffer(config.buffer_size * sizeof(cf_t)),
   notification_handler(notification_handler_),
   async_executor(async_executor_)
 {
   // Set log level.
-  logger.set_level(srslog::str_to_basic_level(config.log_level));
+  logger.set_level(config.log_level);
 
   // Validate the socket type.
   if (VALID_SOCKET_TYPES.count(config.socket_type) == 0) {
@@ -88,9 +89,6 @@ radio_zmq_rx_channel::radio_zmq_rx_channel(void*                       zmq_conte
 
   // Indicate the initialization was successful.
   state_fsm.init_successful();
-
-  // Start processing.
-  async_executor.defer([this]() { run_async(); });
 }
 
 radio_zmq_rx_channel::~radio_zmq_rx_channel()
@@ -140,9 +138,16 @@ void radio_zmq_rx_channel::send_request()
 void radio_zmq_rx_channel::receive_response()
 {
   // Otherwise, send samples over socket.
-  int sample_size = sizeof(radio_sample_type);
-  int nbytes      = buffer.size();
+  int sample_size = sizeof(cf_t);
+  int nbytes      = buffer.size() * sample_size;
   int n           = zmq_recv(sock, (void*)buffer.data(), nbytes, ZMQ_DONTWAIT);
+
+  // Make sure the received message has not been truncated.
+  if (n > nbytes) {
+    logger.error("Truncated {} bytes in ZMQ message.", n - nbytes);
+    state_fsm.on_error();
+    return;
+  }
 
   // Check if an error occurred.
   if (n < 0) {
@@ -159,7 +164,7 @@ void radio_zmq_rx_channel::receive_response()
     return;
   }
 
-  // Make sure the received number of bytes is valid.
+  // Make sure the received number of bytes is consistent with the sample number of bytes.
   if (n % sample_size != 0) {
     logger.error("Socket failed to receive DATA. Invalid number of bytes {}%{}={}.", n, sample_size, n % sample_size);
     state_fsm.on_error();
@@ -176,11 +181,13 @@ void radio_zmq_rx_channel::receive_response()
                             buffer.size(),
                             nsamples);
 
-  unsigned to_send = nsamples;
-  unsigned count   = 0;
-  while (count < nsamples && state_fsm.is_running()) {
-    unsigned pushed = circular_buffer.try_push(&buffer[count], &buffer[count + to_send]);
-    while (state_fsm.is_running() && pushed == 0) {
+  unsigned count = 0;
+  while (state_fsm.is_running() && (count != nsamples)) {
+    // Try to write samples into the buffer.
+    unsigned pushed = circular_buffer.try_push(buffer.begin() + count, buffer.begin() + nsamples);
+
+    // Check if the push was successful.
+    if (pushed == 0) {
       // Notify buffer overflow.
       radio_notification_handler::event_description event;
       event.stream_id  = stream_id;
@@ -190,12 +197,11 @@ void radio_zmq_rx_channel::receive_response()
       notification_handler.on_radio_rt_event(event);
 
       // Wait some time before trying again.
-      unsigned sleep_for_ms = CIRC_BUFFER_TRY_PUSH_SLEEP_FOR_MS;
-      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_for_ms));
-      pushed = circular_buffer.try_push(&buffer[count], &buffer[count + to_send]);
+      std::this_thread::sleep_for(circ_buffer_try_push_sleep);
     }
+
+    // Increment sample count.
     count += pushed;
-    to_send -= pushed;
   }
 
   // If successful transition to wait for data.
@@ -211,34 +217,60 @@ void radio_zmq_rx_channel::run_async()
     receive_response();
   }
 
+  // Check if the state timer expired.
+  if (state_fsm.has_wait_expired()) {
+    logger.info("Waiting for {}.", state_fsm.has_pending_response() ? "data" : "request");
+  }
+
   // Feedback task if not stopped.
   if (state_fsm.is_running()) {
-    async_executor.defer([this]() { run_async(); });
+    if (not async_executor.defer([this]() { run_async(); })) {
+      logger.error("Unable to initiate radio zmq async task");
+    }
   } else {
     logger.debug("Stopped asynchronous task.");
     state_fsm.async_task_stopped();
   }
 }
 
-void radio_zmq_rx_channel::receive(span<radio_sample_type> data)
+void radio_zmq_rx_channel::receive(span<cf_t> data)
 {
   logger.debug("Requested to receive {} samples.", data.size());
 
-  // For each sample...
-  unsigned count;
-  for (count = 0; count < data.size();) {
-    // Try to push sample.
+  // Create and start a timer to inform about deadlocks.
+  radio_zmq_timer timer(true);
+
+  // Try to read samples from circular buffer.
+  unsigned count = 0;
+  while (state_fsm.is_running() && (count != data.size())) {
+    // Try to pop samples.
     unsigned popped = circular_buffer.try_pop(data.begin() + count, data.end());
-    while (state_fsm.is_running() && popped == 0) {
-      // Wait some time before trying again.
-      unsigned sleep_for_ms = CIRC_BUFFER_TRY_POP_SLEEP_FOR_MS;
-      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_for_ms));
-      popped = circular_buffer.try_pop(data.begin() + count, data.end());
+
+    // Wait some time before trying again.
+    if (popped == 0) {
+      std::this_thread::sleep_for(circ_buffer_try_pop_sleep);
     }
-    if (!state_fsm.is_running()) {
-      break;
+
+    // Check if an excess of time passed while trying to read samples.
+    if (timer.is_expired()) {
+      logger.info("Waiting for reading samples. Completed {} of {} samples.", count, data.size());
+      timer.start();
     }
+
+    // Increment count.
     count += popped;
+  }
+
+  if (!state_fsm.is_running()) {
+    srsvec::zero(data);
+  }
+}
+
+void radio_zmq_rx_channel::start()
+{
+  if (not async_executor.defer([this]() { run_async(); })) {
+    logger.error("Unable to initiate radio zmq execution");
+    return;
   }
 }
 

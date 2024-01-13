@@ -30,6 +30,7 @@
 #include "../uci_scheduling/uci_scheduler_impl.h"
 #include "ue_cell_grid_allocator.h"
 #include "ue_event_manager.h"
+#include "ue_repository.h"
 #include "ue_scheduler.h"
 #include "ue_srb0_scheduler.h"
 #include "srsran/adt/slotted_array.h"
@@ -54,14 +55,21 @@ public:
   /// Schedule UE DL grants for a given {slot, cell}.
   void run_slot(slot_point slot_tx, du_cell_index_t cell_index) override;
 
-  scheduler_ue_configurator& get_ue_configurator() override { return event_mng; }
+  void handle_error_indication(slot_point                            sl_tx,
+                               du_cell_index_t                       cell_index,
+                               scheduler_slot_handler::error_outcome event) override;
+
+  sched_ue_configuration_handler& get_ue_configurator() override { return event_mng; }
 
   scheduler_feedback_handler& get_feedback_handler() override { return event_mng; }
 
   scheduler_dl_buffer_state_indication_handler& get_dl_buffer_state_indication_handler() override { return event_mng; }
 
 private:
-  void run_sched_strategy(slot_point sl_tx);
+  void run_sched_strategy(slot_point sl_tx, du_cell_index_t cell_index);
+
+  /// Counts the number of PUCCH grants that are allocated for a given user at a specific slot.
+  void update_harq_pucch_counter(cell_resource_allocator& cell_alloc);
 
   struct cell {
     cell_resource_allocator* cell_res_alloc;
@@ -72,7 +80,7 @@ private:
     /// SRB0 scheduler.
     ue_srb0_scheduler srb0_sched;
 
-    cell(const scheduler_ue_expert_config& expert_cfg, const ue_scheduler_cell_params& params, ue_list& ues) :
+    cell(const scheduler_ue_expert_config& expert_cfg, const ue_scheduler_cell_params& params, ue_repository& ues) :
       cell_res_alloc(params.cell_res_alloc),
       uci_sched(params.cell_res_alloc->cfg, *params.uci_alloc, ues),
       srb0_sched(expert_cfg, params.cell_res_alloc->cfg, *params.pdcch_sched, *params.pucch_alloc, ues)
@@ -80,16 +88,20 @@ private:
     }
   };
 
+  // Helper to catch simultaneous PUCCH and PUSCH grants allocated for the same UE.
+  // TODO: remove this if no longer needed.
+  void puxch_grant_sanitizer(cell_resource_allocator& cell_alloc);
+
   const scheduler_ue_expert_config& expert_cfg;
 
   std::array<std::unique_ptr<cell>, MAX_NOF_DU_CELLS> cells;
 
-  /// Scheduling Strategy
+  /// Scheduling Strategy.
   ue_resource_grid_view             ue_res_grid_view;
   std::unique_ptr<scheduler_policy> sched_strategy;
 
   /// Repository of created UEs.
-  ue_list ue_db;
+  ue_repository ue_db;
 
   /// Allocator of grants in the resource grid.
   ue_cell_grid_allocator ue_alloc;
@@ -99,6 +111,8 @@ private:
 
   /// Mutex used to lock carriers for joint carrier scheduling.
   slot_sync_point sync_point;
+
+  srslog::basic_logger& logger;
 };
 
 } // namespace srsran

@@ -21,68 +21,105 @@
  */
 
 #include "ngap_initial_context_setup_procedure.h"
+#include "../ngap_asn1_helpers.h"
 #include "ngap_procedure_helpers.h"
+#include "srsran/ngap/ngap.h"
+#include "srsran/ran/cause.h"
 
 using namespace srsran;
 using namespace srsran::srs_cu_cp;
 using namespace asn1::ngap;
 
 ngap_initial_context_setup_procedure::ngap_initial_context_setup_procedure(
-    const ue_index_t                                ue_index_,
-    const asn1::ngap::init_context_setup_request_s& request_,
-    ngap_ue_manager&                                ue_manager_,
-    ngap_message_notifier&                          amf_notif_,
-    srslog::basic_logger&                           logger_) :
-  ue_index(ue_index_), request(request_), ue_manager(ue_manager_), amf_notifier(amf_notif_), logger(logger_)
+    const ngap_init_context_setup_request& request_,
+    const ngap_ue_ids&                     ue_ids_,
+    ngap_rrc_ue_control_notifier&          rrc_ue_ctrl_notifier_,
+    ngap_rrc_ue_pdu_notifier&              rrc_ue_pdu_notifier_,
+    ngap_du_processor_control_notifier&    du_processor_ctrl_notifier_,
+    ngap_message_notifier&                 amf_notifier_,
+    ngap_ue_logger&                        logger_) :
+  request(request_),
+  ue_ids(ue_ids_),
+  rrc_ue_ctrl_notifier(rrc_ue_ctrl_notifier_),
+  rrc_ue_pdu_notifier(rrc_ue_pdu_notifier_),
+  du_processor_ctrl_notifier(du_processor_ctrl_notifier_),
+  amf_notifier(amf_notifier_),
+  logger(logger_)
 {
-  ue = ue_manager.find_ngap_ue(ue_index);
-  srsran_assert(ue != nullptr, "ue={} Couldn't find UE", ue_index);
 }
 
 void ngap_initial_context_setup_procedure::operator()(coro_context<async_task<void>>& ctx)
 {
   CORO_BEGIN(ctx);
 
-  logger.debug("Initial Context Setup Procedure started");
+  logger.log_debug("\"{}\" initialized", name());
 
-  // Handle mendatorty IEs
-  CORO_AWAIT_VALUE(
-      success,
-      ue->get_rrc_ue_control_notifier().on_new_security_context(*request->ue_security_cap, *request->security_key));
+  // Handle mandatory IEs
+  CORO_AWAIT_VALUE(success, rrc_ue_ctrl_notifier.on_new_security_context(request.security_context));
 
   if (not success) {
-    initial_context_failure_message fail_msg = {};
-    fail_msg.cause.set_protocol();
-    send_initial_context_setup_failure(fail_msg, ue->get_amf_ue_id(), ue->get_ran_ue_id());
+    fail_msg.cause = cause_protocol_t::unspecified;
 
-    // Release UE
-    cu_cp_ue_context_release_command rel_cmd = {};
-    rel_cmd.ue_index                         = ue->get_ue_index();
-    rel_cmd.cause                            = cause_t::protocol;
+    // Add failed PDU Sessions
+    if (request.pdu_session_res_setup_list_cxt_req.has_value()) {
+      for (const auto& pdu_session_item :
+           request.pdu_session_res_setup_list_cxt_req.value().pdu_session_res_setup_items) {
+        cu_cp_pdu_session_res_setup_failed_item failed_item;
+        failed_item.pdu_session_id              = pdu_session_item.pdu_session_id;
+        failed_item.unsuccessful_transfer.cause = cause_radio_network_t::unspecified;
 
-    ue->get_du_processor_control_notifier().on_new_ue_context_release_command(rel_cmd);
+        fail_msg.pdu_session_res_failed_to_setup_items.emplace(pdu_session_item.pdu_session_id, failed_item);
+      }
+    }
 
-    // Remove UE
-    ue_manager.remove_ngap_ue(ue_index);
+    send_initial_context_setup_failure(fail_msg, ue_ids.amf_ue_id, ue_ids.ran_ue_id);
 
-    logger.debug("Initial Context Setup Procedure finished");
+    logger.log_debug("\"{}\" failed", name());
+
     CORO_EARLY_RETURN();
   }
 
   // Handle optional IEs
-  if (request->nas_pdu_present) {
-    handle_nas_pdu(logger, request->nas_pdu.value, *ue);
+
+  // Handle PDU Session Resource Setup List Context Request
+  if (request.pdu_session_res_setup_list_cxt_req.has_value()) {
+    request.pdu_session_res_setup_list_cxt_req.value().ue_index     = request.ue_index;
+    request.pdu_session_res_setup_list_cxt_req.value().serving_plmn = request.guami.plmn;
+    if (request.ue_aggr_max_bit_rate.has_value()) {
+      request.pdu_session_res_setup_list_cxt_req.value().ue_aggregate_maximum_bit_rate_dl =
+          request.ue_aggr_max_bit_rate.value().ue_aggr_max_bit_rate_dl;
+    } else {
+      request.pdu_session_res_setup_list_cxt_req.value().ue_aggregate_maximum_bit_rate_dl = 0;
+    }
+
+    // Handle mandatory IEs
+    CORO_AWAIT_VALUE(pdu_session_response,
+                     du_processor_ctrl_notifier.on_new_pdu_session_resource_setup_request(
+                         request.pdu_session_res_setup_list_cxt_req.value()));
+
+    // Handle NAS PDUs
+    for (auto& session : request.pdu_session_res_setup_list_cxt_req.value().pdu_session_res_setup_items) {
+      if (!session.pdu_session_nas_pdu.empty()) {
+        handle_nas_pdu(logger, std::move(session.pdu_session_nas_pdu), rrc_ue_pdu_notifier);
+      }
+    }
   }
 
-  initial_context_response_message resp_msg = {};
-  send_initial_context_setup_response(resp_msg, ue->get_amf_ue_id(), ue->get_ran_ue_id());
+  if (request.nas_pdu.has_value()) {
+    handle_nas_pdu(logger, std::move(request.nas_pdu.value()), rrc_ue_pdu_notifier);
+  }
 
-  logger.debug("Initial Context Setup Procedure finished");
+  resp_msg.pdu_session_res_setup_response_items  = pdu_session_response.pdu_session_res_setup_response_items;
+  resp_msg.pdu_session_res_failed_to_setup_items = pdu_session_response.pdu_session_res_failed_to_setup_items;
+
+  send_initial_context_setup_response(resp_msg, ue_ids.amf_ue_id, ue_ids.ran_ue_id);
+
+  logger.log_debug("\"{}\" finalized", name());
   CORO_RETURN();
 }
 
 void ngap_initial_context_setup_procedure::send_initial_context_setup_response(
-    const initial_context_response_message& msg,
+    const ngap_init_context_setup_response& msg,
     const amf_ue_id_t&                      amf_ue_id,
     const ran_ue_id_t&                      ran_ue_id)
 {
@@ -90,53 +127,18 @@ void ngap_initial_context_setup_procedure::send_initial_context_setup_response(
 
   ngap_msg.pdu.set_successful_outcome();
   ngap_msg.pdu.successful_outcome().load_info_obj(ASN1_NGAP_ID_INIT_CONTEXT_SETUP);
-  auto& init_ctxt_setup_resp                 = ngap_msg.pdu.successful_outcome().value.init_context_setup_resp();
-  init_ctxt_setup_resp->amf_ue_ngap_id.value = amf_ue_id_to_uint(amf_ue_id);
-  init_ctxt_setup_resp->ran_ue_ngap_id.value = ran_ue_id_to_uint(ran_ue_id);
+  auto& init_ctxt_setup_resp           = ngap_msg.pdu.successful_outcome().value.init_context_setup_resp();
+  init_ctxt_setup_resp->amf_ue_ngap_id = amf_ue_id_to_uint(amf_ue_id);
+  init_ctxt_setup_resp->ran_ue_ngap_id = ran_ue_id_to_uint(ran_ue_id);
 
-  // Fill PDU Session Resource Setup Response List
-  if (!msg.succeed_to_setup.empty()) {
-    init_ctxt_setup_resp->pdu_session_res_setup_list_cxt_res_present = true;
-    init_ctxt_setup_resp->pdu_session_res_setup_list_cxt_res->resize(msg.succeed_to_setup.size());
-    for (auto& it : msg.succeed_to_setup) {
-      asn1::ngap::pdu_session_res_setup_item_cxt_res_s res_item;
-      res_item.pdu_session_id = pdu_session_id_to_uint(it.pdu_session_id);
-      res_item.pdu_session_res_setup_resp_transfer.resize(it.pdu_session_res.length());
-      std::copy(
-          it.pdu_session_res.begin(), it.pdu_session_res.end(), res_item.pdu_session_res_setup_resp_transfer.begin());
+  fill_asn1_initial_context_setup_response(init_ctxt_setup_resp, msg);
 
-      init_ctxt_setup_resp->pdu_session_res_setup_list_cxt_res->push_back(res_item);
-    }
-  }
-
-  // Fill PDU Session Resource Failed to Setup List
-  if (!msg.failed_to_setup.empty()) {
-    init_ctxt_setup_resp->pdu_session_res_failed_to_setup_list_cxt_res_present = true;
-    init_ctxt_setup_resp->pdu_session_res_failed_to_setup_list_cxt_res->resize(msg.failed_to_setup.size());
-    for (auto& it : msg.failed_to_setup) {
-      asn1::ngap::pdu_session_res_failed_to_setup_item_cxt_res_s res_item;
-      res_item.pdu_session_id = pdu_session_id_to_uint(it.pdu_session_id);
-      res_item.pdu_session_res_setup_unsuccessful_transfer.resize(it.pdu_session_res.length());
-      std::copy(it.pdu_session_res.begin(),
-                it.pdu_session_res.end(),
-                res_item.pdu_session_res_setup_unsuccessful_transfer.begin());
-
-      init_ctxt_setup_resp->pdu_session_res_failed_to_setup_list_cxt_res->push_back(res_item);
-    }
-  }
-
-  // Fill Criticality Diagnostics
-  if (msg.crit_diagnostics.has_value()) {
-    init_ctxt_setup_resp->crit_diagnostics_present = true;
-    init_ctxt_setup_resp->crit_diagnostics.value   = msg.crit_diagnostics.value();
-  }
-
-  logger.info("Sending InitialContextSetupResponse");
+  logger.log_info("Sending InitialContextSetupResponse");
   amf_notifier.on_new_message(ngap_msg);
 }
 
 void ngap_initial_context_setup_procedure::send_initial_context_setup_failure(
-    const initial_context_failure_message& msg,
+    const ngap_init_context_setup_failure& msg,
     const amf_ue_id_t&                     amf_ue_id,
     const ran_ue_id_t&                     ran_ue_id)
 {
@@ -144,34 +146,13 @@ void ngap_initial_context_setup_procedure::send_initial_context_setup_failure(
 
   ngap_msg.pdu.set_unsuccessful_outcome();
   ngap_msg.pdu.unsuccessful_outcome().load_info_obj(ASN1_NGAP_ID_INIT_CONTEXT_SETUP);
-  auto& init_ctxt_setup_fail                 = ngap_msg.pdu.unsuccessful_outcome().value.init_context_setup_fail();
-  init_ctxt_setup_fail->amf_ue_ngap_id.value = amf_ue_id_to_uint(amf_ue_id);
-  init_ctxt_setup_fail->ran_ue_ngap_id.value = ran_ue_id_to_uint(ran_ue_id);
-
-  init_ctxt_setup_fail->cause.value = msg.cause;
+  auto& init_ctxt_setup_fail           = ngap_msg.pdu.unsuccessful_outcome().value.init_context_setup_fail();
+  init_ctxt_setup_fail->amf_ue_ngap_id = amf_ue_id_to_uint(amf_ue_id);
+  init_ctxt_setup_fail->ran_ue_ngap_id = ran_ue_id_to_uint(ran_ue_id);
 
   // Fill PDU Session Resource Failed to Setup List
-  if (!msg.failed_to_setup.empty()) {
-    init_ctxt_setup_fail->pdu_session_res_failed_to_setup_list_cxt_fail_present = true;
-    init_ctxt_setup_fail->pdu_session_res_failed_to_setup_list_cxt_fail->resize(msg.failed_to_setup.size());
-    for (auto& it : msg.failed_to_setup) {
-      asn1::ngap::pdu_session_res_failed_to_setup_item_cxt_fail_s fail_item;
-      fail_item.pdu_session_id = pdu_session_id_to_uint(it.pdu_session_id);
-      fail_item.pdu_session_res_setup_unsuccessful_transfer.resize(it.pdu_session_res.length());
-      std::copy(it.pdu_session_res.begin(),
-                it.pdu_session_res.end(),
-                fail_item.pdu_session_res_setup_unsuccessful_transfer.begin());
+  fill_asn1_initial_context_setup_failure(init_ctxt_setup_fail, msg);
 
-      init_ctxt_setup_fail->pdu_session_res_failed_to_setup_list_cxt_fail->push_back(fail_item);
-    }
-  }
-
-  // Fill Criticality Diagnostics
-  if (msg.crit_diagnostics.has_value()) {
-    init_ctxt_setup_fail->crit_diagnostics_present = true;
-    init_ctxt_setup_fail->crit_diagnostics.value   = msg.crit_diagnostics.value();
-  }
-
-  logger.info("Sending InitialContextSetupFailure");
+  logger.log_info("Sending InitialContextSetupFailure");
   amf_notifier.on_new_message(ngap_msg);
 }

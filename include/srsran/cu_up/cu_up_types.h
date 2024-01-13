@@ -22,8 +22,12 @@
 
 #pragma once
 
+#include "srsran/pdcp/pdcp_config.h"
+#include "srsran/ran/cu_types.h"
+#include "srsran/ran/lcid.h"
 #include <cstdint>
 #include <type_traits>
+#include <vector>
 
 namespace srsran {
 namespace srs_cu_up {
@@ -46,6 +50,18 @@ constexpr inline bool is_ue_index_valid(ue_index_t ue_idx)
 {
   return ue_idx < MAX_NOF_UES;
 }
+
+struct e1ap_bearer_context_inactivity_notification {
+  ue_index_t                    ue_index    = ue_index_t::INVALID_UE_INDEX;
+  bool                          ue_inactive = false;
+  std::vector<drb_id_t>         inactive_drbs;
+  std::vector<pdu_session_id_t> inactive_pdu_sessions;
+};
+
+/// QoS Configuration, i.e. 5QI and the associated PDCP and SDAP configuration for DRBs
+struct cu_up_qos_config {
+  pdcp_custom_config pdcp_custom;
+};
 
 } // namespace srs_cu_up
 } // namespace srsran

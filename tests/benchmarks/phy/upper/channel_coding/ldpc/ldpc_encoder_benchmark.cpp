@@ -37,7 +37,7 @@ static void usage(const char* prog)
 {
   fmt::print("Usage: {} [-R repetitions] [-s silent]\n", prog);
   fmt::print("\t-R Repetitions [Default {}]\n", nof_repetitions);
-  fmt::print("\t-T Encoder type generic or avx2[Default {}]\n", enc_type);
+  fmt::print("\t-T Encoder type generic, avx2 or neon [Default {}]\n", enc_type);
   fmt::print("\t-s Toggle silent operation [Default {}]\n", silent);
   fmt::print("\t-h Show this message\n");
 }
@@ -97,11 +97,13 @@ int main(int argc, char** argv)
 
       for (unsigned cb_length : {min_cb_length, max_cb_length}) {
         // Generate message data.
-        std::vector<uint8_t> data(msg_length);
-        std::generate(data.begin(), data.end(), [&]() { return static_cast<uint8_t>(rgen() & 1); });
+        dynamic_bit_buffer data(msg_length);
+        for (unsigned i_bit = 0; i_bit != msg_length; ++i_bit) {
+          data.insert(rgen() & 1, i_bit, 1);
+        }
 
         // Generate codeblock.
-        std::vector<uint8_t> codeblock(cb_length);
+        dynamic_bit_buffer codeblock(cb_length);
 
         srsran::codeblock_metadata::tb_common_metadata cfg_enc = {bg, ls};
 

@@ -124,41 +124,73 @@ bool srsran::assess_ul_pucch_info(const pucch_info& expected, const pucch_info& 
 
 test_bench::test_bench(const test_bench_params& params) :
   expert_cfg{config_helpers::make_default_scheduler_expert_config()},
-  cell_cfg{make_custom_sched_cell_configuration_request(params.pucch_res_common, params.is_tdd)},
+  cell_cfg{[this, &params]() -> const cell_configuration& {
+    cell_cfg_list.emplace(
+        to_du_cell_index(0),
+        std::make_unique<cell_configuration>(
+            expert_cfg, make_custom_sched_cell_configuration_request(params.pucch_res_common, params.is_tdd)));
+    return *cell_cfg_list[to_du_cell_index(0)];
+  }()},
   dci_info{make_default_dci(params.n_cces, &cell_cfg.dl_cfg_common.init_dl_bwp.pdcch_common.coreset0.value())},
   k0(cell_cfg.dl_cfg_common.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[0].k0),
+  pucch_f2_more_prbs{params.pucch_f2_more_prbs},
   pucch_alloc{cell_cfg},
   uci_alloc(pucch_alloc),
   uci_sched{cell_cfg, uci_alloc, ues},
   sl_tx{to_numerology_value(cell_cfg.dl_cfg_common.init_dl_bwp.generic_params.scs), 0}
 {
-  sched_ue_creation_request_message ue_req = test_helpers::create_default_sched_ue_creation_request();
+  cell_config_builder_params cfg_params{};
+  cfg_params.csi_rs_enabled                = true;
+  cfg_params.scs_common                    = params.is_tdd ? subcarrier_spacing::kHz30 : subcarrier_spacing::kHz15;
+  cfg_params.dl_arfcn                      = params.is_tdd ? 520000U : 365000U;
+  sched_ue_creation_request_message ue_req = test_helpers::create_default_sched_ue_creation_request(cfg_params);
+  ue_req.ue_index                          = main_ue_idx;
 
-  srsran_assert(not ue_req.cfg.cells.empty() and ue_req.cfg.cells.back().serv_cell_cfg.ul_config.has_value() and
-                    ue_req.cfg.cells.back().serv_cell_cfg.ul_config.value().init_ul_bwp.pucch_cfg.has_value() and
-                    ue_req.cfg.cells.back().serv_cell_cfg.ul_config.value().init_ul_bwp.pucch_cfg->sr_res_list.size() ==
-                        1,
-                "sched_ue_creation_request_message initialization is not complete.");
+  srsran_assert(
+      ue_req.cfg.cells.has_value() and not ue_req.cfg.cells->empty() and
+          ue_req.cfg.cells->back().serv_cell_cfg.ul_config.has_value() and
+          ue_req.cfg.cells->back().serv_cell_cfg.ul_config.value().init_ul_bwp.pucch_cfg.has_value() and
+          ue_req.cfg.cells->back().serv_cell_cfg.ul_config.value().init_ul_bwp.pucch_cfg->sr_res_list.size() == 1,
+      "sched_ue_creation_request_message initialization is not complete.");
 
   // Add custom PUCCH config from this test file.
-  ue_req.cfg.cells.back().serv_cell_cfg.ul_config.reset();
-  ue_req.cfg.cells.back().serv_cell_cfg.ul_config.emplace(
-      test_helpers::make_test_ue_uplink_config(cell_config_builder_params{}));
+  ue_req.cfg.cells->back().serv_cell_cfg.ul_config = test_helpers::make_test_ue_uplink_config(cfg_params);
 
-  ue_req.cfg.cells.back().serv_cell_cfg.ul_config.value().init_ul_bwp.pucch_cfg->sr_res_list[0].period = params.period;
-  ue_req.cfg.cells.back().serv_cell_cfg.ul_config.value().init_ul_bwp.pucch_cfg->sr_res_list[0].offset = params.offset;
+  auto& ul_cfg = ue_req.cfg.cells->back().serv_cell_cfg.ul_config.value();
 
-  if (not ue_req.cfg.cells.back().serv_cell_cfg.csi_meas_cfg.has_value()) {
-    ue_req.cfg.cells.back().serv_cell_cfg.csi_meas_cfg.emplace(
-        config_helpers::make_default_csi_meas_config(cell_config_builder_params{}));
+  ul_cfg.init_ul_bwp.pucch_cfg->sr_res_list[0].period = params.period;
+  ul_cfg.init_ul_bwp.pucch_cfg->sr_res_list[0].offset = params.offset;
+
+  // Change the number of PRBs for PUCCH format 2 if the test bench parameter is set.
+  if (pucch_f2_more_prbs) {
+    const unsigned pucch_f2_nof_prbs = 3U;
+    for (auto& pucch_res : ul_cfg.init_ul_bwp.pucch_cfg.value().pucch_res_list) {
+      if (pucch_res.format == pucch_format::FORMAT_2 and
+          variant_holds_alternative<pucch_format_2_3_cfg>(pucch_res.format_params)) {
+        variant_get<pucch_format_2_3_cfg>(pucch_res.format_params).nof_prbs = pucch_f2_nof_prbs;
+      }
+    }
+  }
+
+  if (params.cfg_for_mimo_4x4) {
+    ue_req.cfg.cells->back().serv_cell_cfg.csi_meas_cfg =
+        csi_helper::make_csi_meas_config(csi_helper::csi_builder_params{.nof_ports = 4});
+    auto& beta_offsets = variant_get<uci_on_pusch::beta_offsets_semi_static>(ue_req.cfg.cells->back()
+                                                                                 .serv_cell_cfg.ul_config.value()
+                                                                                 .init_ul_bwp.pusch_cfg.value()
+                                                                                 .uci_cfg.value()
+                                                                                 .beta_offsets_cfg.value());
+    beta_offsets.beta_offset_csi_p2_idx_1.value() = 6;
   }
 
   auto& csi_report = variant_get<csi_report_config::periodic_or_semi_persistent_report_on_pucch>(
-      ue_req.cfg.cells.back().serv_cell_cfg.csi_meas_cfg.value().csi_report_cfg_list[0].report_cfg_type);
+      ue_req.cfg.cells->back().serv_cell_cfg.csi_meas_cfg.value().csi_report_cfg_list[0].report_cfg_type);
   csi_report.report_slot_period = params.csi_period;
   csi_report.report_slot_offset = params.csi_offset;
 
-  ues.insert(main_ue_idx, std::make_unique<ue>(expert_cfg.ue, cell_cfg, ue_req));
+  ue_ded_cfgs.push_back(std::make_unique<ue_configuration>(ue_req.ue_index, ue_req.crnti, cell_cfg_list, ue_req.cfg));
+  ues.add_ue(
+      std::make_unique<ue>(ue_creation_command{*ue_ded_cfgs.back(), ue_req.starts_in_fallback, harq_timeout_handler}));
   last_allocated_rnti   = ue_req.crnti;
   last_allocated_ue_idx = main_ue_idx;
   slot_indication(sl_tx);
@@ -171,28 +203,27 @@ const ue& test_bench::get_main_ue() const
 
 const ue& test_bench::get_ue(du_ue_index_t ue_idx) const
 {
-  auto user = ues.find(ue_idx);
-  srsran_assert(user != ues.end(), "User not found");
-  return *user;
+  srsran_assert(ues.contains(ue_idx), "User not found");
+  return ues[ue_idx];
 }
 
 void test_bench::add_ue()
 {
-  sched_ue_creation_request_message ue_req = test_helpers::create_default_sched_ue_creation_request();
-
-  ue_req.cfg.cells.begin()->serv_cell_cfg.ul_config.reset();
-  ue_req.cfg.cells.begin()->serv_cell_cfg.ul_config.emplace(
-      test_helpers::make_test_ue_uplink_config(cell_config_builder_params{}));
-
-  if (not ue_req.cfg.cells.back().serv_cell_cfg.csi_meas_cfg.has_value()) {
-    ue_req.cfg.cells.back().serv_cell_cfg.csi_meas_cfg.emplace(
-        config_helpers::make_default_csi_meas_config(cell_config_builder_params{}));
-  }
-
-  ue_req.crnti = to_rnti(static_cast<std::underlying_type<rnti_t>::type>(last_allocated_rnti) + 1);
+  cell_config_builder_params cfg_params{};
+  cfg_params.csi_rs_enabled                = true;
+  sched_ue_creation_request_message ue_req = test_helpers::create_default_sched_ue_creation_request(cfg_params);
   last_allocated_ue_idx =
       to_du_ue_index(static_cast<std::underlying_type<du_ue_index_t>::type>(last_allocated_ue_idx) + 1);
-  ues.insert(last_allocated_ue_idx, std::make_unique<ue>(expert_cfg.ue, cell_cfg, ue_req));
+  ue_req.ue_index = last_allocated_ue_idx;
+
+  ue_req.cfg.cells->begin()->serv_cell_cfg.ul_config.reset();
+  ue_req.cfg.cells->begin()->serv_cell_cfg.ul_config.emplace(test_helpers::make_test_ue_uplink_config(cfg_params));
+
+  ue_req.crnti = to_rnti(static_cast<std::underlying_type<rnti_t>::type>(last_allocated_rnti) + 1);
+
+  ue_ded_cfgs.push_back(std::make_unique<ue_configuration>(ue_req.ue_index, ue_req.crnti, cell_cfg_list, ue_req.cfg));
+  ues.add_ue(
+      std::make_unique<ue>(ue_creation_command{*ue_ded_cfgs.back(), ue_req.starts_in_fallback, harq_timeout_handler}));
   last_allocated_rnti = ue_req.crnti;
 }
 
@@ -202,4 +233,12 @@ void test_bench::slot_indication(slot_point slot_tx)
   mac_logger.set_context(slot_tx.sfn(), slot_tx.slot_index());
   test_logger.set_context(slot_tx.sfn(), slot_tx.slot_index());
   res_grid.slot_indication(slot_tx);
+}
+
+void test_bench::fill_all_grid(slot_point slot_tx)
+{
+  cell_slot_resource_allocator& pucch_slot_alloc = res_grid[slot_tx];
+  pucch_slot_alloc.ul_res_grid.fill(grant_info{cell_cfg.ul_cfg_common.init_ul_bwp.generic_params.scs,
+                                               ofdm_symbol_range{0, 14},
+                                               cell_cfg.ul_cfg_common.init_ul_bwp.generic_params.crbs});
 }

@@ -23,11 +23,11 @@
 #pragma once
 
 #include "srsran/adt/byte_buffer.h"
+#include "srsran/adt/expected.h"
 #include "srsran/adt/span.h"
 #include "srsran/adt/static_vector.h"
 #include "srsran/adt/to_array.h"
 #include "srsran/mac/bsr_format.h"
-#include "srsran/scheduler/scheduler_feedback_handler.h"
 
 namespace srsran {
 
@@ -51,20 +51,16 @@ inline lcg_bsr_report decode_sbsr(byte_buffer_view payload)
 }
 
 struct long_bsr_report {
-  uint8_t             bitmap; /// the first octet of LBSR and Long Trunc BSR
-  lcg_bsr_report_list list;   /// one entry for each reported LCG
+  lcg_bsr_report_list list; /// one entry for each reported LCG
 };
 
 /// Decode Long BSR
-long_bsr_report decode_lbsr(bsr_format format, byte_buffer_view payload);
+expected<long_bsr_report> decode_lbsr(bsr_format format, byte_buffer_view payload);
 
 /// Converts the buffer size field of a BSR (5 or 8-bit Buffer Size field) into Nof Bytes.
 /// \param buff_size_index The buffer size field contained in the MAC PDU.
 /// \param format The BSR format that determines the buffer size field length.
 /// \return The actual buffer size level in Bytes.
 uint32_t buff_size_field_to_bytes(size_t buff_size_index, bsr_format format);
-
-/// Converts BSR MAC CE (See 38.321, 6.1.3.1) to Scheduler UL BSR event type.
-ul_bsr_lcg_report make_sched_lcg_report(const lcg_bsr_report& ul_bsr_ce, bsr_format bsr_format);
 
 } // namespace srsran

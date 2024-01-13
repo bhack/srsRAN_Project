@@ -110,12 +110,12 @@ TEST_F(f1ap_cu_test, when_f1_setup_request_valid_then_connect_du)
   f1ap->handle_message(f1setup_msg);
 
   // Action 2: Check if F1SetupRequest was forwarded to DU processor
-  ASSERT_EQ(du_processor_notifier.last_f1_setup_request_msg.request->gnb_du_id.value, 0x11U);
+  ASSERT_EQ(du_processor_notifier.last_f1_setup_request_msg.gnb_du_id, 0x11U);
 
   // Action 3: Transmit F1SetupResponse message
   test_logger.info("TEST: Transmit F1SetupResponse message...");
-  f1_setup_response_message msg = {};
-  msg.success                   = true;
+  f1ap_f1_setup_response msg = {};
+  msg.success                = true;
   f1ap->handle_f1_setup_response(msg);
 
   // Check the generated PDU is indeed the F1 Setup response
@@ -132,17 +132,17 @@ TEST_F(f1ap_cu_test, when_f1_setup_request_invalid_then_reject_du)
   f1ap_message f1setup_msg                    = generate_f1_setup_request();
   auto&        setup_req                      = f1setup_msg.pdu.init_msg().value.f1_setup_request();
   setup_req->gnb_du_served_cells_list_present = false;
-  setup_req->gnb_du_served_cells_list.value.clear();
+  setup_req->gnb_du_served_cells_list.clear();
 
   f1ap->handle_message(f1setup_msg);
 
   // Action 2: Check if F1SetupRequest was forwarded to DU processor
-  ASSERT_EQ(du_processor_notifier.last_f1_setup_request_msg.request->gnb_du_id.value, 0x11U);
+  ASSERT_EQ(du_processor_notifier.last_f1_setup_request_msg.gnb_du_id, 0x11U);
 
   // Action 3: Transmit F1SetupFailure message
   test_logger.info("TEST: Transmit F1SetupFailure message...");
-  f1_setup_response_message msg = {};
-  msg.success                   = false;
+  f1ap_f1_setup_response msg = {};
+  msg.success                = false;
   f1ap->handle_f1_setup_response(msg);
 
   // Check the generated PDU is indeed the F1 Setup failure
@@ -172,7 +172,33 @@ TEST_F(f1ap_cu_test, when_du_to_cu_rrc_container_missing_then_ue_not_added)
   // Generate F1 Initial UL RRC Message without DU to CU RRC Container
   f1ap_message init_ul_rrc_msg = generate_init_ul_rrc_message_transfer(int_to_gnb_du_ue_f1ap_id(41255));
   init_ul_rrc_msg.pdu.init_msg().value.init_ul_rrc_msg_transfer()->du_to_cu_rrc_container_present = false;
-  init_ul_rrc_msg.pdu.init_msg().value.init_ul_rrc_msg_transfer()->du_to_cu_rrc_container->clear();
+  init_ul_rrc_msg.pdu.init_msg().value.init_ul_rrc_msg_transfer()->du_to_cu_rrc_container.clear();
+
+  // Pass message to F1AP
+  f1ap->handle_message(init_ul_rrc_msg);
+
+  EXPECT_EQ(f1ap->get_nof_ues(), 0);
+}
+
+TEST_F(f1ap_cu_test, when_cgi_invalid_then_ue_not_added)
+{
+  // Generate F1 Initial UL RRC Message
+  f1ap_message init_ul_rrc_msg = generate_init_ul_rrc_message_transfer(int_to_gnb_du_ue_f1ap_id(41255));
+  // Set PLMN to invalid value
+  init_ul_rrc_msg.pdu.init_msg().value.init_ul_rrc_msg_transfer()->nr_cgi.plmn_id.from_number(0);
+
+  // Pass message to F1AP
+  f1ap->handle_message(init_ul_rrc_msg);
+
+  EXPECT_EQ(f1ap->get_nof_ues(), 0);
+}
+
+TEST_F(f1ap_cu_test, when_rnti_invalid_then_ue_not_added)
+{
+  // Generate F1 Initial UL RRC Message
+  f1ap_message init_ul_rrc_msg = generate_init_ul_rrc_message_transfer(int_to_gnb_du_ue_f1ap_id(41255));
+  // Set RNTI to invalid value
+  init_ul_rrc_msg.pdu.init_msg().value.init_ul_rrc_msg_transfer()->c_rnti = 0;
 
   // Pass message to F1AP
   f1ap->handle_message(init_ul_rrc_msg);
@@ -237,8 +263,7 @@ TEST_F(f1ap_cu_test, when_rrc_setup_complete_present_then_forward_over_srb1)
   // Pass message to F1AP
   f1ap->handle_message(init_ul_rrc_msg);
 
-  EXPECT_EQ(du_processor_notifier.rx_notifier->last_rrc_container.to_string(),
-            init_ul_rrc->rrc_container_rrc_setup_complete.value.to_string());
+  EXPECT_EQ(du_processor_notifier.f1ap_rrc_notifier->last_ul_ccch_pdu, init_ul_rrc->rrc_container_rrc_setup_complete);
 }
 
 //////////////////////////////////////////////////////////////////////////////////////

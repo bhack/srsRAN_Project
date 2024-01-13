@@ -21,34 +21,44 @@
  */
 
 #include "ng_setup_procedure.h"
+#include "../ngap_asn1_helpers.h"
+#include "srsran/adt/variant.h"
+#include "srsran/ngap/ngap_setup.h"
+#include "srsran/support/async/async_timer.h"
 
 using namespace srsran;
 using namespace srsran::srs_cu_cp;
 using namespace asn1::ngap;
 
-ng_setup_procedure::ng_setup_procedure(const ng_setup_request&   request_,
+ng_setup_procedure::ng_setup_procedure(ngap_context_t&           context_,
+                                       const ngap_message&       request_,
+                                       const unsigned            max_setup_retries_,
                                        ngap_message_notifier&    amf_notif_,
                                        ngap_transaction_manager& ev_mng_,
-                                       timer_manager&            timers,
+                                       timer_factory             timers,
                                        srslog::basic_logger&     logger_) :
+  context(context_),
   request(request_),
+  max_setup_retries(max_setup_retries_),
   amf_notifier(amf_notif_),
   ev_mng(ev_mng_),
   logger(logger_),
-  ng_setup_wait_timer(timers.create_unique_timer())
+  ng_setup_wait_timer(timers.create_timer())
 {
 }
 
-void ng_setup_procedure::operator()(coro_context<async_task<ng_setup_response>>& ctx)
+void ng_setup_procedure::operator()(coro_context<async_task<ngap_ng_setup_result>>& ctx)
 {
   CORO_BEGIN(ctx);
+
+  logger.debug("\"{}\" initialized", name());
 
   while (true) {
     // Subscribe to respective publisher to receive NG SETUP RESPONSE/FAILURE message.
     transaction_sink.subscribe_to(ev_mng.ng_setup_outcome);
 
     // Send request to AMF.
-    send_ng_setup_request();
+    amf_notifier.on_new_message(request);
 
     // Await AMF response.
     CORO_AWAIT(transaction_sink);
@@ -59,29 +69,16 @@ void ng_setup_procedure::operator()(coro_context<async_task<ng_setup_response>>&
     }
 
     // Await timer.
-    logger.info("Received NGSetupFailure with Time to Wait IE - Reinitiating NG setup in {}s (retry={}/{})",
-                time_to_wait,
+    logger.info("Reinitiating NG setup in {}s (retry={}/{}). Received NGSetupFailure with Time to Wait IE",
+                time_to_wait.count(),
                 ng_setup_retry_no,
-                request.max_setup_retries);
-    CORO_AWAIT(async_wait_for(ng_setup_wait_timer, time_to_wait * 1000));
+                max_setup_retries);
+    CORO_AWAIT(
+        async_wait_for(ng_setup_wait_timer, std::chrono::duration_cast<std::chrono::milliseconds>(time_to_wait)));
   }
 
   // Forward procedure result to DU manager.
   CORO_RETURN(create_ng_setup_result());
-}
-
-void ng_setup_procedure::send_ng_setup_request()
-{
-  ngap_message msg = {};
-  // set NGAP PDU contents
-  msg.pdu.set_init_msg();
-  msg.pdu.init_msg().load_info_obj(ASN1_NGAP_ID_NG_SETUP);
-  msg.pdu.init_msg().value.ng_setup_request() = request.msg;
-
-  // TODO: fill message
-
-  // send request
-  amf_notifier.on_new_message(msg);
 }
 
 bool ng_setup_procedure::retry_required()
@@ -97,28 +94,35 @@ bool ng_setup_procedure::retry_required()
     logger.error("AMF did not set any retry waiting time");
     return false;
   }
-  if (ng_setup_retry_no++ >= request.max_setup_retries) {
+  if (ng_setup_retry_no++ >= max_setup_retries) {
     // Number of retries exceeded, or there is no time to wait.
-    logger.error("Reached maximum number of NG Setup connection retries ({})", request.max_setup_retries);
+    logger.error("Reached maximum number of NG Setup connection retries ({})", max_setup_retries);
     return false;
   }
 
-  time_to_wait = ng_fail->time_to_wait->to_number();
+  time_to_wait = std::chrono::seconds{ng_fail->time_to_wait.to_number()};
   return true;
 }
 
-ng_setup_response ng_setup_procedure::create_ng_setup_result()
+ngap_ng_setup_result ng_setup_procedure::create_ng_setup_result()
 {
-  ng_setup_response res{};
+  ngap_ng_setup_result res{};
 
   if (transaction_sink.successful()) {
-    logger.debug("Received PDU with successful outcome");
-    res.msg     = transaction_sink.response();
-    res.success = true;
+    logger.debug("\"{}\" finalized", name());
+
+    fill_ngap_ng_setup_result(res, transaction_sink.response());
+
+    for (const auto& guami_item : variant_get<ngap_ng_setup_response>(res).served_guami_list) {
+      context.served_guami_list.push_back(guami_item.guami);
+    }
+
   } else {
     const asn1::ngap::ng_setup_fail_s& ng_fail = transaction_sink.failure();
-    logger.error("Received PDU with unsuccessful outcome cause={}", get_cause_str(ng_fail->cause.value));
-    res.success = false;
+    logger.debug("\"{}\" failed with cause={}", name(), get_cause_str(ng_fail->cause));
+
+    fill_ngap_ng_setup_result(res, ng_fail);
   }
+
   return res;
 }

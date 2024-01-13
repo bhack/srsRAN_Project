@@ -24,14 +24,14 @@
 
 #include "rlc_am_interconnect.h"
 #include "rlc_am_pdu.h"
-#include "rlc_am_window.h"
+#include "rlc_pdu_recycler.h"
 #include "rlc_retx_queue.h"
 #include "rlc_sdu_queue.h"
 #include "rlc_tx_entity.h"
 #include "srsran/support/executors/task_executor.h"
+#include "srsran/support/sdu_window.h"
 #include "srsran/support/timers.h"
 #include "fmt/format.h"
-#include <set>
 
 namespace srsran {
 
@@ -92,6 +92,7 @@ private:
 
   // RETX buffers
   rlc_retx_queue retx_queue;
+  uint32_t       retx_sn = INVALID_RLC_SN; // SN of the most recent ReTx since last status report
 
   // Mutexes
   std::mutex mutex;
@@ -104,7 +105,10 @@ private:
   const uint32_t am_window_size;
 
   /// TX window
-  std::unique_ptr<rlc_am_window_base<rlc_tx_am_sdu_info>> tx_window;
+  std::unique_ptr<sdu_window<rlc_tx_am_sdu_info>> tx_window;
+
+  /// Recycler for discarded PDUs (from tx_window) that shall be deleted by a different executor off the critical path
+  rlc_pdu_recycler pdu_recycler;
 
   // Header sizes are computed upon construction based on SN length
   const uint32_t head_min_size;
@@ -118,19 +122,31 @@ private:
   std::atomic<bool> is_poll_retransmit_timer_expired;
 
   task_executor& pcell_executor;
+  task_executor& ue_executor;
+
+  pcap_rlc_pdu_context pcap_context;
 
   // Storage for previous buffer state
   unsigned prev_buffer_state = 0;
 
+  /// This atomic_flag indicates whether a buffer state update task has been queued but not yet run by pcell_executor.
+  /// It helps to avoid queuing of redundant notification tasks in case of frequent changes of the buffer status.
+  /// If the flag is set, no further notification needs to be scheduled, because the already queued task will pick the
+  /// latest buffer state upon execution.
+  std::atomic_flag pending_buffer_state = ATOMIC_FLAG_INIT;
+
 public:
-  rlc_tx_am_entity(du_ue_index_t                        du_index,
+  rlc_tx_am_entity(uint32_t                             du_index,
+                   du_ue_index_t                        ue_index,
                    rb_id_t                              rb_id,
                    const rlc_tx_am_config&              config,
                    rlc_tx_upper_layer_data_notifier&    upper_dn_,
                    rlc_tx_upper_layer_control_notifier& upper_cn_,
                    rlc_tx_lower_layer_notifier&         lower_dn_,
-                   timer_manager&                       timers,
-                   task_executor&                       pcell_executor_);
+                   timer_factory                        timers,
+                   task_executor&                       pcell_executor_,
+                   task_executor&                       ue_executor_,
+                   rlc_pcap&                            pcap_);
 
   // TX/RX interconnect
   void set_status_provider(rlc_rx_am_status_provider* status_provider_) { status_provider = status_provider_; }
@@ -140,7 +156,7 @@ public:
   void discard_sdu(uint32_t pdcp_sn) override;
 
   // Interfaces for lower layers
-  byte_buffer_slice_chain pull_pdu(uint32_t grant_len) override;
+  size_t pull_pdu(span<uint8_t> rlc_pdu_buf) override;
 
   uint32_t get_buffer_state() override;
 
@@ -163,9 +179,7 @@ public:
   ///
   /// Note: This function shall be executed by the same executor that calls pull_pdu(), i.e. the pcell_executor,
   /// in order to avoid incidential blocking of those critical paths.
-  ///
-  /// \param timeout_id The timer ID
-  void on_expired_poll_retransmit_timer(uint32_t timeout_id);
+  void on_expired_poll_retransmit_timer();
 
   // Window helpers
 
@@ -173,6 +187,15 @@ public:
   /// \param sn Sequence Number to check
   /// \return true if sn is inside the TX window, false otherwise
   bool inside_tx_window(uint32_t sn) const;
+
+  /// \brief Checks if the TX window is currently full.
+  ///
+  /// Note "full" may be smaller than the full window size to try to limit
+  /// memory usage. A virtual full window configuration parameter can be used
+  /// to avoid many UEs with 2^18 windows full of PDUs.
+  ///
+  /// \return true if the window is full.
+  bool is_tx_window_full() const;
 
   /// \brief This function is used to check if a received status report as a valid ACK_SN.
   ///
@@ -212,30 +235,33 @@ private:
   /// It will read an SDU from the SDU queue, build a new PDU, and add it to the tx_window.
   /// SDU segmentation is applied if necessary.
   ///
-  /// An empty PDU is returned if grant_len is insufficient or the TX buffer is empty.
+  /// No PDU is written if the size of \c rlc_pdu_buf is insufficient or the TX buffer is empty.
   ///
-  /// \param grant_len Limits the maximum size of the requested PDU.
-  /// \return One PDU
-  byte_buffer_slice_chain build_new_pdu(uint32_t grant_len);
+  /// \param rlc_pdu_buf TX buffer where to encode an RLC Tx PDU. The encoded PDU size cannot exceed the size of the
+  /// buffer.
+  /// \return Number of bytes taken by the written RLC PDU.
+  size_t build_new_pdu(span<uint8_t> rlc_pdu_buf);
 
   /// \brief Builds a RLC PDU containing the first segment of a new SDU.
   ///
   /// This function will set sn_under_segmentation to the sequence number of the SDU under segmentation.
   ///
-  /// \param tx_pdu the tx_pdu info contained in the tx_window.
-  /// \param grant_len Limits the maximum size of the requested PDU.
-  /// \return One PDU
-  byte_buffer_slice_chain build_first_sdu_segment(rlc_tx_am_sdu_info& sdu_info, uint32_t grant_len);
+  /// \param rlc_pdu_buf TX buffer where to encode an RLC Tx PDU. The encoded PDU size cannot exceed the size of the
+  /// buffer.
+  /// \param sdu_info The tx_pdu info contained in the tx_window.
+  /// \return Number of bytes taken by the written RLC PDU.
+  size_t build_first_sdu_segment(span<uint8_t> rlc_pdu_buf, rlc_tx_am_sdu_info& sdu_info);
 
   /// \brief Builds a RLC PDU containing an SDU segment for an SDU that is undergoing segmentation.
   ///
   /// This function will reset sn_under_segmentation to RLC_INVALID_SN if the produced PDU contains
   /// the last segment of the SDU under segmentation.
   ///
-  /// \param tx_pdu The tx_pdu info contained in the tx_window.
-  /// \param grant_len Limits the maximum size of the requested PDU.
-  /// \return One PDU
-  byte_buffer_slice_chain build_continued_sdu_segment(rlc_tx_am_sdu_info& sdu_info, uint32_t grant_len);
+  /// \param rlc_pdu_buf TX buffer where to encode an RLC Tx PDU. The encoded PDU size cannot exceed the size of the
+  /// buffer.
+  /// \param sdu_info The tx_pdu info contained in the tx_window.
+  /// \return Number of bytes taken by the written RLC PDU.
+  size_t build_continued_sdu_segment(span<uint8_t> rlc_pdu_buf, rlc_tx_am_sdu_info& sdu_info);
 
   /// \brief Builds a RETX RLC PDU.
   ///
@@ -243,9 +269,9 @@ private:
   /// being RETX'ed. The RETX may have been previously transmitted as
   /// a full PDU or an PDU segment(s).
   ///
-  /// \param grant_len Limits the maximum size of the requested PDU.
-  /// \return One PDU or PDU segment segment
-  byte_buffer_slice_chain build_retx_pdu(uint32_t grant_len);
+  /// \param sdu_info The tx_pdu info contained in the tx_window.
+  /// \return Number of bytes taken by the written RLC PDU.
+  size_t build_retx_pdu(span<uint8_t> rlc_pdu_buf);
 
   constexpr uint32_t get_retx_expected_hdr_len(const rlc_tx_amd_retx retx)
   {
@@ -259,7 +285,7 @@ private:
   /// \brief Schedules RETX for NACK'ed PDUs
   ///
   /// NACKs will be dropped if the SN falls out of the tx window or if the NACK'ed
-  /// PDU or PDU segment is already queued for RETX.
+  /// PDU or PDU segment is already queued for RETX or the RETX queue is full.
   /// Invalid or out of bounds segment offsets are adjusted to SDU boundaries
   ///
   /// Note: This function must not be called with NACKs that have a nack range.
@@ -269,6 +295,18 @@ private:
   /// \return true if NACK was handled and queued successfully, false if NACK has been ignored
   bool handle_nack(rlc_am_status_nack nack);
 
+  /// \brief Increments the retx_count for a given SN and checks if max_retx is reached.
+  ///
+  /// Caller _must_ hold the mutex when calling the function.
+  /// \param sn The SN of the SDU for which the retx_counter shall be incremented.
+  void increment_retx_count(uint32_t sn);
+
+  /// \brief Decrements the retx_count for a given SN if applicable.
+  ///
+  /// Caller _must_ hold the mutex when calling the function.
+  /// \param sn The SN of the SDU for which the retx_counter shall be decremented.
+  void decrement_retx_count(uint32_t sn);
+
   /// \brief Helper to check if a SN has reached the max RETX threshold
   ///
   /// Caller _must_ hold the mutex when calling the function.
@@ -277,17 +315,33 @@ private:
   /// \param sn The SN of the PDU to check
   void check_sn_reached_max_retx(uint32_t sn);
 
-  /// Called when buffer state needs to be updated and forwarded to lower layers.
-  void handle_buffer_state_update();
-  /// Called when buffer state needs to be updated and forwarded to lower layers while already holding a lock.
-  void handle_buffer_state_update_nolock();
+  /// Called whenever the buffer state has been changed by upper layers (i.e new SDU or SDU discard) or the size of the
+  /// own status PDU has changed so that lower layers need to be informed about the new buffer state. This function
+  /// defers the actual notification \c handle_changed_buffer_state to pcell_executor. The notification is discarded if
+  /// another notification is already queued for execution. This function should not be called from \c pull_pdu, since
+  /// the lower layer accounts for the amount of extracted data itself.
+  ///
+  /// Safe execution from: Any executor
+  void handle_changed_buffer_state();
 
+  /// Immediately informs the lower layer of the current buffer state. This function must be called from pcell_executor.
+  /// It is used for buffer update notifications by non-excessive internal RLC events (i.e. expired poll retransmit
+  /// timer or handled received status report), and for defered handling of \c handle_changed_buffer_state. This
+  /// function should not be called from \c pull_pdu, since the lower layer accounts for the amount of extracted data
+  /// itself.
+  ///
+  /// Safe execution from: pcell_executor
+  /// \param is_locked provides info whether the \c mutex is already locked or not.
+  void update_mac_buffer_state(bool is_locked);
+
+  /// Lock-free version of \c get_buffer_state()
+  /// \return Provides the current buffer state
   uint32_t get_buffer_state_nolock();
 
   /// Creates the tx_window according to sn_size
   /// \param sn_size Size of the sequence number (SN)
   /// \return unique pointer to tx_window instance
-  std::unique_ptr<rlc_am_window_base<rlc_tx_am_sdu_info>> create_tx_window(rlc_am_sn_size sn_size);
+  std::unique_ptr<sdu_window<rlc_tx_am_sdu_info>> create_tx_window(rlc_am_sn_size sn_size);
 
   void log_state(srslog::basic_levels level)
   {

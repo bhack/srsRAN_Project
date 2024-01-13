@@ -23,6 +23,7 @@
 #pragma once
 
 #include "srsran/phy/lower/lower_phy_error_notifier.h"
+#include "srsran/phy/support/resource_grid_context.h"
 
 namespace srsran {
 
@@ -36,37 +37,49 @@ private:
   srslog::basic_logger& logger;
 
 public:
-  /// Creates an adapter with the desired logging level.
-  phy_error_adapter(std::string log_level) : logger(srslog::fetch_basic_logger("Error notifier")) {}
+  /// Creates an adapter with a given logger.
+  explicit phy_error_adapter(srslog::basic_logger& logger_) : logger(logger_) {}
 
   // See interface for documentation.
-  void on_late_resource_grid(const late_resource_grid_context& context) override
+  void on_late_resource_grid(const resource_grid_context& context) override
   {
-    logger.set_context(context.slot.sfn(), context.slot.slot_index());
-    logger.info("Unavailable data to transmit for sector {}, slot {} and symbol {}.",
-                context.sector,
-                context.slot,
-                context.symbol);
+    logger.warning(context.slot.sfn(),
+                   context.slot.slot_index(),
+                   "Real-time failure in low-phy: Downlink data late for sector {} and slot {}.",
+                   context.sector,
+                   context.slot);
   }
 
   // See interface for documentation.
   void on_prach_request_late(const prach_buffer_context& context) override
   {
-    logger.set_context(context.slot.sfn(), context.slot.slot_index());
-    logger.info("PRACH request late for sector {}, slot {} and start symbol {}.",
-                context.sector,
-                context.slot,
-                context.start_symbol);
+    logger.warning(context.slot.sfn(),
+                   context.slot.slot_index(),
+                   "Real-time failure in low-phy: PRACH request late for sector {}, slot {} and start symbol {}.",
+                   context.sector,
+                   context.slot,
+                   context.start_symbol);
   }
 
   // See interface for documentation.
   void on_prach_request_overflow(const prach_buffer_context& context) override
   {
-    logger.set_context(context.slot.sfn(), context.slot.slot_index());
-    logger.info("PRACH request overflow for sector {}, slot {} and start symbol {}.",
-                context.sector,
-                context.slot,
-                context.start_symbol);
+    logger.warning(context.slot.sfn(),
+                   context.slot.slot_index(),
+                   "Real-time failure in low-phy: PRACH request overflow for sector {}, slot {} and start symbol {}.",
+                   context.sector,
+                   context.slot,
+                   context.start_symbol);
+  }
+
+  // See interface for documentation.
+  void on_puxch_request_late(const resource_grid_context& context) override
+  {
+    logger.warning(context.slot.sfn(),
+                   context.slot.slot_index(),
+                   "Real-time failure in low-phy: PUxCH request late for sector {}, slot {}.",
+                   context.sector,
+                   context.slot);
   }
 };
 

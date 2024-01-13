@@ -22,10 +22,12 @@
 
 #pragma once
 
+#include "five_qi.h"
 #include "nr_cgi.h"
+#include "qos_prio_level.h"
 #include "s_nssai.h"
 #include "srsran/adt/optional.h"
-#include "srsran/pdcp/pdcp_config.h"
+#include "srsran/sdap/sdap_config.h"
 #include "fmt/format.h"
 
 namespace srsran {
@@ -93,11 +95,45 @@ struct nr_cgi_support_item_t {
   nr_cell_global_id_t nr_cgi;
 };
 
+struct packet_error_rate_t {
+  uint8_t per_scalar;
+  uint8_t per_exponent;
+};
+
+struct dyn_5qi_descriptor_t {
+  qos_prio_level_t      qos_prio_level;
+  uint16_t              packet_delay_budget;
+  packet_error_rate_t   packet_error_rate;
+  optional<five_qi_t>   five_qi;
+  optional<std::string> delay_crit;
+  optional<uint16_t>    averaging_win;
+  optional<uint16_t>    max_data_burst_volume;
+};
+
 struct non_dyn_5qi_descriptor_t {
-  uint16_t           five_qi;
-  optional<uint8_t>  qos_prio_level;
-  optional<uint16_t> averaging_win;
-  optional<uint16_t> max_data_burst_volume;
+  five_qi_t                  five_qi;
+  optional<qos_prio_level_t> qos_prio_level;
+  optional<uint16_t>         averaging_win;
+  optional<uint16_t>         max_data_burst_volume;
+};
+
+struct qos_characteristics_t {
+  five_qi_t get_five_qi() const
+  {
+    if (non_dyn_5qi.has_value()) {
+      return non_dyn_5qi.value().five_qi;
+    } else if (dyn_5qi.has_value()) {
+      if (dyn_5qi.value().five_qi.has_value()) {
+        return dyn_5qi.value().five_qi.value();
+      }
+    } else {
+      srsran_assertion_failure("Invalid QoS characteristics. Either dynamic or non-dynamic 5QI must be set");
+    }
+    return five_qi_t::invalid;
+  }
+
+  optional<dyn_5qi_descriptor_t>     dyn_5qi;
+  optional<non_dyn_5qi_descriptor_t> non_dyn_5qi;
 };
 
 struct ng_ran_qos_support_item_t {
@@ -113,78 +149,78 @@ struct supported_plmns_item_t {
 
 struct sdap_config_t {
   pdu_session_id_t           pdu_session = pdu_session_id_t::invalid;
-  std::string                sdap_hdr_dl;
-  std::string                sdap_hdr_ul;
-  bool                       default_drb                 = false;
-  std::vector<qos_flow_id_t> mapped_qos_flows_to_add     = {};
-  std::vector<qos_flow_id_t> mapped_qos_flows_to_release = {};
+  sdap_hdr_dl_cfg            sdap_hdr_dl = sdap_hdr_dl_cfg::absent;
+  sdap_hdr_ul_cfg            sdap_hdr_ul = sdap_hdr_ul_cfg::absent;
+  bool                       default_drb = false;
+  std::vector<qos_flow_id_t> mapped_qos_flows_to_add;
+  std::vector<qos_flow_id_t> mapped_qos_flows_to_release;
 };
 
-struct rohc_profiles_t {
-  bool profile0x0001 = false;
-  bool profile0x0002 = false;
-  bool profile0x0003 = false;
-  bool profile0x0004 = false;
-  bool profile0x0006 = false;
-  bool profile0x0101 = false;
-  bool profile0x0102 = false;
-  bool profile0x0103 = false;
-  bool profile0x0104 = false;
-};
-
-struct rohc_t {
-  rohc_profiles_t    profiles;
-  bool               drb_continue_rohc_present = false;
-  optional<uint16_t> max_cid;
-};
-
-struct ul_only_rohc_profiles_t {
-  bool profile0x0006 = false;
-};
-
-struct ul_only_rohc_t {
-  ul_only_rohc_profiles_t profiles;
-  bool                    drb_continue_rohc_present = false;
-  optional<uint16_t>      max_cid;
-};
-
-struct hdr_compress_t {
-  optional<rohc_t>         rohc;
-  optional<ul_only_rohc_t> ul_only_rohc;
-};
-
-struct drb_t {
-  hdr_compress_t         hdr_compress;
-  optional<int16_t>      discard_timer;
-  optional<pdcp_sn_size> pdcp_sn_size_ul;
-  optional<pdcp_sn_size> pdcp_sn_size_dl;
-  bool                   integrity_protection_present   = false;
-  bool                   status_report_required_present = false;
-  bool                   out_of_order_delivery_present  = false;
-};
-
-struct primary_path_t {
-  optional<uint8_t> cell_group;
-  optional<uint8_t> lc_ch;
-};
-
-struct more_than_one_rlc_t {
-  primary_path_t    primary_path;
-  optional<int32_t> ul_data_split_thres;
-  optional<bool>    pdcp_dupl;
-};
-
-struct pdcp_config_t {
-  optional<drb_t>               drb;
-  optional<more_than_one_rlc_t> more_than_one_rlc;
-  optional<uint16_t>            t_reordering;
-  bool                          ciphering_disabled_present = false;
-};
+enum class integrity_protection_result_t { performed, not_performed };
+enum class confidentiality_protection_result_t { performed, not_performed };
 
 struct security_result_t {
-  std::string confidentiality_protection_result;
-  std::string integrity_protection_result;
+  integrity_protection_result_t       integrity_protection_result;
+  confidentiality_protection_result_t confidentiality_protection_result;
 };
+
+enum class integrity_protection_indication_t { required, preferred, not_needed };
+inline bool from_string(integrity_protection_indication_t& integrity_protection_ind, const std::string& str)
+{
+  if (str == "required") {
+    integrity_protection_ind = integrity_protection_indication_t::required;
+    return true;
+  }
+  if (str == "preferred") {
+    integrity_protection_ind = integrity_protection_indication_t::preferred;
+    return true;
+  }
+  if (str == "not_needed") {
+    integrity_protection_ind = integrity_protection_indication_t::not_needed;
+    return true;
+  }
+  return false;
+}
+
+enum class confidentiality_protection_indication_t { required, preferred, not_needed };
+inline bool from_string(confidentiality_protection_indication_t& confidentiality_protection_ind, const std::string& str)
+{
+  if (str == "required") {
+    confidentiality_protection_ind = confidentiality_protection_indication_t::required;
+    return true;
+  }
+  if (str == "preferred") {
+    confidentiality_protection_ind = confidentiality_protection_indication_t::preferred;
+    return true;
+  }
+  if (str == "not_needed") {
+    confidentiality_protection_ind = confidentiality_protection_indication_t::not_needed;
+    return true;
+  }
+  return false;
+}
+
+struct security_indication_t {
+  integrity_protection_indication_t       integrity_protection_ind;
+  confidentiality_protection_indication_t confidentiality_protection_ind;
+};
+
+/// \brief Checks whether a \c security_result shall be sent.
+///
+/// Helper function to determine whether the \c security_indication shall be replied with a \c security_result by the
+/// peer entity, i.e. if either integrity or confidentiality are set to 'preferred' so the peer entity can decide
+/// according to its capabilities.
+/// Ref: TS 38.413 Sec. 8.2.1.2, TS 38.463 Sec. 8.3.1.2
+///
+/// \param security_indication The security_indication to be checked.
+/// \return True if either integrity or confidentiality are set to 'preferred'; False otherwise.
+inline bool security_result_required(const security_indication_t& security_indication)
+{
+  return security_indication.integrity_protection_ind == integrity_protection_indication_t::preferred ||
+         security_indication.confidentiality_protection_ind == confidentiality_protection_indication_t::preferred;
+}
+
+enum class activity_notification_level_t : uint8_t { ue = 0, pdu_session = 1, drb = 2, invalid = 3 };
 
 } // namespace srsran
 
@@ -201,7 +237,94 @@ struct formatter<srsran::pdu_session_id_t> {
   template <typename FormatContext>
   auto format(const srsran::pdu_session_id_t& sid, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
   {
-    return format_to(ctx.out(), "{:#x}", pdu_session_id_to_uint(sid));
+    return format_to(ctx.out(), "{:#}", pdu_session_id_to_uint(sid));
+  }
+};
+
+template <>
+struct formatter<srsran::qos_flow_id_t> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin())
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const srsran::qos_flow_id_t& qfi, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
+  {
+    switch (qfi) {
+      case srsran::qos_flow_id_t::invalid:
+        return format_to(ctx.out(), "invalid QFI");
+      default:
+        return format_to(ctx.out(), "QFI={:#}", qos_flow_id_to_uint(qfi));
+    }
+  }
+};
+
+template <>
+struct formatter<srsran::integrity_protection_indication_t> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin())
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const srsran::integrity_protection_indication_t& ind, FormatContext& ctx)
+      -> decltype(std::declval<FormatContext>().out())
+  {
+    switch (ind) {
+      case srsran::integrity_protection_indication_t::not_needed:
+        return format_to(ctx.out(), "not_needed");
+      case srsran::integrity_protection_indication_t::preferred:
+        return format_to(ctx.out(), "preferred");
+      case srsran::integrity_protection_indication_t::required:
+        return format_to(ctx.out(), "required");
+    }
+    return format_to(ctx.out(), "invalid");
+  }
+};
+
+template <>
+struct formatter<srsran::confidentiality_protection_indication_t> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin())
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const srsran::confidentiality_protection_indication_t& ind, FormatContext& ctx)
+      -> decltype(std::declval<FormatContext>().out())
+  {
+    switch (ind) {
+      case srsran::confidentiality_protection_indication_t::not_needed:
+        return format_to(ctx.out(), "not_needed");
+      case srsran::confidentiality_protection_indication_t::preferred:
+        return format_to(ctx.out(), "preferred");
+      case srsran::confidentiality_protection_indication_t::required:
+        return format_to(ctx.out(), "required");
+    }
+    return format_to(ctx.out(), "invalid");
+  }
+};
+
+template <>
+struct formatter<srsran::security_indication_t> {
+  template <typename ParseContext>
+  auto parse(ParseContext& ctx) -> decltype(ctx.begin())
+  {
+    return ctx.begin();
+  }
+
+  template <typename FormatContext>
+  auto format(const srsran::security_indication_t& security_ind, FormatContext& ctx)
+      -> decltype(std::declval<FormatContext>().out())
+  {
+    return format_to(ctx.out(),
+                     "integrity_ind={} confidentiality_ind={}",
+                     security_ind.integrity_protection_ind,
+                     security_ind.confidentiality_protection_ind);
   }
 };
 

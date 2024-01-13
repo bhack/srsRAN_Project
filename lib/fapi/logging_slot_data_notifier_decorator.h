@@ -28,6 +28,7 @@
 namespace srsran {
 namespace fapi {
 
+/// Adds logging information over the implemented interface.
 class logging_slot_data_notifier_decorator : public slot_data_message_notifier
 {
 public:
@@ -35,9 +36,6 @@ public:
     logger(logger_), notifier(notifier_)
   {
   }
-
-  // See interface for documentation.
-  void on_dl_tti_response(const dl_tti_response_message& msg) override;
 
   // See interface for documentation.
   void on_rx_data_indication(const rx_data_indication_message& msg) override;

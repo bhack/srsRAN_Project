@@ -24,7 +24,7 @@
 
 #include "srsran/adt/expected.h"
 #include "srsran/asn1/ngap/ngap.h"
-#include "srsran/ngap/ngap_types.h"
+#include "srsran/cu_cp/cu_cp_types.h"
 #include "srsran/security/security.h"
 #include "srsran/support/error_handling.h"
 
@@ -73,7 +73,7 @@ inline expected<ran_ue_id_t> get_ran_ue_id(const asn1::ngap::init_msg_s& init_ms
 {
   switch (init_msg.value.type()) {
     case asn1::ngap::ngap_elem_procs_o::init_msg_c::types_opts::init_ue_msg:
-      return uint_to_ran_ue_id(init_msg.value.init_ue_msg()->ran_ue_ngap_id->value);
+      return uint_to_ran_ue_id(init_msg.value.init_ue_msg()->ran_ue_ngap_id);
     default:
       break;
   }
@@ -106,7 +106,7 @@ inline expected<ran_ue_id_t> get_ran_ue_id(const asn1::ngap::ngap_pdu_c& pdu)
   return {default_error_t{}};
 }
 
-inline void copy_asn1_key(security::sec_as_key& key_out, const asn1::fixed_bitstring<256, false, true>& key_in)
+inline void copy_asn1_key(security::sec_key& key_out, const asn1::fixed_bitstring<256, false, true>& key_in)
 {
   for (uint32_t i = 0; i < key_in.nof_octets(); ++i) {
     key_out[i] = key_in.data()[key_in.nof_octets() - 1 - i];

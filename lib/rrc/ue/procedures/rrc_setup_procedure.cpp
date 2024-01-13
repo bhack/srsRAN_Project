@@ -27,19 +27,19 @@ using namespace srsran;
 using namespace srsran::srs_cu_cp;
 using namespace asn1::rrc_nr;
 
-rrc_setup_procedure::rrc_setup_procedure(rrc_ue_context_t&                        context_,
-                                         const asn1::rrc_nr::rrc_setup_request_s& request_,
-                                         const byte_buffer&                       du_to_cu_container_,
-                                         rrc_ue_setup_proc_notifier&              rrc_ue_notifier_,
-                                         rrc_ue_du_processor_notifier&            du_processor_notifier_,
-                                         rrc_ue_nas_notifier&                     nas_notifier_,
-                                         rrc_ue_event_manager&                    event_mng_,
-                                         srslog::basic_logger&                    logger_) :
+rrc_setup_procedure::rrc_setup_procedure(rrc_ue_context_t&                          context_,
+                                         const asn1::rrc_nr::establishment_cause_e& cause_,
+                                         const byte_buffer&                         du_to_cu_container_,
+                                         rrc_ue_setup_proc_notifier&                rrc_ue_notifier_,
+                                         rrc_ue_srb_handler&                        srb_notifier_,
+                                         rrc_ue_nas_notifier&                       nas_notifier_,
+                                         rrc_ue_event_manager&                      event_mng_,
+                                         rrc_ue_logger&                             logger_) :
   context(context_),
-  request(request_),
+  cause(cause_),
   du_to_cu_container(du_to_cu_container_),
   rrc_ue(rrc_ue_notifier_),
-  du_processor_notifier(du_processor_notifier_),
+  srb_notifier(srb_notifier_),
   nas_notifier(nas_notifier_),
   event_mng(event_mng_),
   logger(logger_)
@@ -54,7 +54,8 @@ void rrc_setup_procedure::operator()(coro_context<async_task<void>>& ctx)
   create_srb1();
 
   // create new transaction for RRCSetup
-  transaction = event_mng.transactions.create_transaction(rrc_setup_timeout_ms);
+  transaction =
+      event_mng.transactions.create_transaction(std::chrono::milliseconds(context.cfg.rrc_procedure_timeout_ms));
 
   // send RRC setup to UE
   send_rrc_setup();
@@ -62,14 +63,13 @@ void rrc_setup_procedure::operator()(coro_context<async_task<void>>& ctx)
   // Await UE response
   CORO_AWAIT(transaction);
 
-  auto coro_res = transaction.result();
-  if (coro_res.has_value()) {
-    logger.debug("ue={} \"{}\" finished successfully", context.ue_index, name());
+  if (transaction.has_response()) {
+    logger.log_debug("\"{}\" finished successfully", name());
     context.state = rrc_state::connected;
-    send_initial_ue_msg(coro_res.value().msg.c1().rrc_setup_complete());
+    send_initial_ue_msg(transaction.response().msg.c1().rrc_setup_complete());
   } else {
-    logger.debug("ue={} \"{}\" timed out", context.ue_index, name());
-    rrc_ue.on_ue_delete_request();
+    logger.log_warning("\"{}\" timed out after {}ms", name(), context.cfg.rrc_procedure_timeout_ms);
+    rrc_ue.on_ue_release_required(cause_protocol_t::unspecified);
   }
 
   CORO_RETURN();
@@ -82,7 +82,7 @@ void rrc_setup_procedure::create_srb1()
   srb1_msg.ue_index = context.ue_index;
   srb1_msg.srb_id   = srb_id_t::srb1;
   srb1_msg.pdcp_cfg = srb1_pdcp_cfg;
-  du_processor_notifier.on_create_srb(srb1_msg);
+  srb_notifier.create_srb(srb1_msg);
 }
 
 void rrc_setup_procedure::send_rrc_setup()
@@ -96,15 +96,20 @@ void rrc_setup_procedure::send_rrc_setup()
 
 void rrc_setup_procedure::send_initial_ue_msg(const asn1::rrc_nr::rrc_setup_complete_s& rrc_setup_complete_msg)
 {
-  initial_ue_message init_ue_msg = {};
-  init_ue_msg.ue_index           = context.ue_index;
+  cu_cp_initial_ue_message init_ue_msg       = {};
+  init_ue_msg.ue_index                       = context.ue_index;
+  init_ue_msg.nas_pdu                        = rrc_setup_complete_msg.crit_exts.rrc_setup_complete().ded_nas_msg.copy();
+  init_ue_msg.establishment_cause            = static_cast<establishment_cause_t>(cause.value);
+  init_ue_msg.user_location_info.nr_cgi      = context.cell.cgi;
+  init_ue_msg.user_location_info.tai.plmn_id = context.cell.cgi.plmn_hex;
+  init_ue_msg.user_location_info.tai.tac     = context.cell.tac;
 
-  auto& ded_nas_msg = rrc_setup_complete_msg.crit_exts.rrc_setup_complete().ded_nas_msg;
-  init_ue_msg.nas_pdu.resize(ded_nas_msg.size());
-  std::copy(ded_nas_msg.begin(), ded_nas_msg.end(), init_ue_msg.nas_pdu.begin());
-
-  init_ue_msg.establishment_cause = request.rrc_setup_request.establishment_cause;
-  init_ue_msg.cell                = context.cell;
+  cu_cp_five_g_s_tmsi five_g_s_tmsi;
+  if (context.five_g_tmsi.has_value()) {
+    five_g_s_tmsi.five_g_tmsi = context.five_g_tmsi.value();
+    // amf_pointer and amf_set_id will be set by NGAP
+    init_ue_msg.five_g_s_tmsi = five_g_s_tmsi;
+  }
 
   nas_notifier.on_initial_ue_message(init_ue_msg);
 }

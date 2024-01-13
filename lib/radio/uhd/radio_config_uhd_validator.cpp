@@ -176,8 +176,13 @@ bool radio_config_uhd_config_validator::is_configuration_valid(const radio_confi
     return false;
   }
 
+  if (config.tx_streams.size() != config.rx_streams.size()) {
+    fmt::print("Transmit and receive number of streams must be equal.\n");
+    return false;
+  }
+
   if (config.tx_streams.empty()) {
-    fmt::print("At least one transmit stream must be available.\n");
+    fmt::print("At least one transmit and one receive stream must be configured.\n");
     return false;
   }
 
@@ -187,14 +192,23 @@ bool radio_config_uhd_config_validator::is_configuration_valid(const radio_confi
     }
   }
 
-  if (config.rx_streams.empty()) {
-    fmt::print("At least one receive stream must be available.\n");
-    return false;
-  }
-
   for (const radio_configuration::stream& rx_stream : config.rx_streams) {
     if (!validate_stream(rx_stream, false)) {
       return false;
+    }
+  }
+
+  if (config.tx_streams.size() != config.rx_streams.size()) {
+    fmt::print("Transmit and receive number of streams must be equal.\n");
+    return false;
+  }
+
+  if (config.args.find("type=b2") != std::string::npos) {
+    for (unsigned i_stream = 0, nof_streams = config.tx_streams.size(); i_stream != nof_streams; ++i_stream) {
+      if ((config.tx_streams[i_stream].channels.size() != config.rx_streams[i_stream].channels.size())) {
+        fmt::print("B2x0 devices do not support different number of transmit and receive antennas.\n");
+        return false;
+      }
     }
   }
 
@@ -207,6 +221,11 @@ bool radio_config_uhd_config_validator::is_configuration_valid(const radio_confi
   }
 
   if (!validate_log_level(config.log_level)) {
+    return false;
+  }
+
+  if (config.discontinuous_tx && (config.power_ramping_us < 0)) {
+    fmt::print("Power ramping time, i.e., {:.1f} us, must be positive or zero.\n", config.power_ramping_us);
     return false;
   }
 

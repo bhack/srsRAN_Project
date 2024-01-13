@@ -32,18 +32,11 @@
 #include "srsran/phy/lower/sampling_rate.h"
 #include "srsran/phy/support/resource_grid_pool.h"
 #include "srsran/ran/cyclic_prefix.h"
+#include "srsran/ran/n_ta_offset.h"
 #include "srsran/ran/subcarrier_spacing.h"
 #include "srsran/support/executors/task_executor.h"
 
 namespace srsran {
-
-/// Describes the lower physical layer RF port mapping.
-struct lower_phy_sector_port_mapping {
-  /// Indicates the radio stream identifier.
-  unsigned stream_id;
-  /// Indicates the radio channel identifier within the stream.
-  unsigned channel_id;
-};
 
 /// Describes a sector configuration.
 struct lower_phy_sector_description {
@@ -53,32 +46,35 @@ struct lower_phy_sector_description {
   double dl_freq_hz;
   /// Indicates the uplink frequency.
   double ul_freq_hz;
-  /// Provides the sector port mapping.
-  std::vector<lower_phy_sector_port_mapping> port_mapping;
+  /// Number of transmit ports.
+  unsigned nof_tx_ports;
+  /// Number of receive ports.
+  unsigned nof_rx_ports;
 };
 
-/// \brief Time advance offset - parameter \f$N_{TA,offset}\f$ in TS38.211 Section 4.3.3.
+/// \brief Lower physical layer baseband gateway buffer size policy.
 ///
-/// This value must be selected from the parameter \e n-TimingAdvanceOffset (TS38.331 Section 6.3.2, Information Element
-/// \e ServingCellConfigCommon) if it is present. Otherwise, it is given by TS38.133 Section 7.1.2 depending on the
-/// duplex mode of the cell and the frequency range.
-///
-/// The values are given in units of \f$T_c\f$ (see TS38.211 Section 4.1).
-enum class lower_phy_ta_offset {
-  /// For FR1 FDD band with LTE-NR coexistence case.
-  n0 = 0,
-  /// For FR1 FDD band without LTE-NR coexistence case or for FR1 TDD band without LTE-NR coexistence case.
-  n25600 = 25600,
-  /// For FR2.
-  n13792 = 13792,
-  /// For FR1 TDD band with LTE-NR coexistence case.
-  n39936 = 39936
+/// Determines the policy to select the baseband gateway buffer size.
+enum class lower_phy_baseband_buffer_size_policy : unsigned {
+  /// The buffer size matches the number of samples per slot.
+  slot = 0,
+  /// The buffer size matches the number of samples per half-slot.
+  half_slot,
+  /// The buffer size if equal to \ref baseband_gateway::get_transmitter_optimal_buffer_size for the transmitter and
+  /// \ref baseband_gateway::get_receiver_optimal_buffer_size for the receiver.
+  single_packet,
+  /// The buffer size is is equal to the greatest multiple of \ref baseband_gateway::get_transmitter_optimal_buffer_size
+  /// for the transmitter and \ref baseband_gateway::get_receiver_optimal_buffer_size for the receiver less than the
+  /// number of samples per slot.
+  optimal_slot,
 };
 
 /// Lower physical layer configuration.
 struct lower_phy_configuration {
-  /// Indicates the log level.
-  std::string log_level;
+  /// Sector identifier.
+  unsigned sector_id;
+  /// Amplitude control logger.
+  srslog::basic_logger* logger;
   /// Subcarrier spacing for the overall PHY.
   subcarrier_spacing scs;
   /// Cyclic prefix.
@@ -89,17 +85,10 @@ struct lower_phy_configuration {
   ///
   /// Sets the maximum allowed processing delay in slots.
   unsigned max_processing_delay_slots;
-  /// \brief Indicates the UL-to-DL slot context offset.
-  ///
-  /// Determines the time offset between the UL and DL processes in subframes or, equivalently, with a granularity of
-  /// one millisecond.
-  ///
-  /// An assertion is triggered if it is equal to zero.
-  unsigned ul_to_dl_subframe_offset;
   /// Sampling rate.
   sampling_rate srate;
   /// Time alignment offset.
-  lower_phy_ta_offset ta_offset;
+  n_ta_offset ta_offset;
   /// \brief Time alignment calibration in number of samples.
   ///
   /// Models the reception and transmission time misalignment inherent to the RF device. This time adjustment is
@@ -108,14 +97,22 @@ struct lower_phy_configuration {
   /// \remark Positive values cause a reduction of the RF transmission delay with respect to the RF reception, while
   /// negative values increase it.
   int time_alignment_calibration;
-  /// OFDM modulator scale.
-  float tx_scale;
+  /// \brief System time-based throttling.
+  ///
+  /// Determines a minimum baseband processor period time between downlink packets. It is expressed as a fraction of the
+  /// time equivalent to the number of samples in the baseband buffer. Set to 0.9 to ensure that the downlink packets
+  /// are processed with a minimum period of 90% of the buffer duration.
+  ///
+  /// Set to zero to disable this feature.
+  float system_time_throttling;
+  /// Baseband transmit buffer size policy.
+  lower_phy_baseband_buffer_size_policy baseband_tx_buffer_size_policy;
+  /// Baseband receive buffer size policy.
+  lower_phy_baseband_buffer_size_policy baseband_rx_buffer_size_policy;
   /// Amplitude control parameters, including baseband gain and clipping.
   amplitude_controller_clipping_config amplitude_config;
   /// Provides the sectors configuration.
   std::vector<lower_phy_sector_description> sectors;
-  /// Indicates the numbers of channels for every baseband stream.
-  std::vector<unsigned> nof_channels_per_stream;
   /// Provides the baseband gateway.
   baseband_gateway* bb_gateway;
   /// Provides a symbol handler to notify the reception of symbols.
@@ -124,6 +121,14 @@ struct lower_phy_configuration {
   lower_phy_timing_notifier* timing_notifier;
   /// Provides the error handler to notify runtime errors.
   lower_phy_error_notifier* error_notifier;
+  /// Receive task executor.
+  task_executor* rx_task_executor;
+  /// Transmit task executor.
+  task_executor* tx_task_executor;
+  /// Downlink task executor.
+  task_executor* dl_task_executor;
+  /// Uplink task executor.
+  task_executor* ul_task_executor;
   /// PRACH asynchronous task executor.
   task_executor* prach_async_executor;
 };

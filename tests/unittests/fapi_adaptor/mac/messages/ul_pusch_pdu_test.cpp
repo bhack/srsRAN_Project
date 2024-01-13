@@ -22,6 +22,7 @@
 
 #include "helpers.h"
 #include "srsran/fapi_adaptor/mac/messages/pusch.h"
+#include "srsran/fapi_adaptor/uci_part2_correspondence_generator.h"
 #include "srsran/phy/upper/channel_coding/ldpc/ldpc.h"
 #include <gtest/gtest.h>
 
@@ -29,16 +30,18 @@ using namespace srsran;
 using namespace fapi_adaptor;
 using namespace unittests;
 
-TEST(ULPUSCHPDUTest, ValidPUSCHShouldPass)
+TEST(mac_to_fapi_pusch_pdu_test, valid_pusch_pdu_shoul_pass)
 {
-  const ul_sched_info& mac_pdu = build_valid_pusch_pdu();
-  fapi::ul_pusch_pdu   fapi_pdu;
+  const ul_sched_info_test_helper& pdu_test = build_valid_pusch_pdu();
+  const ul_sched_info&             mac_pdu  = pdu_test.info;
+  fapi::ul_pusch_pdu               fapi_pdu;
+  auto                             uci_part2_tools = generate_uci_part2_correspondence(1);
 
-  convert_pusch_mac_to_fapi(fapi_pdu, mac_pdu);
+  convert_pusch_mac_to_fapi(fapi_pdu, mac_pdu, *std::get<0>(uci_part2_tools));
 
   // BWP.
   const pusch_information& pusch_cfg = mac_pdu.pusch_cfg;
-  ASSERT_EQ(pusch_cfg.bwp_cfg->cp_extended ? cyclic_prefix::EXTENDED : cyclic_prefix::NORMAL, fapi_pdu.cp);
+  ASSERT_EQ(pusch_cfg.bwp_cfg->cp, fapi_pdu.cp);
   ASSERT_EQ(pusch_cfg.bwp_cfg->scs, fapi_pdu.scs);
   ASSERT_EQ(pusch_cfg.bwp_cfg->crbs.start(), fapi_pdu.bwp_start);
   ASSERT_EQ(pusch_cfg.bwp_cfg->crbs.length(), fapi_pdu.bwp_size);
@@ -69,11 +72,11 @@ TEST(ULPUSCHPDUTest, ValidPUSCHShouldPass)
   ASSERT_EQ(pusch_cfg.pusch_dmrs_id, fapi_pdu.pusch_dmrs_identity);
 
   // Frequency allocation.
-  const prb_grant& prb_cfg = pusch_cfg.prbs;
+  const vrb_alloc& prb_cfg = pusch_cfg.rbs;
   ASSERT_TRUE(fapi_pdu.resource_alloc == fapi::resource_allocation_type::type_1);
   ASSERT_TRUE(fapi_pdu.vrb_to_prb_mapping == fapi::vrb_to_prb_mapping_type::non_interleaved);
-  ASSERT_EQ(prb_cfg.prbs().start(), fapi_pdu.rb_start);
-  ASSERT_EQ(prb_cfg.prbs().length(), fapi_pdu.rb_size);
+  ASSERT_EQ(prb_cfg.type1().start(), fapi_pdu.rb_start);
+  ASSERT_EQ(prb_cfg.type1().length(), fapi_pdu.rb_size);
   ASSERT_EQ(pusch_cfg.intra_slot_freq_hopping, fapi_pdu.intra_slot_frequency_hopping);
   ASSERT_EQ(pusch_cfg.tx_direct_current_location, fapi_pdu.tx_direct_current_location);
   ASSERT_EQ(pusch_cfg.ul_freq_shift_7p5khz, fapi_pdu.uplink_frequency_shift_7p5kHz);
@@ -101,11 +104,15 @@ TEST(ULPUSCHPDUTest, ValidPUSCHShouldPass)
 
   const fapi::ul_pusch_uci& fapi_uci = fapi_pdu.pusch_uci;
   const uci_info&           mac_uci  = mac_pdu.uci.value();
-  ASSERT_EQ(mac_uci.harq_ack_nof_bits, fapi_uci.harq_ack_bit_length);
-  ASSERT_EQ(mac_uci.csi_part1_nof_bits, fapi_uci.csi_part1_bit_length);
-  ASSERT_EQ(mac_uci.csi_part2_nof_bits, fapi_uci.flags_csi_part2);
+  ASSERT_EQ(mac_uci.harq.has_value() ? mac_uci.harq->harq_ack_nof_bits : 0U, fapi_uci.harq_ack_bit_length);
+  ASSERT_EQ(mac_uci.csi.has_value() ? mac_uci.csi->csi_part1_nof_bits : 0U, fapi_uci.csi_part1_bit_length);
+  ASSERT_EQ(mac_uci.csi.has_value() && mac_uci.csi->beta_offset_csi_2.has_value() ? 65535U : 0U,
+            fapi_uci.flags_csi_part2);
   ASSERT_EQ(mac_uci.alpha, fapi_uci.alpha_scaling);
-  ASSERT_EQ(mac_uci.beta_offset_harq_ack, fapi_uci.beta_offset_harq_ack);
-  ASSERT_EQ(mac_uci.beta_offset_csi_1, fapi_uci.beta_offset_csi1);
-  ASSERT_EQ(mac_uci.beta_offset_csi_2, fapi_uci.beta_offset_csi2);
+  ASSERT_EQ(mac_uci.harq.has_value() ? mac_uci.harq->beta_offset_harq_ack : 0U, fapi_uci.beta_offset_harq_ack);
+  ASSERT_EQ(mac_uci.csi.has_value() ? mac_uci.csi->beta_offset_csi_1 : 0U, fapi_uci.beta_offset_csi1);
+  ASSERT_EQ(mac_uci.csi.has_value() && mac_uci.csi->beta_offset_csi_2.has_value()
+                ? mac_uci.csi->beta_offset_csi_2.value()
+                : 0U,
+            fapi_uci.beta_offset_csi2);
 }

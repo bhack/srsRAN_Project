@@ -31,10 +31,9 @@ using namespace srs_cu_cp;
 class ngap_pdu_session_resource_setup_procedure_test : public ngap_test
 {
 protected:
-  void start_procedure(const ue_index_t ue_index)
+  ue_index_t start_procedure()
   {
-    ASSERT_EQ(ngap->get_nof_ues(), 0);
-    create_ue(ue_index);
+    ue_index_t ue_index = create_ue();
 
     // Inject DL NAS transport message from AMF
     run_dl_nas_transport(ue_index);
@@ -44,17 +43,19 @@ protected:
 
     // Inject Initial Context Setup Request
     run_inital_context_setup(ue_index);
+
+    return ue_index;
   }
 
   bool was_conversion_successful(ngap_message pdu_session_resource_setup_request, pdu_session_id_t pdu_session_id) const
   {
     bool test_1 = pdu_session_resource_setup_request.pdu.init_msg()
                       .value.pdu_session_res_setup_request()
-                      ->pdu_session_res_setup_list_su_req.value.size() ==
-                  du_processor_notifier.last_request.pdu_session_res_setup_items.size();
+                      ->pdu_session_res_setup_list_su_req.size() ==
+                  du_processor_notifier->last_request.pdu_session_res_setup_items.size();
 
     bool test_2 =
-        du_processor_notifier.last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type == "ipv4";
+        du_processor_notifier->last_request.pdu_session_res_setup_items[pdu_session_id].pdu_session_type == "ipv4";
 
     return test_1 && test_2;
   }
@@ -62,11 +63,12 @@ protected:
   bool was_pdu_session_resource_setup_request_valid() const
   {
     // Check that AMF notifier was called with right type
-    bool test_1 = msg_notifier.last_ngap_msg.pdu.successful_outcome().value.type() ==
+    bool test_1 = msg_notifier.last_ngap_msgs.back().pdu.successful_outcome().value.type() ==
                   asn1::ngap::ngap_elem_procs_o::successful_outcome_c::types_opts::pdu_session_res_setup_resp;
 
     // Check that response contains PDU Session Resource Setup List
-    bool test_2 = msg_notifier.last_ngap_msg.pdu.successful_outcome()
+    bool test_2 = msg_notifier.last_ngap_msgs.back()
+                      .pdu.successful_outcome()
                       .value.pdu_session_res_setup_resp()
                       ->pdu_session_res_setup_list_su_res_present;
 
@@ -75,36 +77,46 @@ protected:
 
   bool was_pdu_session_resource_setup_request_invalid() const
   {
+    // Check that a UE release was requested from the AMF
+    bool test_1 = msg_notifier.last_ngap_msgs.back().pdu.init_msg().value.type() ==
+                  asn1::ngap::ngap_elem_procs_o::init_msg_c::types_opts::ue_context_release_request;
+
     // Check that AMF notifier was called with right type
-    bool test_1 = msg_notifier.last_ngap_msg.pdu.successful_outcome().value.type() ==
+    bool test_2 = msg_notifier.last_ngap_msgs.end()[-2].pdu.successful_outcome().value.type() ==
                   asn1::ngap::ngap_elem_procs_o::successful_outcome_c::types_opts::pdu_session_res_setup_resp;
 
-    // Check that response contains PDU Session Resource Setup List
-    bool test_2 = !msg_notifier.last_ngap_msg.pdu.successful_outcome()
+    // Check that response doesn't contain PDU Session Resource Setup List
+    bool test_3 = !msg_notifier.last_ngap_msgs.end()[-2]
+                       .pdu.successful_outcome()
                        .value.pdu_session_res_setup_resp()
                        ->pdu_session_res_setup_list_su_res_present;
 
     // Check that response contains PDU Session Resource Failed to Setup List
-    bool test_3 = msg_notifier.last_ngap_msg.pdu.successful_outcome()
+    bool test_4 = msg_notifier.last_ngap_msgs.end()[-2]
+                      .pdu.successful_outcome()
                       .value.pdu_session_res_setup_resp()
                       ->pdu_session_res_failed_to_setup_list_su_res_present;
 
-    return test_1 && test_2 && test_3;
+    return test_1 && test_2 && test_3 && test_4;
+  }
+
+  bool was_error_indication_sent() const
+  {
+    return msg_notifier.last_ngap_msgs.back().pdu.init_msg().value.type() ==
+           asn1::ngap::ngap_elem_procs_o::init_msg_c::types_opts::error_ind;
   }
 };
 
-/// Test Initial Context Setup Request
+/// Test valid PDU Session Resource Setup Request
 TEST_F(ngap_pdu_session_resource_setup_procedure_test,
        when_valid_pdu_session_resource_setup_request_received_then_pdu_session_setup_succeeds)
 {
   // Test preamble
-  ue_index_t ue_index = uint_to_ue_index(
-      test_rgen::uniform_int<uint32_t>(ue_index_to_uint(ue_index_t::min), ue_index_to_uint(ue_index_t::max) - 1));
-  this->start_procedure(ue_index);
+  ue_index_t ue_index = this->start_procedure();
 
   // Inject PDU Session Resource Setup Request
-  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint32_t>(
-      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max) - 1));
+  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint16_t>(
+      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
 
   auto& ue = test_ues.at(ue_index);
 
@@ -119,14 +131,12 @@ TEST_F(ngap_pdu_session_resource_setup_procedure_test,
   ASSERT_TRUE(was_pdu_session_resource_setup_request_valid());
 }
 
-/// Test Initial Context Setup Request
+/// Test invalid PDU Session Resource Setup Request
 TEST_F(ngap_pdu_session_resource_setup_procedure_test,
        when_invalid_pdu_session_resource_setup_request_received_then_pdu_session_setup_failed)
 {
   // Test preamble
-  ue_index_t ue_index = uint_to_ue_index(
-      test_rgen::uniform_int<uint32_t>(ue_index_to_uint(ue_index_t::min), ue_index_to_uint(ue_index_t::max) - 1));
-  this->start_procedure(ue_index);
+  ue_index_t ue_index = this->start_procedure();
 
   auto& ue = test_ues.at(ue_index);
 
@@ -137,4 +147,25 @@ TEST_F(ngap_pdu_session_resource_setup_procedure_test,
 
   // Check that PDU Session Resource Setup Request was invalid
   ASSERT_TRUE(was_pdu_session_resource_setup_request_invalid());
+}
+
+/// Test invalid PDU Session Resource Setup Request
+TEST_F(ngap_pdu_session_resource_setup_procedure_test, when_security_not_enabled_then_pdu_session_setup_failed)
+{
+  // Test preamble
+  ue_index_t ue_index = this->start_procedure();
+  auto&      ue       = test_ues.at(ue_index);
+
+  ue.rrc_ue_notifier.set_security_enabled(false);
+
+  // Inject PDU Session Resource Setup Request
+  pdu_session_id_t pdu_session_id = uint_to_pdu_session_id(test_rgen::uniform_int<uint16_t>(
+      pdu_session_id_to_uint(pdu_session_id_t::min), pdu_session_id_to_uint(pdu_session_id_t::max)));
+
+  ngap_message pdu_session_resource_setup_request = generate_valid_pdu_session_resource_setup_request_message(
+      ue.amf_ue_id.value(), ue.ran_ue_id.value(), pdu_session_id);
+  ngap->handle_message(pdu_session_resource_setup_request);
+
+  // Check that Error Indication has been sent to AMF
+  ASSERT_TRUE(was_error_indication_sent());
 }

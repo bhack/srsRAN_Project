@@ -22,10 +22,10 @@
 
 #include "gnb_console_helper.h"
 #include "string_helpers.h"
-#include "srsran/radio/radio_factory.h"
 #include "srsran/ran/band_helper.h"
 #include "srsran/ran/bs_channel_bandwidth.h"
 #include "srsran/support/build_info/build_info.h"
+#include "srsran/support/io/io_broker.h"
 #include <fcntl.h>
 #include <list>
 #include <signal.h>
@@ -33,8 +33,13 @@
 
 using namespace srsran;
 
-gnb_console_helper::gnb_console_helper(io_broker& io_broker_) :
-  logger(srslog::fetch_basic_logger("GNB")), io_broker_handle(io_broker_)
+gnb_console_helper::gnb_console_helper(io_broker&           io_broker_,
+                                       srslog::log_channel& log_chan_,
+                                       bool                 autostart_stdout_metrics_) :
+  logger(srslog::fetch_basic_logger("GNB")),
+  io_broker_handle(io_broker_),
+  metrics_json(log_chan_),
+  autostart_stdout_metrics(autostart_stdout_metrics_)
 {
   // set STDIN file descripter into non-blocking mode
   int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
@@ -114,12 +119,11 @@ void gnb_console_helper::print_help()
 
 void gnb_console_helper::set_cells(const span<du_cell_config>& cells_)
 {
-  cells = cells_;
+  cells = {cells_.begin(), cells_.end()};
 }
 
 void gnb_console_helper::on_app_starting()
 {
-  print_available_radio_factories();
   fmt::print("\n--== srsRAN gNB (commit {}) ==--\n\n", get_build_hash());
 }
 
@@ -132,29 +136,20 @@ void gnb_console_helper::on_app_running()
                cell.dl_carrier.arfcn,
                srsran::nr_band_to_uint(cell.dl_carrier.band),
                srsran::band_helper::nr_arfcn_to_freq(cell.dl_carrier.arfcn) / 1e6,
-               derive_ssb_arfcn(cell),
+               cell.dl_cfg_common.freq_info_dl.absolute_frequency_ssb,
                srsran::band_helper::nr_arfcn_to_freq(cell.ul_carrier.arfcn) / 1e6);
   }
   fmt::print("\n");
 
   fmt::print("==== gNodeB started ===\n");
   fmt::print("Type <t> to view trace\n");
+
+  if (autostart_stdout_metrics) {
+    metrics_plotter.enable_print();
+  }
 }
 
 void gnb_console_helper::on_app_stopping()
 {
   fmt::print("Stopping ..\n");
-}
-
-unsigned gnb_console_helper::derive_ssb_arfcn(const du_cell_config& cell)
-{
-  unsigned nof_crbs = band_helper::get_n_rbs_from_bw(MHz_to_bs_channel_bandwidth(cell.dl_carrier.carrier_bw_mhz),
-                                                     cell.scs_common,
-                                                     band_helper::get_freq_range(cell.dl_carrier.band));
-  uint8_t  ss0_idx  = 0;
-  optional<band_helper::ssb_coreset0_freq_location> ssb_freq_loc = band_helper::get_ssb_coreset0_freq_location(
-      cell.dl_carrier.arfcn, cell.dl_carrier.band, nof_crbs, cell.scs_common, cell.scs_common, ss0_idx);
-
-  srsran_assert(ssb_freq_loc.has_value(), "Unable to derive SSB location correctly");
-  return ssb_freq_loc->ssb_arfcn;
 }

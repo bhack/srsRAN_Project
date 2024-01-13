@@ -22,6 +22,8 @@
 
 #pragma once
 
+#include "radio_zmq_timer.h"
+#include "srsran/support/srsran_assert.h"
 #include <condition_variable>
 #include <mutex>
 
@@ -33,13 +35,15 @@ private:
   enum class states {
     /// Indicates it failed to initialize.
     UNINITIALIZED = 0,
-    /// Indicates it has been successfully initialized and it is waiting for request.
+    /// The channel has been successfully initialised and it is waiting to start.
+    WAIT_START,
+    /// The channel waits for a request.
     WAIT_REQUEST,
-    /// Indicates it has been successfully initialized and it is waiting for data to transmit.
+    /// The channel waits for data to transmit.
     WAIT_DATA,
-    /// Signals a stop to the asynchronous thread.
+    /// Waits for the asynchronous thread to notify a stop.
     WAIT_STOP,
-    /// Indicates it is stopped.
+    /// Indicates it is notify_stop.
     STOPPED
   };
 
@@ -49,6 +53,8 @@ private:
   mutable std::mutex mutex;
   /// Condition variable to wait for certain states.
   std::condition_variable cvar;
+  /// State waiting timer.
+  radio_zmq_timer timer;
 
   /// Same than is_running().
   bool is_running_unprotected() const { return state == states::WAIT_REQUEST || state == states::WAIT_DATA; }
@@ -58,7 +64,17 @@ public:
   void init_successful()
   {
     std::unique_lock<std::mutex> lock(mutex);
+    srsran_assert(state == states::UNINITIALIZED, "Invalid state.");
+    state = states::WAIT_START;
+  }
+
+  /// Notifies the asynchronous processing has started.
+  void on_start()
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    srsran_assert(state == states::WAIT_START, "Invalid state.");
     state = states::WAIT_REQUEST;
+    timer.start();
   }
 
   /// Notifies that the stream detected an error it cannot recover from.
@@ -75,6 +91,7 @@ public:
     std::unique_lock<std::mutex> lock(mutex);
     if (state == states::WAIT_REQUEST) {
       state = states::WAIT_DATA;
+      timer.start();
     }
   }
 
@@ -84,6 +101,7 @@ public:
     std::unique_lock<std::mutex> lock(mutex);
     if (state == states::WAIT_DATA) {
       state = states::WAIT_REQUEST;
+      timer.start();
     }
   }
 
@@ -96,7 +114,7 @@ public:
     }
   }
 
-  /// Waits for the asynchronous tasks notifies that has stopped.
+  /// Waits for the asynchronous tasks notifies that has notify_stop.
   void wait_stop()
   {
     std::unique_lock<std::mutex> lock(mutex);
@@ -105,12 +123,19 @@ public:
     }
   }
 
-  /// Notifies the asynchronous task has stopped.
+  /// Notifies the asynchronous task has notify_stop.
   void async_task_stopped()
   {
     std::unique_lock<std::mutex> lock(mutex);
     state = states::STOPPED;
     cvar.notify_all();
+  }
+
+  /// Gets if the channel has been successfully initialised.
+  bool is_initiated() const
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+    return state > states::UNINITIALIZED;
   }
 
   /// Indicates whether the current state is operational.
@@ -125,6 +150,34 @@ public:
   {
     std::unique_lock<std::mutex> lock(mutex);
     return state == states::WAIT_DATA;
+  }
+
+  /// \brief Checks if the waiting time for request or data has expired.
+  ///
+  /// The request and data wait expires only if:
+  /// - the current state is waiting for a request; or
+  /// - the current state is waiting for data.
+  ///
+  /// The expiration occurs when a certain time had past since:
+  /// - the last state transition from waiting data to waiting for request; or
+  /// - last time an expiration was detected.
+  bool has_wait_expired()
+  {
+    std::unique_lock<std::mutex> lock(mutex);
+
+    // It can only be expired if it is currently running.
+    if (!is_running_unprotected()) {
+      return false;
+    }
+
+    // Check if the timer has not expired.
+    if (!timer.is_expired()) {
+      return false;
+    }
+
+    // Update timer with new time.
+    timer.start();
+    return true;
   }
 };
 } // namespace srsran

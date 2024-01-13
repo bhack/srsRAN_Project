@@ -34,7 +34,6 @@ namespace {
 class slot_data_message_notifier_dummy : public fapi::slot_data_message_notifier
 {
 public:
-  void on_dl_tti_response(const fapi::dl_tti_response_message& msg) override {}
   void on_rx_data_indication(const fapi::rx_data_indication_message& msg) override {}
   void on_crc_indication(const fapi::crc_indication_message& msg) override {}
   void on_uci_indication(const fapi::uci_indication_message& msg) override {}
@@ -48,7 +47,10 @@ public:
 /// actual data-specific notifier, which will be later set up through the \ref set_slot_data_message_notifier() method.
 static slot_data_message_notifier_dummy dummy_data_notifier;
 
-phy_to_fapi_results_event_translator::phy_to_fapi_results_event_translator() : data_notifier(dummy_data_notifier) {}
+phy_to_fapi_results_event_translator::phy_to_fapi_results_event_translator(srslog::basic_logger& logger_) :
+  logger(logger_), data_notifier(dummy_data_notifier)
+{
+}
 
 void phy_to_fapi_results_event_translator::on_new_prach_results(const ul_prach_results& result)
 {
@@ -56,10 +58,22 @@ void phy_to_fapi_results_event_translator::on_new_prach_results(const ul_prach_r
     return;
   }
 
+  slot_point slot = result.context.slot;
+
+  // Avoid generating a PRACH indication when all detected preambles have a negative TA value as they must be discarded.
+  if (std::all_of(
+          result.result.preambles.begin(),
+          result.result.preambles.end(),
+          [](const prach_detection_result::preamble_indication& ind) { return ind.time_advance.to_seconds() < 0.0; })) {
+    logger.warning(
+        "All detected PRACH preambles have a negative TA value in slot={}, no PRACH.ind message will be generated",
+        slot);
+    return;
+  }
+
   fapi::rach_indication_message         msg;
   fapi::rach_indication_message_builder builder(msg);
 
-  slot_point slot = result.context.slot;
   builder.set_basic_parameters(slot.sfn(), slot.slot_index());
 
   // NOTE: Currently not managing handle.
@@ -85,32 +99,39 @@ void phy_to_fapi_results_event_translator::on_new_prach_results(const ul_prach_r
     static constexpr float MIN_PREAMBLE_SNR_VALUE   = -64.F;
     static constexpr float MAX_PREAMBLE_SNR_VALUE   = 63.F;
 
-    builder_pdu.add_preamble(preamble.preamble_index,
-                             {},
-                             preamble.time_advance.to_seconds() * 1e9,
-                             clamp(preamble.power_dB, MIN_PREAMBLE_POWER_VALUE, MAX_PREAMBLE_POWER_VALUE),
-                             clamp(preamble.snr_dB, MIN_PREAMBLE_SNR_VALUE, MAX_PREAMBLE_SNR_VALUE));
+    double TA_ns = preamble.time_advance.to_seconds() * 1e9;
+    // Ignore preambles with a negative TA value.
+    if (TA_ns < 0.0) {
+      logger.warning("Detected PRACH preamble in slot={} has a negative TA value of {}ns, skipping it", slot, TA_ns);
+      continue;
+    }
+
+    builder_pdu.add_preamble(
+        preamble.preamble_index,
+        {},
+        TA_ns,
+        clamp(convert_power_to_dB(preamble.detection_metric), MIN_PREAMBLE_POWER_VALUE, MAX_PREAMBLE_POWER_VALUE),
+        clamp(convert_power_to_dB(preamble.detection_metric), MIN_PREAMBLE_SNR_VALUE, MAX_PREAMBLE_SNR_VALUE));
   }
 
   error_type<fapi::validator_report> validation_result = validate_rach_indication(msg);
   if (!validation_result) {
-    log_validator_report(validation_result.error());
+    log_validator_report(validation_result.error(), logger);
     return;
   }
 
   data_notifier.get().on_rach_indication(msg);
 }
 
-void phy_to_fapi_results_event_translator::on_new_pusch_results(const ul_pusch_results& result)
+void phy_to_fapi_results_event_translator::on_new_pusch_results_control(const ul_pusch_results_control& result)
 {
-  if (result.data.has_value()) {
-    notify_crc_indication(result);
-    notify_rx_data_indication(result);
-  }
+  notify_pusch_uci_indication(result);
+}
 
-  if (result.uci.has_value()) {
-    notify_pusch_uci_indication(result);
-  }
+void phy_to_fapi_results_event_translator::on_new_pusch_results_data(const ul_pusch_results_data& result)
+{
+  notify_crc_indication(result);
+  notify_rx_data_indication(result);
 }
 
 /// Converts and returns the given UCI status to FAPI UCI STATUS.
@@ -127,7 +148,7 @@ static uci_pusch_or_pucch_f2_3_4_detection_status to_fapi_uci_detection_status(u
   }
 }
 
-void phy_to_fapi_results_event_translator::notify_pusch_uci_indication(const ul_pusch_results& result)
+void phy_to_fapi_results_event_translator::notify_pusch_uci_indication(const ul_pusch_results_control& result)
 {
   fapi::uci_indication_message         msg;
   fapi::uci_indication_message_builder builder(msg);
@@ -144,57 +165,58 @@ void phy_to_fapi_results_event_translator::notify_pusch_uci_indication(const ul_
   static constexpr float MIN_UL_SINR_VALUE = -65.534;
   static constexpr float MAX_UL_SINR_VALUE = 65.534;
 
-  builder_pdu.set_metrics_parameters(clamp(csi_info.sinr_dB, MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE), {}, {}, {}, {});
+  builder_pdu.set_metrics_parameters(clamp(csi_info.get_sinr_dB(), MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE),
+                                     {},
+                                     optional<int>(result.csi.get_time_alignment().to_seconds() * 1e9),
+                                     {},
+                                     {});
 
   // Add the HARQ section.
-  if (result.uci->harq_ack.has_value()) {
-    const pusch_uci_field&                     harq   = result.uci->harq_ack.value();
+  if (result.harq_ack.has_value()) {
+    const pusch_uci_field&                     harq   = result.harq_ack.value();
     uci_pusch_or_pucch_f2_3_4_detection_status status = to_fapi_uci_detection_status(harq.status);
-    builder_pdu.set_harq_parameters(
-        status,
-        harq.payload.size(),
-        (status == uci_pusch_or_pucch_f2_3_4_detection_status::dtx ||
-         status == uci_pusch_or_pucch_f2_3_4_detection_status::crc_failure)
-            ? bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>()
-            : bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>(harq.payload.begin(), harq.payload.end()));
+    builder_pdu.set_harq_parameters(status,
+                                    harq.payload.size(),
+                                    (status == uci_pusch_or_pucch_f2_3_4_detection_status::dtx ||
+                                     status == uci_pusch_or_pucch_f2_3_4_detection_status::crc_failure)
+                                        ? bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>()
+                                        : harq.payload);
   }
 
   // Add the CSI1 section.
-  if (result.uci->csi1.has_value()) {
-    const pusch_uci_field&                     csi1   = result.uci->csi1.value();
+  if (result.csi1.has_value()) {
+    const pusch_uci_field&                     csi1   = result.csi1.value();
     uci_pusch_or_pucch_f2_3_4_detection_status status = to_fapi_uci_detection_status(csi1.status);
-    builder_pdu.set_csi_part1_parameters(
-        status,
-        csi1.payload.size(),
-        (status == uci_pusch_or_pucch_f2_3_4_detection_status::dtx ||
-         status == uci_pusch_or_pucch_f2_3_4_detection_status::crc_failure)
-            ? bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>()
-            : bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>(csi1.payload.begin(), csi1.payload.end()));
+    builder_pdu.set_csi_part1_parameters(status,
+                                         csi1.payload.size(),
+                                         (status == uci_pusch_or_pucch_f2_3_4_detection_status::dtx ||
+                                          status == uci_pusch_or_pucch_f2_3_4_detection_status::crc_failure)
+                                             ? bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>()
+                                             : csi1.payload);
   }
 
   // Add the CSI2 section.
-  if (result.uci->csi2.has_value()) {
-    const pusch_uci_field&                     csi2   = result.uci->csi2.value();
+  if (result.csi2.has_value()) {
+    const pusch_uci_field&                     csi2   = result.csi2.value();
     uci_pusch_or_pucch_f2_3_4_detection_status status = to_fapi_uci_detection_status(csi2.status);
-    builder_pdu.set_csi_part2_parameters(
-        status,
-        csi2.payload.size(),
-        (status == uci_pusch_or_pucch_f2_3_4_detection_status::dtx ||
-         status == uci_pusch_or_pucch_f2_3_4_detection_status::crc_failure)
-            ? bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>()
-            : bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>(csi2.payload.begin(), csi2.payload.end()));
+    builder_pdu.set_csi_part2_parameters(status,
+                                         csi2.payload.size(),
+                                         (status == uci_pusch_or_pucch_f2_3_4_detection_status::dtx ||
+                                          status == uci_pusch_or_pucch_f2_3_4_detection_status::crc_failure)
+                                             ? bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>()
+                                             : csi2.payload);
   }
 
   error_type<fapi::validator_report> validation_result = validate_uci_indication(msg);
   if (!validation_result) {
-    log_validator_report(validation_result.error());
+    log_validator_report(validation_result.error(), logger);
     return;
   }
 
   data_notifier.get().on_uci_indication(msg);
 }
 
-void phy_to_fapi_results_event_translator::notify_crc_indication(const ul_pusch_results& result)
+void phy_to_fapi_results_event_translator::notify_crc_indication(const ul_pusch_results_data& result)
 {
   fapi::crc_indication_message         msg;
   fapi::crc_indication_message_builder builder(msg);
@@ -204,8 +226,7 @@ void phy_to_fapi_results_event_translator::notify_crc_indication(const ul_pusch_
   // Handle is not supported for now.
   unsigned handle = 0;
   // CB CRC status is not supported for now.
-  unsigned                            num_cb = 0;
-  const ul_pusch_results::pusch_data& data   = result.data.value();
+  unsigned num_cb = 0;
 
   // NOTE: Clamp values defined in SCF-222 v4.0 Section 3.4.8 Table CRC.indication message body.
   static constexpr float MIN_UL_SINR_VALUE = -65.534;
@@ -214,26 +235,26 @@ void phy_to_fapi_results_event_translator::notify_crc_indication(const ul_pusch_
   builder.add_pdu(handle,
                   result.rnti,
                   optional<uint8_t>(),
-                  data.harq_id,
-                  data.decoder_result.tb_crc_ok,
+                  result.harq_id,
+                  result.decoder_result.tb_crc_ok,
                   num_cb,
                   {},
-                  clamp(result.csi.sinr_dB, MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE),
+                  clamp(result.csi.get_sinr_dB(), MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE),
                   {},
-                  optional<int>(result.csi.time_alignment.to_seconds() * 1e9),
+                  optional<int>(result.csi.get_time_alignment().to_seconds() * 1e9),
                   {},
                   {});
 
   error_type<fapi::validator_report> validation_result = validate_crc_indication(msg);
   if (!validation_result) {
-    log_validator_report(validation_result.error());
+    log_validator_report(validation_result.error(), logger);
     return;
   }
 
   data_notifier.get().on_crc_indication(msg);
 }
 
-void phy_to_fapi_results_event_translator::notify_rx_data_indication(const ul_pusch_results& result)
+void phy_to_fapi_results_event_translator::notify_rx_data_indication(const ul_pusch_results_data& result)
 {
   fapi::rx_data_indication_message         msg;
   fapi::rx_data_indication_message_builder builder(msg);
@@ -243,13 +264,12 @@ void phy_to_fapi_results_event_translator::notify_rx_data_indication(const ul_pu
   builder.set_basic_parameters(result.slot.sfn(), result.slot.slot_index(), control_length);
 
   // Handle is not supported for now.
-  unsigned                            handle = 0;
-  const ul_pusch_results::pusch_data& data   = result.data.value();
-  builder.add_custom_pdu(handle, result.rnti, optional<unsigned>(), data.harq_id, data.payload);
+  unsigned handle = 0;
+  builder.add_custom_pdu(handle, result.rnti, optional<unsigned>(), result.harq_id, result.payload);
 
   error_type<fapi::validator_report> validation_result = validate_rx_data_indication(msg);
   if (!validation_result) {
-    log_validator_report(validation_result.error());
+    log_validator_report(validation_result.error(), logger);
     return;
   }
 
@@ -312,7 +332,11 @@ static void add_format_0_1_pucch_pdu(fapi::uci_indication_message_builder& build
   static constexpr float MAX_UL_SINR_VALUE = 65.534;
 
   builder_format01.set_metrics_parameters(
-      clamp(csi_info.sinr_dB, MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE), {}, {}, {}, {});
+      clamp(csi_info.get_sinr_dB(), MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE),
+      {},
+      optional<int>(result.processor_result.csi.get_time_alignment().to_seconds() * 1e9),
+      {},
+      {});
 
   // Fill SR parameters.
   fill_format_0_1_sr(builder_format01, result);
@@ -401,7 +425,11 @@ static void add_format_2_pucch_pdu(fapi::uci_indication_message_builder& builder
   static constexpr float MAX_UL_SINR_VALUE = 65.534;
 
   builder_format234.set_metrics_parameters(
-      clamp(csi_info.sinr_dB, MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE), {}, {}, {}, {});
+      clamp(csi_info.get_sinr_dB(), MIN_UL_SINR_VALUE, MAX_UL_SINR_VALUE),
+      {},
+      optional<int>(result.processor_result.csi.get_time_alignment().to_seconds() * 1e9),
+      {},
+      {});
 
   // Fill SR parameters.
   fill_format_2_3_4_sr(builder_format234, result.processor_result.message);
@@ -435,7 +463,7 @@ void phy_to_fapi_results_event_translator::on_new_pucch_results(const ul_pucch_r
 
   error_type<fapi::validator_report> validation_result = validate_uci_indication(msg);
   if (!validation_result) {
-    log_validator_report(validation_result.error());
+    log_validator_report(validation_result.error(), logger);
     return;
   }
 

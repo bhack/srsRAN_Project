@@ -34,7 +34,10 @@ using namespace srsran;
 int main()
 {
   // Create a DFT factory.
-  std::shared_ptr<dft_processor_factory> dft_factory = create_dft_processor_factory_generic();
+  std::shared_ptr<dft_processor_factory> dft_factory = create_dft_processor_factory_fftw_slow();
+  if (!dft_factory) {
+    dft_factory = create_dft_processor_factory_generic();
+  }
   TESTASSERT(dft_factory);
 
   // Create OFDM modulator factory.
@@ -59,8 +62,8 @@ int main()
     // One slot per subframe will be tested.
     unsigned input_offset = 0;
     // Map the read data into a reader_spy structure.
-    resource_grid_reader_spy rg;
     unsigned                 nsymb = get_nsymb_per_slot(test_case.test_config.config.cp);
+    resource_grid_reader_spy rg(1, nsymb, nsubc);
     for (unsigned symbol_idx = 0; symbol_idx != nsymb; ++symbol_idx) {
       for (unsigned subc_idx = 0; subc_idx != nsubc; ++subc_idx) {
         resource_grid_reader_spy::expected_entry_t entry = {};

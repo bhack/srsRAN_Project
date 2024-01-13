@@ -31,11 +31,11 @@ using namespace srsran;
 class rlc_rx_tm_test_frame : public rlc_rx_upper_layer_data_notifier
 {
 public:
-  std::queue<byte_buffer_slice_chain> sdu_queue;
-  uint32_t                            sdu_counter = 0;
+  std::queue<byte_buffer_chain> sdu_queue;
+  uint32_t                      sdu_counter = 0;
 
   // rlc_rx_upper_layer_data_notifier interface
-  void on_new_sdu(byte_buffer_slice_chain sdu) override
+  void on_new_sdu(byte_buffer_chain sdu) override
   {
     sdu_queue.push(std::move(sdu));
     sdu_counter++;
@@ -56,7 +56,13 @@ protected:
     srslog::fetch_basic_logger("RLC", false).set_level(srslog::basic_levels::debug);
     srslog::fetch_basic_logger("RLC", false).set_hex_dump_max_size(-1);
 
-    init();
+    logger.info("Creating RLC Rx TM entity");
+
+    // Create test frame
+    tester = std::make_unique<rlc_rx_tm_test_frame>();
+
+    // Create RLC AM TX entity
+    rlc = std::make_unique<rlc_rx_tm_entity>(0, du_ue_index_t::MIN_DU_UE_INDEX, srb_id_t::srb0, *tester, pcap);
   }
 
   void TearDown() override
@@ -65,20 +71,9 @@ protected:
     srslog::flush();
   }
 
-  /// \brief Initializes fixture according to size sequence number size
-  void init()
-  {
-    logger.info("Creating RLC Rx TM entity");
-
-    // Create test frame
-    tester = std::make_unique<rlc_rx_tm_test_frame>();
-
-    // Create RLC AM TX entity
-    rlc = std::make_unique<rlc_rx_tm_entity>(du_ue_index_t::MIN_DU_UE_INDEX, srb_id_t::srb0, *tester);
-  }
-
   srslog::basic_logger&                 logger = srslog::fetch_basic_logger("TEST", false);
   std::unique_ptr<rlc_rx_tm_test_frame> tester;
+  null_rlc_pcap                         pcap;
   std::unique_ptr<rlc_rx_tm_entity>     rlc;
 };
 
@@ -106,12 +101,12 @@ TEST_F(rlc_rx_am_test, test_rx)
 
   // read first SDU from tester
   EXPECT_EQ(tester->sdu_counter, 2);
-  byte_buffer_slice_chain& sdu = tester->sdu_queue.front();
+  byte_buffer_chain& sdu = tester->sdu_queue.front();
   EXPECT_EQ(sdu, pdu_buf);
   tester->sdu_queue.pop();
 
   // read second SDU from tester
-  byte_buffer_slice_chain& sdu2 = tester->sdu_queue.front();
+  byte_buffer_chain& sdu2 = tester->sdu_queue.front();
   EXPECT_EQ(sdu2, pdu_buf2);
   tester->sdu_queue.pop();
 }

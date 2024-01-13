@@ -24,7 +24,7 @@
 
 #include "radio_zmq_tx_channel_fsm.h"
 #include "srsran/adt/blocking_queue.h"
-#include "srsran/gateways/baseband/baseband_gateway_buffer.h"
+#include "srsran/gateways/baseband/buffer/baseband_gateway_buffer_reader.h"
 #include "srsran/radio/radio_notification_handler.h"
 #include "srsran/srslog/srslog.h"
 #include "srsran/support/async/async_queue.h"
@@ -41,7 +41,7 @@ private:
   /// Lists the supported socket types.
   static const std::set<int> VALID_SOCKET_TYPES;
   /// Wait time after a buffer try push failed.
-  static constexpr unsigned CIRC_BUFFER_TRY_PUSH_SLEEP_FOR_MS = 1;
+  const std::chrono::microseconds circ_buffer_try_push_sleep{1};
   /// Maximum number of trials for binding.
   static constexpr unsigned BIND_MAX_TRIALS = 10;
   /// Sleep time after a bind failure in seconds.
@@ -62,9 +62,9 @@ private:
   /// Logger.
   srslog::basic_logger& logger;
   /// Stores transmit buffer.
-  blocking_queue<radio_sample_type> circular_buffer;
+  blocking_queue<cf_t> circular_buffer;
   /// Transmission buffer.
-  std::vector<radio_sample_type> buffer;
+  std::vector<cf_t> buffer;
   /// Notification handler.
   radio_notification_handler& notification_handler;
   /// Asynchronous task executor.
@@ -72,10 +72,13 @@ private:
   /// Indicates the number of transmitted samples. Protected for concurrent read-write.
   std::atomic<uint64_t> sample_count = {0};
   /// Protects concurrent transmit alignment operations from the receiver thread.
-  std::mutex transmit_alignment_mutex;
+  std::mutex              transmit_alignment_mutex;
+  std::condition_variable transmit_alignment_cvar;
+
+  std::atomic<bool> is_tx_enabled = {false};
 
   /// Transmits a single sample.
-  void transmit_samples(span<radio_sample_type> data);
+  void transmit_samples(span<const cf_t> data);
 
 public:
   /// Describes the necessary parameters to create a ZMQ Tx channel.
@@ -91,7 +94,7 @@ public:
     /// Stream identifier string.
     std::string channel_id_str;
     /// Logging level.
-    std::string log_level;
+    srslog::basic_levels log_level;
     /// Indicates the socket send and receive timeout in milliseconds. It is ignored if it is zero.
     unsigned trx_timeout_ms;
     /// Indicates the socket linger timeout in milliseconds. If is ignored if trx_timeout_ms is zero.
@@ -107,7 +110,7 @@ public:
 
   ~radio_zmq_tx_channel();
 
-  bool is_successful() const { return state_fsm.is_running(); }
+  bool is_successful() const { return state_fsm.is_initiated(); }
 
   void receive_request();
 
@@ -115,9 +118,11 @@ public:
 
   void run_async();
 
-  bool align(uint64_t timestamp);
+  bool align(uint64_t timestamp, std::chrono::milliseconds timeout);
 
-  void transmit(span<radio_sample_type> buffer);
+  void transmit(span<const cf_t> buffer);
+
+  void start(uint64_t init_time);
 
   void stop();
 

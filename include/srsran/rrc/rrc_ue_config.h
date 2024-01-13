@@ -22,17 +22,23 @@
 
 #pragma once
 
+#include "rrc_types.h"
 #include "srsran/asn1/rrc_nr/rrc_nr.h"
-#include "srsran/rrc/drb_manager.h"
+#include "srsran/cu_cp/up_resource_manager.h"
 #include "srsran/srslog/srslog.h"
 
 namespace srsran {
 
 namespace srs_cu_cp {
 struct rrc_ue_cfg_t {
-  srslog::basic_logger&              logger = srslog::fetch_basic_logger("RRC");
-  asn1::rrc_nr::pdcp_cfg_s           srb1_pdcp_cfg; ///< PDCP configuration for SRB1.
-  srsran::srs_cu_cp::drb_manager_cfg drb_cfg; ///< DRB manager configuration holds the bearer configs for all FiveQIs.
+  asn1::rrc_nr::pdcp_cfg_s     srb1_pdcp_cfg; ///< PDCP configuration for SRB1.
+  std::vector<rrc_meas_timing> meas_timings;
+  bool                         force_reestablishment_fallback = false;
+  unsigned rrc_procedure_timeout_ms; ///< Timeout used for RRC message exchange with UE. It needs to suit the expected
+                                     ///< communication delay and account for potential retransmissions (HARQ and RLC),
+                                     ///< UE processing delays (see Sec 12 in TS 38.331), SR delays, etc.
+  security::preferred_integrity_algorithms int_algo_pref_list; ///< Integrity protection algorithms preference list
+  security::preferred_ciphering_algorithms enc_algo_pref_list; ///< Encryption algorithms preference list
 };
 
 } // namespace srs_cu_cp

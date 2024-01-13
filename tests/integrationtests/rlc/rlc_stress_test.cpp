@@ -21,6 +21,8 @@
  */
 
 #include "rlc_stress_test.h"
+#include "srsran/pdcp/pdcp_factory.h"
+#include "srsran/rlc/rlc_factory.h"
 #include "srsran/support/srsran_assert.h"
 
 using namespace srsran;
@@ -30,12 +32,12 @@ stress_stack::stress_stack(const stress_test_args& args_, uint32_t id, rb_id_t r
   args(args_),
   ue_name("UE-Worker-" + std::to_string(id)),
   pcell_name("PCell-Worker-" + std::to_string(id)),
-  ue_worker{ue_name, task_worker_queue_size, true},
-  pcell_worker{pcell_name, task_worker_queue_size, true},
-  logger("STACK", {id, rb_id, "DL/UL"})
+  ue_worker{ue_name, task_worker_queue_size},
+  pcell_worker{pcell_name, task_worker_queue_size},
+  logger("STACK", {0, id, rb_id, "DL/UL"})
 {
-  ue_executor    = make_task_executor(ue_worker);
-  pcell_executor = make_task_executor(pcell_worker);
+  ue_executor    = make_task_executor_ptr(ue_worker);
+  pcell_executor = make_task_executor_ptr(pcell_worker);
 
   // MAC
   mac = std::make_unique<mac_dummy>(args_, id, rb_id);
@@ -62,15 +64,15 @@ stress_stack::stress_stack(const stress_test_args& args_, uint32_t id, rb_id_t r
   pdcp_msg.tx_upper_cn                   = rrc.get();
   pdcp_msg.rx_upper_dn                   = traffic_sink.get();
   pdcp_msg.rx_upper_cn                   = rrc.get();
-  pdcp_msg.timers                        = &timers;
+  pdcp_msg.timers                        = timer_factory{timers, *ue_executor};
   pdcp                                   = create_pdcp_entity(pdcp_msg);
   traffic_source->set_pdcp_tx_upper(&pdcp->get_tx_upper_data_interface());
   f1ap->set_pdcp_rx_lower(&pdcp->get_rx_lower_interface());
 
   pdcp_tx_upper_control_interface& rrc_tx_if = pdcp->get_tx_upper_control_interface();
-  rrc_tx_if.enable_security(sec_cfg);
+  rrc_tx_if.configure_security(sec_cfg);
   pdcp_rx_upper_control_interface& rrc_rx_if = pdcp->get_rx_upper_control_interface();
-  rrc_rx_if.enable_security(sec_cfg);
+  rrc_rx_if.configure_security(sec_cfg);
 
   // RLC
   rlc_config                  rlc_cnfg = get_rlc_config_from_args(args_);
@@ -85,6 +87,7 @@ stress_stack::stress_stack(const stress_test_args& args_, uint32_t id, rb_id_t r
   rlc_msg.timers                       = &timers;
   rlc_msg.pcell_executor               = pcell_executor.get();
   rlc_msg.ue_executor                  = ue_executor.get();
+  rlc_msg.pcap_writer                  = &pcap;
   rlc                                  = create_rlc_entity(rlc_msg);
   f1ap->set_rlc_tx_upper_data(rlc->get_tx_upper_layer_data_interface());
 
@@ -101,12 +104,9 @@ void stress_stack::start()
     traffic_source->send_pdu();
   }
 
-  logger.log_debug("Starting stack workers");
-  pcell_worker.start();
-  ue_worker.start();
-
   // Schedule the TTI when the thread are started.
-  pcell_executor->defer([this]() { run_lower_tti(0); });
+  bool result = pcell_executor->defer([this]() { run_lower_tti(0); });
+  report_error_if_not(result, "Failed to dispatch run_lower_tti");
 }
 
 void stress_stack::wait_for_finish()
@@ -138,14 +138,15 @@ void stress_stack::run_upper_tti(uint32_t tti)
       traffic_source->send_pdu();
     }
     mac->run_rx_tti();
-    timers.tick_all(); // timers are run from the upper executor
+    timers.tick(); // timers are run from the upper executor
   } else {
     std::unique_lock<std::mutex> lk(mutex_ue);
     stopping_ue = true;
     lk.unlock();
     cv_ue.notify_all();
   }
-  pcell_executor->defer([this, tti]() { run_lower_tti(tti + 1); });
+  bool result = pcell_executor->defer([this, tti]() { run_lower_tti(tti + 1); });
+  report_error_if_not(result, "Failed to dispatch run_lower_tti");
   logger.log_debug("Finished running upper TTI={}, PDU RX queue size={}", tti, mac->pdu_rx_list.size());
 }
 
@@ -153,9 +154,10 @@ void stress_stack::run_lower_tti(uint32_t tti)
 {
   logger.log_debug("Running lower TTI={}", tti);
   if (tti < args.nof_ttis) {
-    std::vector<byte_buffer_slice_chain> pdu_list = mac->run_tx_tti(tti);
+    std::vector<byte_buffer_chain> pdu_list = mac->run_tx_tti(tti);
     logger.log_debug("Generated PDU list size={}", pdu_list.size());
-    ue_executor->defer([this, tti]() { run_upper_tti(tti); });
+    bool result = ue_executor->defer([this, tti]() { run_upper_tti(tti); });
+    report_error_if_not(result, "Failed to dispatch run_upper_tti");
     peer_stack->push_pdus(std::move(pdu_list));
     tti++;
     pthread_barrier_wait(&barrier); // wait for other stack to finish
@@ -169,11 +171,12 @@ void stress_stack::run_lower_tti(uint32_t tti)
   logger.log_debug("Finished running lower TTI={}", tti);
 }
 
-void stress_stack::push_pdus(std::vector<byte_buffer_slice_chain> list_pdus)
+void stress_stack::push_pdus(std::vector<byte_buffer_chain> list_pdus)
 {
   auto push_fnc = [this, list_pdus = std::move(list_pdus)]() mutable { mac->push_rx_pdus(std::move(list_pdus)); };
   if (!stopping_pcell.load() && !stopping_ue.load()) {
-    ue_executor->defer(std::move(push_fnc));
+    bool result = ue_executor->defer(std::move(push_fnc));
+    report_error_if_not(result, "Failed to push PDUs");
   }
 }
 

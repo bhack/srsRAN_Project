@@ -27,6 +27,7 @@
 #include "csi_rs_id.h"
 #include "csi_rs_pattern.h"
 #include "csi_rs_types.h"
+#include "frequency_allocation_type.h"
 #include "srsran/adt/optional.h"
 #include "srsran/adt/static_vector.h"
 #include "srsran/adt/variant.h"
@@ -41,7 +42,7 @@ struct csi_rs_resource_mapping {
   /// \brief Frequency domain allocation within a physical resource block in accordance with TS 38.211,
   /// clause 7.4.1.5.3, and \c frequencyDomainAllocation in \c CSI-RS-ResourceMapping in TS38.331. Possible sizes:
   /// {row1: 4, row2: 12, row4: 3, row_other: 6}
-  bounded_bitset<12, true> fd_alloc;
+  csi_rs::freq_allocation_mask_type fd_alloc;
   /// Number of ports. Values {1, 2, 4, 8, 12, 16, 24, 32}.
   unsigned nof_ports;
   /// The time domain location reference \f$l_0\f$ in TS 38.211, clause 7.4.1.5.3. Values {0,...,13}.
@@ -52,21 +53,18 @@ struct csi_rs_resource_mapping {
   csi_rs_cdm_type cdm;
   /// Frequency density configuration.
   csi_rs_freq_density_type freq_density;
-  /// PRB where this CSI resource starts in relation to CRB#0 on the common resource block grid. Only multiples of 4 are
-  /// allowed (0, 4, ...)
-  unsigned freq_band_start_rb;
-  /// Number of PRBs across which this CSI resource spans. Only multiples of 4 are allowed. The smallest configurable
-  /// number is the minimum of 24 and the width of the associated BWP. If the configured value is larger than the width
-  /// of the corresponding BWP, the UE shall assume that the actual CSI-RS bandwidth is equal to the width of the BWP.
-  unsigned freq_band_nof_rb;
+  /// \brief Frequency band of the CSI-RS resource in CRBs (in relation to CRB#0). Only multiples of 4 are allowed
+  /// for the start and length. The smallest configurable length is equal to MIN(24, BWP size in RBs). If the
+  /// configured value is larger than the width of the corresponding BWP, the UE shall assume that the actual CSI-RS
+  /// bandwidth is equal to the width of the BWP.
+  crb_interval freq_band_rbs;
 
   bool operator==(const csi_rs_resource_mapping& rhs) const
   {
     return fd_alloc == rhs.fd_alloc && nof_ports == rhs.nof_ports &&
            first_ofdm_symbol_in_td == rhs.first_ofdm_symbol_in_td &&
            first_ofdm_symbol_in_td2 == rhs.first_ofdm_symbol_in_td2 && cdm == rhs.cdm &&
-           freq_density == rhs.freq_density && freq_band_start_rb == rhs.freq_band_start_rb &&
-           freq_band_nof_rb == rhs.freq_band_nof_rb;
+           freq_density == rhs.freq_density && freq_band_rbs == rhs.freq_band_rbs;
   }
   bool operator!=(const csi_rs_resource_mapping& rhs) const { return !(rhs == *this); }
 };
@@ -90,6 +88,29 @@ enum class csi_resource_periodicity {
   slots640 = 640
 };
 
+inline unsigned csi_resource_periodicity_to_uint(csi_resource_periodicity val)
+{
+  return static_cast<unsigned>(val);
+}
+
+inline const span<const csi_resource_periodicity> csi_resource_periodicity_options()
+{
+  const static std::array<csi_resource_periodicity, 13> list{csi_resource_periodicity::slots4,
+                                                             csi_resource_periodicity::slots5,
+                                                             csi_resource_periodicity::slots8,
+                                                             csi_resource_periodicity::slots10,
+                                                             csi_resource_periodicity::slots16,
+                                                             csi_resource_periodicity::slots20,
+                                                             csi_resource_periodicity::slots32,
+                                                             csi_resource_periodicity::slots40,
+                                                             csi_resource_periodicity::slots64,
+                                                             csi_resource_periodicity::slots80,
+                                                             csi_resource_periodicity::slots160,
+                                                             csi_resource_periodicity::slots320,
+                                                             csi_resource_periodicity::slots640};
+  return span<const csi_resource_periodicity>{list};
+}
+
 /// \brief NZP-CSI-RS-Resource is used to configure Non-Zero-Power (NZP) CSI-RS transmitted in the cell.
 /// \remark See TS 38.331, \c NZP-CSI-RS-Resource and TS 38.214, clause 5.2.2.3.1.
 struct nzp_csi_rs_resource {
@@ -97,9 +118,9 @@ struct nzp_csi_rs_resource {
   /// OFDM symbol location(s) in a slot and subcarrier occupancy in a PRB of the CSI-RS resource.
   csi_rs_resource_mapping res_mapping;
   /// Power offset of PDSCH RE to NZP CSI-RS RE. Value in dB. Values {-8,...,15}. See TS 38.214, clause 5.2.2.3.1.
-  int pwr_ctrl_offset;
+  int8_t pwr_ctrl_offset;
   /// Power offset of NZP CSI-RS RE to SSS RE. Value in dB. Values {-3, 0, 3, 6}. See TS 38.214, clause 5.2.2.3.1.
-  optional<int> pwr_ctrl_offset_ss_db;
+  optional<int8_t> pwr_ctrl_offset_ss_db;
   /// Scrambling ID. See TS 38.214, clause 5.2.2.3.1.
   unsigned scrambling_id;
   /// Present only for periodic and semi-persistent NZP-CSI-RS-Resources.
@@ -172,10 +193,8 @@ struct csi_im_resource {
 
   csi_im_res_id_t                           res_id;
   optional<csi_im_resource_element_pattern> csi_im_res_element_pattern;
-  /// PRB where the CSI resource starts, related to the CRB 0.
-  optional<unsigned> freq_band_start_rb;
-  /// Number of PRBs that the CSI spans.
-  optional<unsigned> freq_band_nof_rb;
+  /// RBs that the CSI resource spans, related to the CRB 0.
+  crb_interval freq_band_rbs;
   /// Present only for periodic and semi-persistent NZP-CSI-RS-Resources.
   optional<csi_resource_periodicity> csi_res_period;
   /// Present only for periodic and semi-persistent NZP-CSI-RS-Resources. Values {0,...,(periodicity_in_slots - 1)}.
@@ -184,8 +203,8 @@ struct csi_im_resource {
   bool operator==(const csi_im_resource& rhs) const
   {
     return res_id == rhs.res_id && csi_im_res_element_pattern == rhs.csi_im_res_element_pattern &&
-           freq_band_start_rb == rhs.freq_band_start_rb && freq_band_nof_rb == rhs.freq_band_nof_rb &&
-           csi_res_period == rhs.csi_res_period && csi_res_offset == rhs.csi_res_offset;
+           freq_band_rbs == rhs.freq_band_rbs && csi_res_period == rhs.csi_res_period &&
+           csi_res_offset == rhs.csi_res_offset;
   }
   bool operator!=(const csi_im_resource& rhs) const { return !(rhs == *this); }
 };
@@ -328,6 +347,38 @@ struct csi_meas_config {
            semi_persistent_on_pusch_trigger_state_list == rhs.semi_persistent_on_pusch_trigger_state_list;
   }
   bool operator!=(const csi_meas_config& rhs) const { return !(rhs == *this); }
+};
+
+/// \brief Configuration of ZP-CSI-RS-Resource as per TS38.331.
+struct zp_csi_rs_resource {
+  /// ZP CSI-RS resource configuration ID.
+  zp_csi_rs_res_id_t id;
+  /// \brief OFDM symbol and subcarrier occupancy of the ZP-CSI-RS resource within a slot.
+  csi_rs_resource_mapping res_mapping;
+  /// Periodicity and slot offset for periodic/semi-persistent ZP-CSI-RS.
+  optional<csi_resource_periodicity> period;
+  optional<unsigned>                 offset;
+
+  bool operator==(const zp_csi_rs_resource& other) const
+  {
+    return id == other.id && res_mapping == other.res_mapping && period == other.period && offset == other.offset;
+  }
+  bool operator!=(const zp_csi_rs_resource& other) const { return !(*this == other); }
+};
+
+/// \brief Configuration of ZP-CSI-RS-ResourceSet as per TS38.331.
+struct zp_csi_rs_resource_set {
+  static constexpr size_t MAX_NOF_ZP_CSI_RS_RESOURCES_PER_SET = 16;
+
+  zp_csi_rs_res_set_id_t id;
+  /// The list of ZP-CSI-RS-ResourceId identifying the ZP-CSI-RS-Resource elements belonging to this set.
+  static_vector<zp_csi_rs_res_set_id_t, MAX_NOF_ZP_CSI_RS_RESOURCES_PER_SET> zp_csi_rs_res_list;
+
+  bool operator==(const zp_csi_rs_resource_set& other) const
+  {
+    return id == other.id && zp_csi_rs_res_list == other.zp_csi_rs_res_list;
+  }
+  bool operator!=(const zp_csi_rs_resource_set& other) const { return !(*this == other); }
 };
 
 } // namespace srsran

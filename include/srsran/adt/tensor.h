@@ -159,6 +159,9 @@ public:
   /// Default constructor with all dimensions and elements to zero.
   static_tensor() = default;
 
+  /// Constructs a tensor with initial dimensions.
+  explicit static_tensor(const dimensions_size_type& dimensions) { resize(dimensions); }
+
   /// Copy constructor.
   explicit static_tensor(const tensor<NDIMS, Type>& other) noexcept :
     dimensions_size(other.get_dimensions_size()), elements(other.get_data())
@@ -180,7 +183,7 @@ public:
   void resize(const dimensions_size_type& dimensions) override
   {
     dimensions_size     = dimensions;
-    unsigned total_size = std::accumulate(begin(dimensions_size), end(dimensions_size), 1, std::multiplies<>());
+    unsigned total_size = to_size(dimensions);
     srsran_assert(total_size <= MAX_ELEMENTS,
                   "The total number of elements {} (dimensions: {}) exceeds the maximum number of elements {}.",
                   total_size,
@@ -192,12 +195,18 @@ public:
   const dimensions_size_type& get_dimensions_size() const override { return dimensions_size; }
 
   // See interface for documentation.
-  span<Type> get_data() override { return elements; }
+  span<Type> get_data() override { return span<Type>(elements).first(to_size(dimensions_size)); }
 
   // See interface for documentation.
-  span<const Type> get_data() const override { return elements; }
+  span<const Type> get_data() const override { return span<const Type>(elements).first(to_size(dimensions_size)); }
 
 private:
+  /// Converts a dimension size type to size.
+  static unsigned to_size(const dimensions_size_type& dimensions_size)
+  {
+    return std::accumulate(begin(dimensions_size), end(dimensions_size), 1, std::multiplies<>());
+  }
+
   /// Tensor actual dimensions.
   dimensions_size_type dimensions_size = {};
   /// Tensor actual storage.
@@ -233,7 +242,7 @@ public:
   dynamic_tensor(dynamic_tensor&& other) noexcept :
     dimensions_size(std::move(other.dimensions_size)), elements(std::move(other.elements))
   {
-    // Do nothing.
+    other.dimensions_size = {};
   }
 
   /// Reserves memory for the tensor.
@@ -272,6 +281,9 @@ public:
   {
     return std::accumulate(begin(dimensions_size), end(dimensions_size), 1, std::multiplies<>());
   }
+
+  /// Determines whether the tensor is empty.
+  bool empty() const { return size() == 0; }
 
 private:
   /// Tensor actual dimensions.

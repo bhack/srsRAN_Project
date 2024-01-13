@@ -26,25 +26,24 @@
 
 using namespace srsran;
 
-ue::ue(const scheduler_ue_expert_config&        expert_cfg_,
-       const cell_configuration&                cell_cfg_common_,
-       const sched_ue_creation_request_message& req) :
-  ue_index(req.ue_index),
-  crnti(req.crnti),
-  expert_cfg(expert_cfg_),
-  cell_cfg_common(cell_cfg_common_),
-  log_channels_configs(req.cfg.lc_config_list),
-  sched_request_configs(req.cfg.sched_request_config_list),
-  logger(srslog::fetch_basic_logger("SCHED"))
+ue::ue(const ue_creation_command& cmd) :
+  ue_index(cmd.cfg.ue_index),
+  crnti(cmd.cfg.crnti),
+  expert_cfg(cmd.cfg.expert_cfg()),
+  cell_cfg_common(cmd.cfg.pcell_cfg().cell_cfg_common),
+  ue_ded_cfg(&cmd.cfg),
+  harq_timeout_notif(cmd.harq_timeout_notifier, ue_index),
+  logger(srslog::fetch_basic_logger("SCHED")),
+  ta_mgr(expert_cfg, cell_cfg_common.ul_cfg_common.init_ul_bwp.generic_params.scs, &dl_lc_ch_mgr)
 {
-  for (unsigned i = 0; i != req.cfg.cells.size(); ++i) {
-    ue_du_cells[i] =
-        std::make_unique<ue_cell>(ue_index, req.crnti, expert_cfg, cell_cfg_common, req.cfg.cells[i].serv_cell_cfg);
-    ue_cells.push_back(ue_du_cells[i].get());
-  }
+  // Apply configuration.
+  handle_reconfiguration_request(ue_reconf_command{cmd.cfg});
 
-  dl_lc_ch_mgr.configure(log_channels_configs);
-  ul_lc_ch_mgr.configure(log_channels_configs);
+  for (auto& cell : ue_du_cells) {
+    if (cell != nullptr) {
+      cell->set_fallback_state(cmd.starts_in_fallback);
+    }
+  }
 }
 
 void ue::slot_indication(slot_point sl_tx)
@@ -53,54 +52,72 @@ void ue::slot_indication(slot_point sl_tx)
     if (ue_du_cells[i] != nullptr) {
       // Clear old HARQs.
       ue_du_cells[i]->harqs.slot_indication(sl_tx);
+    }
+  }
 
-      // Check if the UE has had too many KOs. If so, force a BSR=0.
-      if (ue_du_cells[i]->get_metrics().consecutive_pusch_kos >= expert_cfg.max_consecutive_pusch_kos) {
-        ue_du_cells[i]->get_metrics().consecutive_pusch_kos = 0;
-        ul_bsr_indication_message bsr{};
-        bsr.ue_index   = ue_index;
-        bsr.crnti      = crnti;
-        bsr.type       = bsr_format::LONG_BSR;
-        bsr.cell_index = ue_du_cells[i]->cell_index;
-        bsr.reported_lcgs.resize(MAX_NOF_LCGS);
-        for (unsigned j = 0; j != bsr.reported_lcgs.size(); ++j) {
-          bsr.reported_lcgs[j].lcg_id    = uint_to_lcg_id(j);
-          bsr.reported_lcgs[j].nof_bytes = 0;
-        }
-        ul_lc_ch_mgr.handle_bsr_indication(bsr);
-        logger.warning("ue={} rnti={:#x}: Forcing BSR=0. Cause: Too many consecutive PUSCH KOs", ue_index, crnti);
-      }
+  ta_mgr.slot_indication(sl_tx);
+}
+
+void ue::deactivate()
+{
+  // Disable DL DRBs.
+  for (unsigned lcid = LCID_MIN_DRB; lcid <= LCID_MAX_DRB; lcid++) {
+    dl_lc_ch_mgr.set_status((lcid_t)lcid, false);
+  }
+
+  // Disable UL SRBs and DRBs.
+  ul_lc_ch_mgr.deactivate();
+
+  // Stop UL HARQ retransmissions.
+  // Note: We do no stop DL retransmissions because we are still relying on DL to send a potential RRC Release.
+  for (unsigned i = 0; i != ue_du_cells.size(); ++i) {
+    if (ue_du_cells[i] != nullptr) {
+      ue_du_cells[i]->deactivate();
     }
   }
 }
 
-void ue::handle_reconfiguration_request(const sched_ue_reconfiguration_message& msg)
+void ue::handle_reconfiguration_request(const ue_reconf_command& cmd)
 {
-  log_channels_configs = msg.cfg.lc_config_list;
-  dl_lc_ch_mgr.configure(log_channels_configs);
-  ul_lc_ch_mgr.configure(log_channels_configs);
+  srsran_assert(cmd.cfg.nof_cells() > 0, "Creation of a UE requires at least PCell configuration.");
+  ue_ded_cfg = &cmd.cfg;
 
+  // Configure Logical Channels.
+  dl_lc_ch_mgr.configure(ue_ded_cfg->logical_channels());
+  ul_lc_ch_mgr.configure(ue_ded_cfg->logical_channels());
+
+  // Cell configuration.
   // Handle removed cells.
   for (unsigned i = 0; i != ue_du_cells.size(); ++i) {
     if (ue_du_cells[i] != nullptr) {
-      if (std::none_of(msg.cfg.cells.begin(), msg.cfg.cells.end(), [i](const cell_config_dedicated& c) {
-            return c.serv_cell_cfg.cell_index == to_du_cell_index(i);
-          })) {
+      if (not ue_ded_cfg->contains(to_du_cell_index(i))) {
         // TODO: Handle SCell deletions.
       }
     }
   }
-
-  // Handle new cells.
-  for (const auto& cell : msg.cfg.cells) {
-    if (ue_du_cells[cell.serv_cell_cfg.cell_index] != nullptr) {
-      ue_du_cells[cell.serv_cell_cfg.cell_index]->handle_reconfiguration_request(cell.serv_cell_cfg);
+  // Handle new cell creations or reconfigurations.
+  for (unsigned ue_cell_index = 0; ue_cell_index != ue_ded_cfg->nof_cells(); ++ue_cell_index) {
+    du_cell_index_t cell_index   = ue_ded_cfg->ue_cell_cfg(to_ue_cell_index(ue_cell_index)).cell_cfg_common.cell_index;
+    auto&           ue_cell_inst = ue_du_cells[cell_index];
+    if (ue_cell_inst == nullptr) {
+      ue_cell_inst =
+          std::make_unique<ue_cell>(ue_index, crnti, ue_ded_cfg->ue_cell_cfg(cell_index), harq_timeout_notif);
+      if (ue_cell_index >= ue_cells.size()) {
+        ue_cells.resize(ue_cell_index + 1);
+      }
     } else {
-      // TODO: Handle SCell creation.
+      // Reconfiguration of the cell.
+      ue_cell_inst->handle_reconfiguration_request(ue_ded_cfg->ue_cell_cfg(cell_index));
     }
   }
 
-  // TODO: Remaining fields.
+  // Recompute mapping of UE cell indexing to DU cell indexing.
+  ue_cells.resize(ue_ded_cfg->nof_cells(), nullptr);
+  for (unsigned ue_cell_index = 0; ue_cell_index != ue_ded_cfg->nof_cells(); ++ue_cell_index) {
+    auto& ue_cell_inst =
+        ue_du_cells[ue_ded_cfg->ue_cell_cfg(to_ue_cell_index(ue_cell_index)).cell_cfg_common.cell_index];
+    ue_cells[ue_cell_index] = ue_cell_inst.get();
+  }
 }
 
 unsigned ue::pending_dl_newtx_bytes() const
@@ -143,6 +160,11 @@ unsigned ue::pending_ul_newtx_bytes() const
 
   // If there are no pending bytes, check if a SR is pending.
   return pending_bytes > 0 ? pending_bytes : (ul_lc_ch_mgr.has_pending_sr() ? SR_GRANT_BYTES : 0);
+}
+
+bool ue::has_pending_sr() const
+{
+  return ul_lc_ch_mgr.has_pending_sr();
 }
 
 unsigned ue::build_dl_transport_block_info(dl_msg_tb_info& tb_info, unsigned tb_size_bytes)

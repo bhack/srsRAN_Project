@@ -37,7 +37,7 @@ template <typename T>
 class async_event_source
 {
 public:
-  explicit async_event_source(timer_manager& timer_db) : running_timer(timer_db.create_unique_timer()) {}
+  explicit async_event_source(timer_factory timer_db) : running_timer(timer_db.create_timer()) {}
   async_event_source(const async_event_source&)            = delete;
   async_event_source(async_event_source&&)                 = delete;
   async_event_source& operator=(const async_event_source&) = delete;
@@ -78,12 +78,13 @@ private:
   }
 
   template <typename U>
-  void set_observer(async_single_event_observer<T>& sub_, unsigned time_to_cancel, U&& cancelled_value)
+  void set_observer(async_single_event_observer<T>& sub_, std::chrono::milliseconds time_to_cancel, U&& cancelled_value)
   {
     set_observer(sub_);
     // Setup timeout.
-    running_timer.set(time_to_cancel,
-                      [this, c = std::forward<U>(cancelled_value)](timer_id_t /**/) { set(std::forward<U>(c)); });
+    running_timer.set(time_to_cancel, [this, c = std::forward<U>(cancelled_value)](timer_id_t /**/) mutable {
+      set(std::forward<U>(c));
+    });
     running_timer.run();
   }
 
@@ -127,7 +128,7 @@ public:
   /// \brief Subscribes this observer/listener to an \c async_event_source and sets a timeout for automatic
   /// unsubscription. Only one simultaneous subscriber is allowed.
   template <typename U>
-  void subscribe_to(async_event_source<T>& publisher, unsigned time_to_cancel, U&& cancelled_value)
+  void subscribe_to(async_event_source<T>& publisher, std::chrono::milliseconds time_to_cancel, U&& cancelled_value)
   {
     publisher.set_observer(*this, time_to_cancel, std::forward<U>(cancelled_value));
   }

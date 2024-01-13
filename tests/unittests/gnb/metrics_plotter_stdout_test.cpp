@@ -38,6 +38,7 @@ void fill_metrics_single_ue()
   ue.pci           = 500;
   ue.rnti          = to_rnti(0x4601);
   ue.cqi           = 4;
+  ue.ri            = 1;
   ue.dl_mcs        = 28;
   ue.dl_brate_kbps = 1 * 1024; // 1Mbit
   ue.dl_nof_ok     = 900;
@@ -49,6 +50,7 @@ void fill_metrics_single_ue()
   ue.ul_nof_ok     = 99;
   ue.ul_nof_nok    = 1;
   ue.bsr           = 8192;
+  ue.dl_bs         = 100000;
   reports.push_back(ue);
 }
 

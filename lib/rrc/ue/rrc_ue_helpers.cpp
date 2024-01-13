@@ -20,17 +20,57 @@
  *
  */
 
-#include "../../ran/gnb_format.h"
-#include "rrc_ue_impl.h"
+#include "rrc_ue_helpers.h"
+#include "srsran/asn1/rrc_nr/msg_common.h"
+#include "srsran/asn1/rrc_nr/rrc_nr.h"
 
 using namespace srsran;
 using namespace srs_cu_cp;
 
-void rrc_ue_impl::on_ue_delete_request()
+template <class T>
+void srsran::srs_cu_cp::log_rrc_message(rrc_ue_logger&    logger,
+                                        const direction_t dir,
+                                        byte_buffer_view  pdu,
+                                        const T&          msg,
+                                        const char*       msg_type)
 {
-  // FIXME: this enqueues a new CORO on top of an existing one.
-  cu_cp_ue_context_release_command msg = {};
-  msg.ue_index                         = context.ue_index;
-  // TODO: Set cause
-  du_processor_notifier.on_ue_context_release_command(msg);
+  if (logger.get_basic_logger().debug.enabled()) {
+    asn1::json_writer js;
+    msg.to_json(js);
+    logger.log_debug(pdu.begin(),
+                     pdu.end(),
+                     "{} {} {} ({} B)",
+                     (dir == Rx) ? "Rx" : "Tx",
+                     msg_type,
+                     msg.msg.c1().type().to_string(),
+                     pdu.length());
+    logger.log_debug("Containerized {}: {}", msg.msg.c1().type().to_string(), js.to_string());
+  } else if (logger.get_basic_logger().info.enabled()) {
+    std::vector<uint8_t> bytes{pdu.begin(), pdu.end()};
+    logger.log_info(pdu.begin(), pdu.end(), "{} {}", msg_type, msg.msg.c1().type().to_string());
+  }
 }
+
+template void srsran::srs_cu_cp::log_rrc_message<asn1::rrc_nr::ul_ccch_msg_s>(rrc_ue_logger&                     logger,
+                                                                              const direction_t                  dir,
+                                                                              byte_buffer_view                   pdu,
+                                                                              const asn1::rrc_nr::ul_ccch_msg_s& msg,
+                                                                              const char* msg_type);
+
+template void srsran::srs_cu_cp::log_rrc_message<asn1::rrc_nr::ul_dcch_msg_s>(rrc_ue_logger&                     logger,
+                                                                              const direction_t                  dir,
+                                                                              byte_buffer_view                   pdu,
+                                                                              const asn1::rrc_nr::ul_dcch_msg_s& msg,
+                                                                              const char* msg_type);
+
+template void srsran::srs_cu_cp::log_rrc_message<asn1::rrc_nr::dl_ccch_msg_s>(rrc_ue_logger&                     logger,
+                                                                              const direction_t                  dir,
+                                                                              byte_buffer_view                   pdu,
+                                                                              const asn1::rrc_nr::dl_ccch_msg_s& msg,
+                                                                              const char* msg_type);
+
+template void srsran::srs_cu_cp::log_rrc_message<asn1::rrc_nr::dl_dcch_msg_s>(rrc_ue_logger&                     logger,
+                                                                              const direction_t                  dir,
+                                                                              byte_buffer_view                   pdu,
+                                                                              const asn1::rrc_nr::dl_dcch_msg_s& msg,
+                                                                              const char* msg_type);

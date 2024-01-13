@@ -50,11 +50,14 @@ public:
 
   /// \brief Creates an amplitude controller.
   /// \return A unique pointer to an amplitude controller instance.
-  virtual std::unique_ptr<amplitude_controller> create_amplitude_controller() = 0;
+  virtual std::unique_ptr<amplitude_controller> create() = 0;
 };
 
 /// Creates a clipping amplitude controller factory.
 std::shared_ptr<amplitude_controller_factory>
 create_amplitude_controller_clipping_factory(const amplitude_controller_clipping_config& config);
+
+/// Creates a scaling amplitude controller factory.
+std::shared_ptr<amplitude_controller_factory> create_amplitude_controller_scaling_factory(float gain_dB_);
 
 } // namespace srsran

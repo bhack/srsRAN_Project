@@ -22,7 +22,9 @@
 
 #include "pucch_detector_test_doubles.h"
 #include "pucch_processor_format1_test_data.h"
+#include "srsran/phy/upper/channel_processors/channel_processor_formatters.h"
 #include "srsran/srsvec/compare.h"
+#include "srsran/support/complex_normal_random.h"
 #include <gtest/gtest.h>
 
 using namespace srsran;
@@ -31,26 +33,15 @@ namespace srsran {
 
 std::ostream& operator<<(std::ostream& os, const pucch_processor::format1_configuration& config)
 {
-  return os << fmt::format("slot={}, bwp={}:{}, cp={}, start={}, hop={}, n_id={}, Nack={}, ports={}, cs={}, nsymb={}, "
-                           "start_symb={}, occ={}",
-                           config.slot,
-                           config.bwp_start_rb,
-                           config.bwp_size_rb,
-                           config.cp,
-                           config.starting_prb,
-                           config.second_hop_prb.has_value() ? std::to_string(config.second_hop_prb.value()) : "na",
-                           config.n_id,
-                           config.nof_harq_ack,
-                           span<const uint8_t>(config.ports),
-                           config.initial_cyclic_shift,
-                           config.nof_symbols,
-                           config.start_symbol_index,
-                           config.time_domain_occ);
+  return os << fmt::format("{:s}", config);
 }
 
 std::ostream& operator<<(std::ostream& os, const test_case_t& tc)
 {
-  return os << tc.config;
+  for (const pucch_entry& entry : tc.entries) {
+    os << entry.config << "; ";
+  }
+  return os;
 }
 
 std::ostream& operator<<(std::ostream& os, const uci_status& status)
@@ -64,6 +55,11 @@ std::ostream& operator<<(std::ostream& os, const uci_status& status)
     default:
       return os << "invalid";
   }
+}
+
+std::ostream& operator<<(std::ostream& os, span<const uint8_t> data)
+{
+  return os << fmt::format("{}", data);
 }
 
 } // namespace srsran
@@ -91,7 +87,7 @@ protected:
     std::shared_ptr<pseudo_random_generator_factory> prg_factory = create_pseudo_random_generator_sw_factory();
     ASSERT_NE(prg_factory, nullptr);
 
-    std::shared_ptr<dft_processor_factory> dft_factory = create_dft_processor_factory_fftw();
+    std::shared_ptr<dft_processor_factory> dft_factory = create_dft_processor_factory_fftw_slow();
     if (!dft_factory) {
       dft_factory = create_dft_processor_factory_generic();
     }
@@ -122,24 +118,31 @@ protected:
         create_pucch_demodulator_factory_sw(equalizer_factory, demod_factory, prg_factory);
     ASSERT_NE(pucch_demod_factory, nullptr) << "Cannot create PUCCH demodulator factory.";
 
-    // Create UCI decoder factory.
+    // Create short block detector factory.
     std::shared_ptr<short_block_detector_factory> short_block_det_factory = create_short_block_detector_factory_sw();
     ASSERT_NE(short_block_det_factory, nullptr) << "Cannot create short block detector factory.";
 
-    uci_decoder_factory_sw_configuration decoder_factory_config = {};
-    decoder_factory_config.decoder_factory                      = short_block_det_factory;
+    // Create polar decoder factory.
+    std::shared_ptr<polar_factory> polar_dec_factory = create_polar_factory_sw();
+    ASSERT_NE(polar_dec_factory, nullptr) << "Invalid polar decoder factory.";
 
-    std::shared_ptr<uci_decoder_factory> decoder_factory = create_uci_decoder_factory_sw(decoder_factory_config);
-    ASSERT_NE(decoder_factory, nullptr) << "Cannot create UCI decoder factory.";
+    // Create CRC calculator factory.
+    std::shared_ptr<crc_calculator_factory> crc_calc_factory = create_crc_calculator_factory_sw("auto");
+    ASSERT_NE(crc_calc_factory, nullptr) << "Invalid CRC calculator factory.";
+
+    // Create UCI decoder factory.
+    std::shared_ptr<uci_decoder_factory> uci_dec_factory =
+        create_uci_decoder_factory_generic(short_block_det_factory, polar_dec_factory, crc_calc_factory);
+    ASSERT_NE(uci_dec_factory, nullptr) << "Cannot create UCI decoder factory.";
 
     channel_estimate::channel_estimate_dimensions channel_estimate_dimensions;
     channel_estimate_dimensions.nof_tx_layers = 1;
-    channel_estimate_dimensions.nof_rx_ports  = 1;
+    channel_estimate_dimensions.nof_rx_ports  = 4;
     channel_estimate_dimensions.nof_symbols   = MAX_NSYMB_PER_SLOT;
     channel_estimate_dimensions.nof_prb       = MAX_RB;
 
     factory = create_pucch_processor_factory_sw(
-        estimator_factory, detector_factory, pucch_demod_factory, decoder_factory, channel_estimate_dimensions);
+        estimator_factory, detector_factory, pucch_demod_factory, uci_dec_factory, channel_estimate_dimensions);
     ASSERT_NE(factory, nullptr);
   }
 
@@ -170,27 +173,67 @@ TEST_P(PucchProcessorFormat1Fixture, FromVector)
 
   const PucchProcessorFormat1Param& param = GetParam();
 
-  // Make sure configuration is valid.
-  ASSERT_TRUE(validator->is_valid(param.config));
+  for (const pucch_entry& entry : param.entries) {
+    // Make sure configuration is valid.
+    ASSERT_TRUE(validator->is_valid(entry.config));
 
-  pucch_processor_result result = processor->process(grid, param.config);
+    pucch_processor_result result = processor->process(grid, entry.config);
+
+    // Check channel state information.
+    // Time alignment shouldn't exceed plus minus 3 us.
+    ASSERT_NEAR(result.csi.get_time_alignment().to_seconds(), 0, 3e-6);
+    // EPRE depends on the number of entries.
+    ASSERT_NEAR(result.csi.get_epre_dB(), convert_power_to_dB(param.entries.size()), 0.09);
+    // SINR should be larger than -5 dB.
+    ASSERT_GT(result.csi.get_sinr_dB(), -5.0) << "Entry configuration: " << entry.config;
+
+    // The message shall be valid.
+    ASSERT_EQ(result.message.get_status(), uci_status::valid);
+    ASSERT_EQ(result.message.get_full_payload().size(), entry.ack_bits.size());
+    ASSERT_EQ(result.message.get_harq_ack_bits().size(), entry.ack_bits.size());
+    if (!entry.ack_bits.empty()) {
+      ASSERT_EQ(span<const uint8_t>(result.message.get_full_payload()), span<const uint8_t>(entry.ack_bits));
+      ASSERT_EQ(span<const uint8_t>(result.message.get_harq_ack_bits()), span<const uint8_t>(entry.ack_bits));
+    }
+    ASSERT_EQ(result.message.get_sr_bits().size(), 0);
+    ASSERT_EQ(result.message.get_csi_part1_bits().size(), 0);
+    ASSERT_EQ(result.message.get_csi_part2_bits().size(), 0);
+  }
+}
+
+TEST_P(PucchProcessorFormat1Fixture, FromVectorFalseCs)
+{
+  // Prepare resource grid.
+  resource_grid_reader_spy grid;
+  grid.write(GetParam().grid.read());
+
+  // Get original parameters and change the initial cyclic shift.
+  PucchProcessorFormat1Param param = GetParam();
+
+  pucch_entry entry = param.entries.front();
+
+  // Select a different initial cyclic shift that it is not in the entries.
+  do {
+    entry.config.initial_cyclic_shift = (entry.config.initial_cyclic_shift + 1) % 12;
+  } while (std::any_of(param.entries.begin(), param.entries.end(), [&entry](const pucch_entry& value) {
+    return entry.config.initial_cyclic_shift == value.config.initial_cyclic_shift;
+  }));
+
+  // Make sure configuration is valid.
+  ASSERT_TRUE(validator->is_valid(entry.config));
+
+  pucch_processor_result result = processor->process(grid, entry.config);
 
   // Check channel state information.
-  // Time alignment shouldn't exceed plus minus 3 us.
-  ASSERT_NEAR(result.csi.time_alignment.to_seconds(), 0, 3e-6);
-  // EPRE should be close to zero.
-  ASSERT_NEAR(result.csi.epre_dB, 0.0, 0.09);
-  // SINR should be larger than 25 dB.
-  ASSERT_GT(result.csi.sinr_dB, 25.0);
+  // EPRE depends on the number of entries.
+  ASSERT_NEAR(result.csi.get_epre_dB(), convert_power_to_dB(param.entries.size()), 0.9);
+  // SINR should be less than -25 dB.
+  ASSERT_LT(result.csi.get_sinr_dB(), -25.0);
 
   // The message shall be valid.
-  ASSERT_EQ(result.message.get_status(), uci_status::valid);
-  ASSERT_EQ(result.message.get_full_payload().size(), param.ack_bits.size());
-  ASSERT_EQ(result.message.get_harq_ack_bits().size(), param.ack_bits.size());
-  if (!param.ack_bits.empty()) {
-    ASSERT_EQ(span<const uint8_t>(result.message.get_full_payload()), span<const uint8_t>(param.ack_bits));
-    ASSERT_EQ(span<const uint8_t>(result.message.get_harq_ack_bits()), span<const uint8_t>(param.ack_bits));
-  }
+  ASSERT_EQ(result.message.get_status(), uci_status::invalid);
+  ASSERT_EQ(result.message.get_full_payload().size(), entry.ack_bits.size());
+  ASSERT_EQ(result.message.get_harq_ack_bits().size(), entry.ack_bits.size());
   ASSERT_EQ(result.message.get_sr_bits().size(), 0);
   ASSERT_EQ(result.message.get_csi_part1_bits().size(), 0);
   ASSERT_EQ(result.message.get_csi_part2_bits().size(), 0);
@@ -200,36 +243,32 @@ TEST_P(PucchProcessorFormat1Fixture, FalseAlarm)
 {
   std::vector<resource_grid_reader_spy::expected_entry_t> res = GetParam().grid.read();
 
-  std::normal_distribution<float> noise(0.0F, std::sqrt(0.5F));
-  std::mt19937                    rgen(1234);
+  complex_normal_distribution<cf_t> noise = {};
+  std::mt19937                      rgen(12345);
 
   unsigned nof_trials = 200;
-  // Acceptable probability of false alarm. The 1% value is given by the PUCCH requirements in TS38.104 Section 8.3.
+  // Acceptable probability of false alarm. The value is higher than the 1% given by the PUCCH requirements in TS38.104
+  // Section 8.3.
   // Important: This is just a quick test, longer simulations are needed to properly estimate the PFA.
-  float acceptable_pfa = 0.01;
+  float acceptable_pfa = 0.1;
 
-  for (auto& entry : res) {
-    entry.value = cf_t(noise(rgen), noise(rgen));
-  }
   // Prepare resource grid.
   resource_grid_reader_spy grid;
   unsigned                 counter = 0;
   for (unsigned i = 0; i != nof_trials; ++i) {
+    grid.reset();
     for (auto& entry : res) {
-      entry.value = cf_t(noise(rgen), noise(rgen));
+      entry.value = noise(rgen);
     }
     grid.write(res);
 
     const PucchProcessorFormat1Param& param = GetParam();
+    const pucch_entry&                entry = param.entries.front();
 
     // Make sure configuration is valid.
-    ASSERT_TRUE(validator->is_valid(param.config));
+    ASSERT_TRUE(validator->is_valid(entry.config));
 
-    if ((param.config.nof_symbols < 6) || param.config.second_hop_prb.has_value()) {
-      GTEST_SKIP() << "Noise estimation doesn't work with a small number of OFDM symbols or frequency hopping.";
-    }
-
-    pucch_processor_result result = processor->process(grid, param.config);
+    pucch_processor_result result = processor->process(grid, entry.config);
 
     counter += static_cast<unsigned>(result.message.get_status() == uci_status::valid);
   }

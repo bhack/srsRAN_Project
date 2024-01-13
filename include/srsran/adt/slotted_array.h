@@ -318,6 +318,10 @@ public:
     }
   }
 
+  /// Get iterator with index equal or higher than the provided index.
+  iterator       lower_bound(size_t idx) { return iterator{vec, idx}; }
+  const_iterator lower_bound(size_t idx) const { return const_iterator{vec, idx}; }
+
   /// Find first position that is empty
   size_t find_first_empty(size_t start_guess = 0) const
   {
@@ -346,7 +350,7 @@ private:
 
 /// \brief Container representing a vector of optional elements. It has the following characteristics:
 /// - composed by two vectors, one "elements vector" for storing the container's elements and one "indexing vector" to
-/// convert external indexes to a index position in the first "elements vector",
+/// convert external indexes to an index position in the first "elements vector",
 /// - Index-based lookup of elements, based internally on two vector index lookups,
 /// - The iteration is in order of indexes and correctly skips absent elements,
 /// - Unstable - Pointer/References/Iterators do not remain valid during addition/removal of elements in the container,
@@ -571,6 +575,9 @@ public:
     return IdToIntConversion::get_id(find_first_empty(to_index(start_guess)));
   }
 
+  iterator       lower_bound(key_type id) { return sl_ar.lower_bound(to_index(id)); }
+  const_iterator lower_bound(key_type id) const { return sl_ar.lower_bound(to_index(id)); }
+
 private:
   constexpr size_t to_index(key_type k) const { return IdToIntConversion::get_index(k); }
 
@@ -620,9 +627,10 @@ public:
   /// \param id ID of the constructed element in the table
   /// \param args Arguments to pass to element ctor
   template <typename... Args>
-  void emplace(key_type id, Args&&... args)
+  T& emplace(key_type id, Args&&... args)
   {
     sl_vec.emplace(to_index(id), std::forward<Args>(args)...);
+    return sl_vec[to_index(id)];
   }
 
   /// Erase object pointed by the given index

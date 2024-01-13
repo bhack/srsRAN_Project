@@ -24,7 +24,6 @@
 
 #include "../../common/f1ap_asn1_utils.h"
 #include "f1ap_du_event_manager.h"
-#include "srsran/asn1/f1ap/f1ap.h"
 #include "srsran/f1ap/du/f1ap_du.h"
 #include "srsran/support/async/async_task.h"
 
@@ -40,7 +39,7 @@ public:
   f1ap_du_setup_procedure(const f1_setup_request_message& request_,
                           f1ap_message_notifier&          cu_notif_,
                           f1ap_event_manager&             ev_mng_,
-                          timer_manager&                  timers,
+                          timer_factory&                  timers,
                           f1ap_du_context&                du_ctxt_);
 
   void operator()(coro_context<async_task<f1_setup_response_message>>& ctx);
@@ -63,9 +62,9 @@ private:
 
   unique_timer f1_setup_wait_timer;
 
-  f1ap_transaction transaction;
-  unsigned         f1_setup_retry_no = 0;
-  unsigned         time_to_wait      = 0;
+  f1ap_transaction     transaction;
+  unsigned             f1_setup_retry_no = 0;
+  std::chrono::seconds time_to_wait{0};
 }; // namespace srs_du
 
 } // namespace srs_du

@@ -45,7 +45,7 @@ void invalid_enum_number(int value, const char* name)
 
 void assert_choice_type(uint32_t val, uint32_t choice_id)
 {
-  if (srsran_unlikely(val != choice_id)) {
+  if (SRSRAN_UNLIKELY(val != choice_id)) {
     log_invalid_access_choice_id(val, choice_id);
   }
 }
@@ -132,7 +132,9 @@ SRSASN_CODE bit_ref::pack(uint64_t val, uint32_t n_bits)
   srsran_assert(n_bits < 64, "Invalid number of bits passed to pack()");
   while (n_bits > 0) {
     if (offset == 0) {
-      writer.append(0);
+      if (not writer.append(0)) {
+        return SRSASN_ERROR;
+      }
     }
     uint64_t mask = ((1ul << n_bits) - 1ul); // bitmap of n_bits ones.
     val           = val & mask;
@@ -212,6 +214,10 @@ SRSASN_CODE cbit_ref::unpack(T& val, uint32_t n_bits)
   srsran_assert(n_bits <= sizeof(T) * 8, "unpack_bits() only supports up to {} bits", sizeof(T) * 8);
   val = 0;
   while (n_bits > 0) {
+    if (it == buffer.end()) {
+      log_error("{}: Buffer size limit {} was reached.", __FUNCTION__, buffer.length());
+      return SRSASN_ERROR_DECODE_FAIL;
+    }
     if ((uint32_t)(8 - offset) > n_bits) {
       uint8_t mask = (uint8_t)(1u << (8u - offset)) - (uint8_t)(1u << (8u - offset - n_bits));
       val += ((uint32_t)((*it) & mask)) >> (8u - offset - n_bits);
@@ -219,13 +225,9 @@ SRSASN_CODE cbit_ref::unpack(T& val, uint32_t n_bits)
       n_bits = 0;
     } else {
       auto mask = static_cast<uint8_t>((1u << (8u - offset)) - 1u);
-      val += ((uint32_t)((*it) & mask)) << (n_bits - 8 + offset);
+      val += ((uint64_t)((*it) & mask)) << (n_bits - 8 + offset);
       n_bits -= 8 - offset;
       offset = 0;
-      if (it == buffer.end()) {
-        log_error("{}: Buffer size limit {} was achieved.", __FUNCTION__, buffer.length());
-        return SRSASN_ERROR_DECODE_FAIL;
-      }
       ++it;
     }
   }
@@ -479,10 +481,6 @@ SRSASN_CODE unpack_constrained_whole_number(IntType& n, cbit_ref& bref, IntType 
     // UNALIGNED variant
     HANDLE_CODE(bref.unpack(n, n_bits));
     n += lb;
-    if (n > ub) {
-      log_error("The condition lb <= n <= ub ({} <= {} <= {}) was not met", (long)lb, (long)n, (long)ub);
-      return SRSASN_ERROR_DECODE_FAIL;
-    }
   } else {
     // ALIGNED variant
     if (ra < 256) {
@@ -502,6 +500,12 @@ SRSASN_CODE unpack_constrained_whole_number(IntType& n, cbit_ref& bref, IntType 
     }
     n += lb;
   }
+
+  if (n > ub) {
+    log_error("The condition lb <= n <= ub ({} <= {} <= {}) was not met\n", lb, n, ub);
+    return SRSASN_ERROR_DECODE_FAIL;
+  }
+
   return SRSASN_SUCCESS;
 }
 template SRSASN_CODE
@@ -1313,9 +1317,7 @@ pack(bit_ref& bref, const std::string& s, size_t lb, size_t ub, size_t alb, size
   size_t b              = asn_string_utils::get_nof_bits_per_char(lb, ub, aligned);
   bool   octet_aligned  = asn_string_utils::is_octet_aligned(b, alb, aub, aligned);
   bool   length_encoded = asn_string_utils::is_length_encoded(alb, aub, aligned);
-  if (octet_aligned) {
-    bref.align_bytes_zero();
-  }
+
   if (ext) {
     HANDLE_CODE(bref.pack(0, 1));
   }
@@ -1336,9 +1338,6 @@ SRSASN_CODE unpack(std::string& s, cbit_ref& bref, size_t lb, size_t ub, size_t 
   size_t b              = asn_string_utils::get_nof_bits_per_char(lb, ub, aligned);
   bool   octet_aligned  = asn_string_utils::is_octet_aligned(b, alb, aub, aligned);
   bool   length_encoded = asn_string_utils::is_length_encoded(alb, aub, aligned);
-  if (octet_aligned) {
-    bref.align_bytes();
-  }
   if (ext) {
     bool is_ext;
     HANDLE_CODE(bref.unpack(is_ext, 1));
@@ -1495,29 +1494,40 @@ varlength_field_unpack_guard::~varlength_field_unpack_guard()
 
 json_writer::json_writer() : ident(""), sep(NONE) {}
 
-void json_writer::write_fieldname(const std::string& fieldname)
+void json_writer::write_fieldname(const char* fieldname)
 {
   constexpr static const char* septable[] = {",\n", "\n", ""};
 
   fmt::format_to(buffer, "{}{}", septable[sep], sep != NONE ? ident : "");
-  if (not fieldname.empty()) {
+  if (strlen(fieldname) != 0) {
     fmt::format_to(buffer, "\"{}\": ", fieldname);
   }
   sep = NONE;
 }
 
-void json_writer::write_str(const std::string& fieldname, const std::string& value)
+void json_writer::write_str(const char* fieldname, const char* value)
 {
   write_fieldname(fieldname);
   fmt::format_to(buffer, "\"{}\"", value);
   sep = COMMA;
 }
+
+void json_writer::write_str(const char* fieldname, const std::string& value)
+{
+  write_str(fieldname, value.c_str());
+}
+
+void json_writer::write_str(const char* value)
+{
+  write_str("", value);
+}
+
 void json_writer::write_str(const std::string& value)
 {
   write_str("", value);
 }
 
-void json_writer::write_int(const std::string& fieldname, int64_t value)
+void json_writer::write_int(const char* fieldname, int64_t value)
 {
   write_fieldname(fieldname);
   fmt::format_to(buffer, "{}", value);
@@ -1528,7 +1538,7 @@ void json_writer::write_int(int64_t value)
   write_int("", value);
 }
 
-void json_writer::write_bool(const std::string& fieldname, bool value)
+void json_writer::write_bool(const char* fieldname, bool value)
 {
   write_fieldname(fieldname);
   fmt::format_to(buffer, "{}", value ? "true" : "false");
@@ -1539,7 +1549,7 @@ void json_writer::write_bool(bool value)
   write_bool("", value);
 }
 
-void json_writer::write_null(const std::string& fieldname)
+void json_writer::write_null(const char* fieldname)
 {
   write_fieldname(fieldname);
   fmt::format_to(buffer, "null");
@@ -1550,7 +1560,7 @@ void json_writer::write_null()
   write_null("");
 }
 
-void json_writer::start_obj(const std::string& fieldname)
+void json_writer::start_obj(const char* fieldname)
 {
   write_fieldname(fieldname);
   fmt::format_to(buffer, "{{");
@@ -1564,7 +1574,7 @@ void json_writer::end_obj()
   sep = COMMA;
 }
 
-void json_writer::start_array(const std::string& fieldname)
+void json_writer::start_array(const char* fieldname)
 {
   write_fieldname(fieldname);
   fmt::format_to(buffer, "[");

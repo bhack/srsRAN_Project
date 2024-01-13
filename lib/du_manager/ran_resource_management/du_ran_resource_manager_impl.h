@@ -24,6 +24,7 @@
 
 #include "du_pucch_resource_manager.h"
 #include "du_ran_resource_manager.h"
+#include "srsran/ran/five_qi.h"
 
 namespace srsran {
 namespace srs_du {
@@ -56,7 +57,9 @@ private:
 class du_ran_resource_manager_impl : public du_ran_resource_manager
 {
 public:
-  du_ran_resource_manager_impl(span<const du_cell_config> cell_cfg_list_, const std::map<uint8_t, du_qos_config>& qos);
+  du_ran_resource_manager_impl(span<const du_cell_config>                cell_cfg_list_,
+                               const std::map<srb_id_t, du_srb_config>&  srbs,
+                               const std::map<five_qi_t, du_qos_config>& qos);
   du_ran_resource_manager_impl(du_ran_resource_manager_impl&&)                 = delete;
   du_ran_resource_manager_impl(const du_ran_resource_manager_impl&)            = delete;
   du_ran_resource_manager_impl& operator=(du_ran_resource_manager_impl&&)      = delete;
@@ -84,10 +87,12 @@ public:
 private:
   bool allocate_cell_resources(du_ue_index_t ue_index, du_cell_index_t cell_index, serv_cell_index_t serv_cell_index);
   void deallocate_cell_resources(du_ue_index_t ue_index, serv_cell_index_t serv_cell_index);
+  void modify_rlc_for_ntn(cell_group_config& ue_mcg);
 
-  span<const du_cell_config>              cell_cfg_list;
-  const std::map<uint8_t, du_qos_config>& qos_config;
-  srslog::basic_logger&                   logger;
+  span<const du_cell_config>                cell_cfg_list;
+  const std::map<srb_id_t, du_srb_config>&  srb_config;
+  const std::map<five_qi_t, du_qos_config>& qos_config;
+  srslog::basic_logger&                     logger;
 
   struct ue_res_item {
     cell_group_config cg_cfg;

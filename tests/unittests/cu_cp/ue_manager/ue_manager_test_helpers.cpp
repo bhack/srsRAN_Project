@@ -22,15 +22,18 @@
 
 #include "ue_manager_test_helpers.h"
 #include <gtest/gtest.h>
+#include <memory>
 
 using namespace srsran;
 using namespace srs_cu_cp;
 
-ue_manager_test::ue_manager_test()
+ue_manager_test::ue_manager_test() : ue_mng(ue_config, up_config)
 {
   test_logger.set_level(srslog::basic_levels::debug);
   ue_mng_logger.set_level(srslog::basic_levels::debug);
   srslog::init();
+
+  du_processor_ctrl_notifier = std::make_unique<dummy_ngap_du_processor_notifier>(ngap_ue_removal_handler);
 }
 
 ue_manager_test::~ue_manager_test()
@@ -39,11 +42,12 @@ ue_manager_test::~ue_manager_test()
   srslog::flush();
 }
 
-ue_index_t ue_manager_test::create_ue(du_index_t du_index, rnti_t rnti)
+ue_index_t ue_manager_test::create_ue(du_index_t du_index, pci_t pci, rnti_t rnti)
 {
-  auto* ue = ue_mng.add_ue(du_index, rnti);
+  ue_index_t ue_index = ue_mng.allocate_new_ue_index(du_index);
+  auto*      ue       = ue_mng.add_ue(ue_index, pci, rnti);
   if (ue == nullptr) {
-    test_logger.error("Failed to create UE with rnti={}", rnti);
+    test_logger.error("Failed to create UE with pci={} and rnti={}", pci, rnti);
     return ue_index_t::invalid;
   }
 

@@ -20,9 +20,12 @@
  *
  */
 
-#include "lib/pdcp/pdcp_entity_impl.h"
+#include "lib/pdcp/pdcp_entity_tx.h"
 #include "pdcp_test_vectors.h"
 #include "srsran/pdcp/pdcp_config.h"
+#include "srsran/pdcp/pdcp_tx.h"
+#include "srsran/support/executors/manual_task_worker.h"
+#include "srsran/support/timers.h"
 #include <cstdlib>
 #include <getopt.h>
 #include <queue>
@@ -32,6 +35,8 @@ using namespace srsran;
 struct pdcp_gen_helper_args {
   std::string sn_size = {};
   uint32_t    count   = {};
+  unsigned    algo    = 1;
+  unsigned    rb_type = 0;
 };
 
 /// Mocking class of the surrounding layers invoked by the PDCP.
@@ -55,6 +60,7 @@ bool parse_args(pdcp_gen_helper_args& args, int argc, char* argv[])
   static const struct option long_options[] = {{"help", no_argument, nullptr, 'h'},
                                                {"sn_size", required_argument, nullptr, 's'},
                                                {"count", required_argument, nullptr, 'c'},
+                                               {"algo", required_argument, nullptr, 'a'},
                                                {nullptr, 0, nullptr, 0}};
 
   static const char usage[] = "Usage: pdcp_gen_helper [options]\n"
@@ -62,11 +68,13 @@ bool parse_args(pdcp_gen_helper_args& args, int argc, char* argv[])
                               "  -h, --help                 Show help message and quit.\n"
                               "  -s, --sn_size <SN size>    Specify 12bit, or 18bit\n"
                               "  -c, --count <COUNT>        Specify COUNT of PDU to generate\n"
+                              "  -a, --algo <algo>          Specify ciphering and integrity algorithm\n"
+                              "  -r, --rb_type <rb_type>    Specify RB type. 0 means SRB, 1 DRB\n"
                               "\n";
   // Parse arguments
   while (true) {
     int option_index = 0;
-    int c            = getopt_long(argc, argv, "hs:c:", long_options, &option_index);
+    int c            = getopt_long(argc, argv, "hs:c:a:r:", long_options, &option_index);
     if (c == -1) {
       break;
     }
@@ -82,6 +90,14 @@ bool parse_args(pdcp_gen_helper_args& args, int argc, char* argv[])
       case 'c':
         args.count = strtod(optarg, nullptr);
         fprintf(stdout, "PDCP COUNT %u\n", args.count);
+        break;
+      case 'a':
+        args.algo = strtod(optarg, nullptr);
+        fprintf(stdout, "PDCP NIA%u/NEA%u\n", args.algo, args.algo);
+        break;
+      case 'r':
+        args.rb_type = strtod(optarg, nullptr);
+        fprintf(stdout, "PDCP %s\n", args.rb_type == 0 ? "SRB" : "DRB");
         break;
       default:
         fprintf(stderr, "error parsing arguments\n");
@@ -99,42 +115,54 @@ int main(int argc, char** argv)
   srslog::init();
   srslog::basic_logger& logger = srslog::fetch_basic_logger("PDCP", false);
   logger.set_level(srslog::basic_levels::debug);
+  logger.set_hex_dump_max_size(1500);
 
   pdcp_sn_size sn_size = args.sn_size == "12" ? pdcp_sn_size::size12bits : pdcp_sn_size::size18bits;
   logger.info("Creating PDCP TX ({} bit)", sn_size);
 
-  timer_manager timers;
+  timer_manager      timers;
+  manual_task_worker worker{64};
 
   // Set TX config
-  pdcp_config::pdcp_tx_config config = {};
-  config.rb_type                     = pdcp_rb_type::drb;
-  config.rlc_mode                    = pdcp_rlc_mode::am;
-  config.sn_size                     = sn_size;
-  config.discard_timer               = pdcp_discard_timer::ms10;
-  config.status_report_required      = false;
+  pdcp_tx_config config = {};
+  config.rb_type        = args.rb_type == 0 ? pdcp_rb_type::srb : pdcp_rb_type::drb;
+  config.rlc_mode       = pdcp_rlc_mode::am;
+  config.sn_size        = sn_size;
+  config.direction      = pdcp_security_direction::downlink;
+  if (args.rb_type == 1) {
+    config.discard_timer = pdcp_discard_timer::ms10;
+  }
+  config.status_report_required = false;
+
+  security::sec_128_as_config sec_cfg = {};
+
+  // Set security domain
+  sec_cfg.domain = args.rb_type == 0 ? security::sec_domain::rrc : security::sec_domain::up;
 
   // Set security keys
-  security::sec_128_as_config sec_cfg = {};
-  sec_cfg.k_128_rrc_int               = k_128_int;
-  sec_cfg.k_128_up_int                = k_128_int;
-  sec_cfg.k_128_rrc_enc               = k_128_enc;
-  sec_cfg.k_128_up_enc                = k_128_enc;
+  sec_cfg.k_128_int = k_128_int;
+  sec_cfg.k_128_enc = k_128_enc;
 
   // Set encription/integrity algorithms
-  sec_cfg.integ_algo  = security::integrity_algorithm::nia1;
-  sec_cfg.cipher_algo = security::ciphering_algorithm::nea1;
+  sec_cfg.integ_algo  = static_cast<security::integrity_algorithm>(args.algo);
+  sec_cfg.cipher_algo = static_cast<security::ciphering_algorithm>(args.algo);
 
   pdcp_tx_gen_frame frame = {};
   // Create RLC entities
   std::unique_ptr<pdcp_entity_tx> pdcp_tx =
-      std::make_unique<pdcp_entity_tx>(0, srb_id_t::srb1, config, frame, frame, timers);
-  pdcp_tx_state st = {args.count};
+      std::make_unique<pdcp_entity_tx>(0, drb_id_t::drb1, config, frame, frame, timer_factory{timers, worker});
+  pdcp_tx_state st = {args.count, args.count};
   pdcp_tx->set_state(st);
-  pdcp_tx->enable_security(sec_cfg);
+  pdcp_tx->configure_security(sec_cfg);
+  pdcp_tx->set_integrity_protection(security::integrity_enabled::on);
+  pdcp_tx->set_ciphering(security::ciphering_enabled::on);
 
   // Write SDU
   byte_buffer sdu = {sdu1};
   pdcp_tx->handle_sdu(std::move(sdu));
-  logger.info(frame.pdu_queue.front().buf.begin(), frame.pdu_queue.front().buf.end(), "PDCP PDU");
+  logger.info(frame.pdu_queue.front().buf.begin(),
+              frame.pdu_queue.front().buf.end(),
+              "PDCP PDU. pdu_len={}",
+              frame.pdu_queue.front().buf.length());
   return 0;
 }

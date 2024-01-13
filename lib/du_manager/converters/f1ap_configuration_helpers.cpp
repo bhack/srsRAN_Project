@@ -21,9 +21,9 @@
  */
 
 #include "f1ap_configuration_helpers.h"
-#include "asn1_cell_group_config_helpers.h"
-#include "srsran/asn1/rrc_nr/rrc_nr.h"
+#include "asn1_rrc_config_helpers.h"
 #include "srsran/ran/bcd_helpers.h"
+#include "srsran/ran/nr_cgi_helpers.h"
 #include "srsran/support/error_handling.h"
 
 using namespace srsran;
@@ -69,11 +69,11 @@ static asn1::rrc_nr::subcarrier_spacing_e get_asn1_scs(subcarrier_spacing scs)
   return asn1::rrc_nr::subcarrier_spacing_e{static_cast<asn1::rrc_nr::subcarrier_spacing_opts::options>(scs)};
 }
 
-static asn1::rrc_nr::dl_cfg_common_sib_s make_asn1_rrc_dl_config_common(const dl_config_common& cfg)
+static asn1::rrc_nr::dl_cfg_common_sib_s make_asn1_rrc_dl_cfg_common_sib(const dl_config_common& cfg)
 {
   using namespace asn1::rrc_nr;
   dl_cfg_common_sib_s out;
-  // freq info DL
+  // > frequencyInfoDL FrequencyInfoDL-SIB
   for (const auto& dl_band : cfg.freq_info_dl.freq_band_list) {
     nr_multi_band_info_s asn1_band;
     asn1_band.freq_band_ind_nr_present = true;
@@ -81,60 +81,10 @@ static asn1::rrc_nr::dl_cfg_common_sib_s make_asn1_rrc_dl_config_common(const dl
     out.freq_info_dl.freq_band_list.push_back(asn1_band);
   }
   out.freq_info_dl.offset_to_point_a = cfg.freq_info_dl.offset_to_point_a;
-  out.freq_info_dl.scs_specific_carrier_list.resize(cfg.freq_info_dl.scs_carrier_list.size());
-  for (unsigned i = 0; i < cfg.freq_info_dl.scs_carrier_list.size(); ++i) {
-    out.freq_info_dl.scs_specific_carrier_list[i].offset_to_carrier =
-        cfg.freq_info_dl.scs_carrier_list[i].offset_to_carrier;
-    out.freq_info_dl.scs_specific_carrier_list[i].subcarrier_spacing.value =
-        get_asn1_scs(cfg.freq_info_dl.scs_carrier_list[i].scs);
-    out.freq_info_dl.scs_specific_carrier_list[i].carrier_bw = cfg.freq_info_dl.scs_carrier_list[i].carrier_bandwidth;
-  }
-  // generic params
-  out.init_dl_bwp.generic_params.cp_present               = cfg.init_dl_bwp.generic_params.cp_extended;
-  out.init_dl_bwp.generic_params.subcarrier_spacing.value = get_asn1_scs(cfg.init_dl_bwp.generic_params.scs);
-  // See TS 38.331, BWP.locationAndBandwidth and TS 38.213 clause 12.
-  out.init_dl_bwp.generic_params.location_and_bw =
-      sliv_from_s_and_l(275, cfg.init_dl_bwp.generic_params.crbs.start(), cfg.init_dl_bwp.generic_params.crbs.length());
-  // PDCCH-ConfigCommon.
-  out.init_dl_bwp.pdcch_cfg_common_present = true;
-  pdcch_cfg_common_s& pdcch                = out.init_dl_bwp.pdcch_cfg_common.set_setup();
-  pdcch.coreset_zero_present               = false; // Sent by MIB.
-  pdcch.common_coreset_present             = cfg.init_dl_bwp.pdcch_common.common_coreset.has_value();
-  if (pdcch.common_coreset_present) {
-    pdcch.common_coreset = srsran::srs_du::make_asn1_rrc_coreset(cfg.init_dl_bwp.pdcch_common.common_coreset.value());
-  }
-  pdcch.search_space_zero_present = false; // Sent by MIB.
-  for (size_t ss_idx = 1; ss_idx < cfg.init_dl_bwp.pdcch_common.search_spaces.size(); ++ss_idx) {
-    const search_space_configuration& ss = cfg.init_dl_bwp.pdcch_common.search_spaces[ss_idx];
-    pdcch.common_search_space_list.push_back(srsran::srs_du::make_asn1_rrc_search_space(ss));
-  }
-  pdcch.search_space_sib1_present           = true;
-  pdcch.search_space_sib1                   = cfg.init_dl_bwp.pdcch_common.sib1_search_space_id;
-  pdcch.search_space_other_sys_info_present = false;
-  pdcch.paging_search_space_present         = cfg.init_dl_bwp.pdcch_common.paging_search_space_id.has_value();
-  if (pdcch.paging_search_space_present) {
-    pdcch.paging_search_space = cfg.init_dl_bwp.pdcch_common.paging_search_space_id.value();
-  }
-  pdcch.ra_search_space_present = true;
-  pdcch.ra_search_space         = (unsigned)cfg.init_dl_bwp.pdcch_common.ra_search_space_id;
-  // PDSCH-ConfigCommon.
-  out.init_dl_bwp.pdsch_cfg_common_present = true;
-  pdsch_cfg_common_s& pdsch                = out.init_dl_bwp.pdsch_cfg_common.set_setup();
-  pdsch.pdsch_time_domain_alloc_list.resize(cfg.init_dl_bwp.pdsch_common.pdsch_td_alloc_list.size());
-  for (unsigned i = 0; i != pdsch.pdsch_time_domain_alloc_list.size(); ++i) {
-    pdsch.pdsch_time_domain_alloc_list[i].k0_present = cfg.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[i].k0 != 0;
-    if (pdsch.pdsch_time_domain_alloc_list[i].k0_present) {
-      pdsch.pdsch_time_domain_alloc_list[i].k0 = cfg.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[i].k0;
-    }
-    pdsch.pdsch_time_domain_alloc_list[i].map_type.value =
-        cfg.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[i].map_type == sch_mapping_type::typeA
-            ? pdsch_time_domain_res_alloc_s::map_type_opts::type_a
-            : pdsch_time_domain_res_alloc_s::map_type_opts::type_b;
-    pdsch.pdsch_time_domain_alloc_list[i].start_symbol_and_len =
-        sliv_from_s_and_l(NOF_OFDM_SYM_PER_SLOT_NORMAL_CP,
-                          cfg.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[i].symbols.start(),
-                          cfg.init_dl_bwp.pdsch_common.pdsch_td_alloc_list[i].symbols.length());
-  }
+  out.freq_info_dl.scs_specific_carrier_list =
+      srs_du::make_asn1_rrc_scs_specific_carrier_list(cfg.freq_info_dl.scs_carrier_list);
+  // > initialDownlinkBWP BWP-DownlinkCommon
+  out.init_dl_bwp = srs_du::make_asn1_init_dl_bwp(cfg);
   // BCCH-Config
   out.bcch_cfg.mod_period_coeff.value = bcch_cfg_s::mod_period_coeff_opts::n4;
   // PCCH-Config
@@ -159,19 +109,19 @@ static asn1::rrc_nr::dl_cfg_common_sib_s make_asn1_rrc_dl_config_common(const dl
       out.pcch_cfg.nand_paging_frame_offset.set_one_t();
       break;
     case pcch_config::nof_pf_per_drx_cycle::halfT: {
-      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.half_t();
+      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.set_half_t();
       nof_pf       = cfg.pcch_cfg.paging_frame_offset;
     } break;
     case pcch_config::nof_pf_per_drx_cycle::quarterT: {
-      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.quarter_t();
+      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.set_quarter_t();
       nof_pf       = cfg.pcch_cfg.paging_frame_offset;
     } break;
     case pcch_config::nof_pf_per_drx_cycle::oneEighthT: {
-      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.one_eighth_t();
+      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.set_one_eighth_t();
       nof_pf       = cfg.pcch_cfg.paging_frame_offset;
     } break;
     case pcch_config::nof_pf_per_drx_cycle::oneSixteethT: {
-      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.one_sixteenth_t();
+      auto& nof_pf = out.pcch_cfg.nand_paging_frame_offset.set_one_sixteenth_t();
       nof_pf       = cfg.pcch_cfg.paging_frame_offset;
     } break;
     default:
@@ -230,22 +180,25 @@ static asn1::rrc_nr::dl_cfg_common_sib_s make_asn1_rrc_dl_config_common(const dl
         }
       } break;
       case pcch_config::first_pdcch_monitoring_occasion_of_po_type::
-          scs120khzQuarterT_scs60khzOneEighthT_scs30khzOneSixteenthT: {
-        auto& first_pmo_of_po = out.pcch_cfg.first_pdcch_monitoring_occasion_of_po
-                                    .scs120_kh_zquarter_t_scs60_kh_zone_eighth_t_scs30_kh_zone_sixteenth_t();
-        for (const auto& v : cfg.pcch_cfg.first_pdcch_monitoring_occasion_of_po_value) {
-          first_pmo_of_po.push_back(v);
-        }
-      } break;
-      case pcch_config::first_pdcch_monitoring_occasion_of_po_type::scs120khzOneEighthT_scs60khzOneSixteenthT: {
+          scs480khzOneT_scs120khzQuarterT_scs60khzOneEighthT_scs30khzOneSixteenthT: {
         auto& first_pmo_of_po =
-            out.pcch_cfg.first_pdcch_monitoring_occasion_of_po.scs120_kh_zone_eighth_t_scs60_kh_zone_sixteenth_t();
+            out.pcch_cfg.first_pdcch_monitoring_occasion_of_po
+                .scs480_kh_zone_t_scs120_kh_zquarter_t_scs60_kh_zone_eighth_t_scs30_kh_zone_sixteenth_t();
         for (const auto& v : cfg.pcch_cfg.first_pdcch_monitoring_occasion_of_po_value) {
           first_pmo_of_po.push_back(v);
         }
       } break;
-      case pcch_config::first_pdcch_monitoring_occasion_of_po_type::scs120khzOneSixteenthT: {
-        auto& first_pmo_of_po = out.pcch_cfg.first_pdcch_monitoring_occasion_of_po.scs120_kh_zone_sixteenth_t();
+      case pcch_config::first_pdcch_monitoring_occasion_of_po_type::
+          scs480khzHalfT_scs120khzOneEighthT_scs60khzOneSixteenthT: {
+        auto& first_pmo_of_po = out.pcch_cfg.first_pdcch_monitoring_occasion_of_po
+                                    .scs480_kh_zhalf_t_scs120_kh_zone_eighth_t_scs60_kh_zone_sixteenth_t();
+        for (const auto& v : cfg.pcch_cfg.first_pdcch_monitoring_occasion_of_po_value) {
+          first_pmo_of_po.push_back(v);
+        }
+      } break;
+      case pcch_config::first_pdcch_monitoring_occasion_of_po_type::scs480khzQuarterT_scs120khzOneSixteenthT: {
+        auto& first_pmo_of_po =
+            out.pcch_cfg.first_pdcch_monitoring_occasion_of_po.scs480_kh_zquarter_t_scs120_kh_zone_sixteenth_t();
         for (const auto& v : cfg.pcch_cfg.first_pdcch_monitoring_occasion_of_po_value) {
           first_pmo_of_po.push_back(v);
         }
@@ -259,45 +212,12 @@ static asn1::rrc_nr::dl_cfg_common_sib_s make_asn1_rrc_dl_config_common(const dl
   return out;
 }
 
-// Helper function that converts msg1-fdm rach parameter into asn1 type.
-static asn1::rrc_nr::rach_cfg_generic_s::msg1_fdm_opts::options rach_msg1_fdm_convert_to_asn1(unsigned msg1_fdm_value)
-{
-  switch (msg1_fdm_value) {
-    case 1:
-      return asn1::rrc_nr::rach_cfg_generic_s::msg1_fdm_opts::one;
-    case 2:
-      return asn1::rrc_nr::rach_cfg_generic_s::msg1_fdm_opts::two;
-    case 4:
-      return asn1::rrc_nr::rach_cfg_generic_s::msg1_fdm_opts::four;
-    case 8:
-      return asn1::rrc_nr::rach_cfg_generic_s::msg1_fdm_opts::eight;
-    default:
-      report_fatal_error("Invalid msg1-fdm field. Return default value 1");
-  }
-  return asn1::rrc_nr::rach_cfg_generic_s::msg1_fdm_opts::one;
-}
-
-static asn1::rrc_nr::pucch_cfg_common_s::pucch_group_hop_opts::options
-pucch_group_hop_convert_to_asn1(pucch_group_hopping group_hop_value)
-{
-  switch (group_hop_value) {
-    case pucch_group_hopping::DISABLE:
-      return asn1::rrc_nr::pucch_cfg_common_s::pucch_group_hop_opts::disable;
-    case pucch_group_hopping::ENABLE:
-      return asn1::rrc_nr::pucch_cfg_common_s::pucch_group_hop_opts::enable;
-    case pucch_group_hopping::NEITHER:
-      return asn1::rrc_nr::pucch_cfg_common_s::pucch_group_hop_opts::neither;
-    default:
-      report_fatal_error("Invalid msg1-fdm field. Return default value 1");
-  }
-  return asn1::rrc_nr::pucch_cfg_common_s::pucch_group_hop_opts::disable;
-}
-
 static asn1::rrc_nr::ul_cfg_common_sib_s make_asn1_rrc_ul_config_common(const ul_config_common& cfg)
 {
   using namespace asn1::rrc_nr;
-
   ul_cfg_common_sib_s out;
+
+  // > frequencyInfoUL FrequencyInfoUL-SIB
   for (const auto& ul_band : cfg.freq_info_ul.freq_band_list) {
     nr_multi_band_info_s asn1_band;
     asn1_band.freq_band_ind_nr_present = true;
@@ -306,94 +226,19 @@ static asn1::rrc_nr::ul_cfg_common_sib_s make_asn1_rrc_ul_config_common(const ul
   }
   out.freq_info_ul.absolute_freq_point_a_present = true;
   out.freq_info_ul.absolute_freq_point_a         = cfg.freq_info_ul.absolute_freq_point_a;
-  out.freq_info_ul.scs_specific_carrier_list.resize(cfg.freq_info_ul.scs_carrier_list.size());
-  for (unsigned i = 0; i < cfg.freq_info_ul.scs_carrier_list.size(); ++i) {
-    out.freq_info_ul.scs_specific_carrier_list[i].offset_to_carrier =
-        cfg.freq_info_ul.scs_carrier_list[i].offset_to_carrier;
-    out.freq_info_ul.scs_specific_carrier_list[i].subcarrier_spacing.value =
-        get_asn1_scs(cfg.freq_info_ul.scs_carrier_list[i].scs);
-    out.freq_info_ul.scs_specific_carrier_list[i].carrier_bw = cfg.freq_info_ul.scs_carrier_list[i].carrier_bandwidth;
+  if (cfg.freq_info_ul.p_max.has_value()) {
+    out.freq_info_ul.p_max_present = true;
+    out.freq_info_ul.p_max         = cfg.freq_info_ul.p_max->value();
   }
-  out.init_ul_bwp.generic_params.subcarrier_spacing.value = get_asn1_scs(cfg.init_ul_bwp.generic_params.scs);
-  out.init_ul_bwp.generic_params.location_and_bw =
-      sliv_from_s_and_l(275, cfg.init_ul_bwp.generic_params.crbs.start(), cfg.init_ul_bwp.generic_params.crbs.length());
+  out.freq_info_ul.scs_specific_carrier_list =
+      srs_du::make_asn1_rrc_scs_specific_carrier_list(cfg.freq_info_ul.scs_carrier_list);
 
-  // RACH-ConfigCommon.
-  const rach_config_common& rach_cfg      = *cfg.init_ul_bwp.rach_cfg_common;
-  out.init_ul_bwp.rach_cfg_common_present = true;
-  rach_cfg_common_s& rach                 = out.init_ul_bwp.rach_cfg_common.set_setup();
-  rach.rach_cfg_generic.prach_cfg_idx     = rach_cfg.rach_cfg_generic.prach_config_index;
-  rach.rach_cfg_generic.msg1_fdm.value    = rach_msg1_fdm_convert_to_asn1(rach_cfg.rach_cfg_generic.msg1_fdm);
-  rach.rach_cfg_generic.msg1_freq_start   = static_cast<uint16_t>(rach_cfg.rach_cfg_generic.msg1_frequency_start);
-  rach.rach_cfg_generic.zero_correlation_zone_cfg =
-      static_cast<uint8_t>(rach_cfg.rach_cfg_generic.zero_correlation_zone_config);
-  rach.rach_cfg_generic.preamb_rx_target_pwr   = -110;
-  rach.rach_cfg_generic.preamb_trans_max.value = asn1::rrc_nr::rach_cfg_generic_s::preamb_trans_max_opts::n7;
-  rach.rach_cfg_generic.pwr_ramp_step.value    = asn1::rrc_nr::rach_cfg_generic_s::pwr_ramp_step_opts::db4;
-  bool success = asn1::number_to_enum(rach.rach_cfg_generic.ra_resp_win, rach_cfg.rach_cfg_generic.ra_resp_window);
-  srsran_assert(success, "Invalid ra-WindowSize");
-  rach.ssb_per_rach_occasion_and_cb_preambs_per_ssb_present = true;
-  rach.ssb_per_rach_occasion_and_cb_preambs_per_ssb.set_one().value =
-      asn1::rrc_nr::rach_cfg_common_s::ssb_per_rach_occasion_and_cb_preambs_per_ssb_c_::one_opts::n64;
-  rach.ra_contention_resolution_timer.value =
-      asn1::rrc_nr::rach_cfg_common_s::ra_contention_resolution_timer_opts::sf64;
-  if (rach_cfg.prach_root_seq_index_l839_present) {
-    rach.prach_root_seq_idx.set_l839() = rach_cfg.prach_root_seq_index;
-  } else {
-    rach.prach_root_seq_idx.set_l139() = rach_cfg.prach_root_seq_index;
-  }
-  rach.msg1_subcarrier_spacing = get_asn1_scs(rach_cfg.msg1_scs);
-  switch (rach_cfg.restricted_set) {
-    case srsran::restricted_set_config::UNRESTRICTED:
-      rach.restricted_set_cfg.value = rach_cfg_common_s::restricted_set_cfg_opts::unrestricted_set;
-      break;
-    case srsran::restricted_set_config::TYPE_A:
-      rach.restricted_set_cfg.value = rach_cfg_common_s::restricted_set_cfg_opts::restricted_set_type_a;
-      break;
-    case srsran::restricted_set_config::TYPE_B:
-      rach.restricted_set_cfg.value = rach_cfg_common_s::restricted_set_cfg_opts::restricted_set_type_b;
-      break;
-    default:
-      report_fatal_error("Invalid restricted set");
-  }
+  // > initialUplinkBWP BWP-UplinkCommon
+  out.init_ul_bwp = srs_du::make_asn1_rrc_initial_up_bwp(cfg);
 
-  // PUSCH-ConfigCommon.
-  const pusch_config_common& pusch_cfg     = cfg.init_ul_bwp.pusch_cfg_common.value();
-  out.init_ul_bwp.pusch_cfg_common_present = true;
-  pusch_cfg_common_s& pusch                = out.init_ul_bwp.pusch_cfg_common.set_setup();
-  pusch.pusch_time_domain_alloc_list.resize(pusch_cfg.pusch_td_alloc_list.size());
-  for (unsigned i = 0; i < pusch_cfg.pusch_td_alloc_list.size(); ++i) {
-    pusch.pusch_time_domain_alloc_list[i].k2_present = true;
-    pusch.pusch_time_domain_alloc_list[i].k2         = pusch_cfg.pusch_td_alloc_list[i].k2;
-    pusch.pusch_time_domain_alloc_list[i].map_type.value =
-        pusch_cfg.pusch_td_alloc_list[i].map_type == sch_mapping_type::typeA
-            ? pusch_time_domain_res_alloc_s::map_type_opts::type_a
-            : pusch_time_domain_res_alloc_s::map_type_opts::type_b;
-    pusch.pusch_time_domain_alloc_list[i].start_symbol_and_len =
-        sliv_from_s_and_l(NOF_OFDM_SYM_PER_SLOT_NORMAL_CP,
-                          pusch_cfg.pusch_td_alloc_list[i].symbols.start(),
-                          pusch_cfg.pusch_td_alloc_list[i].symbols.length());
-  }
-  pusch.p0_nominal_with_grant_present = true;
-  pusch.p0_nominal_with_grant         = -76;
+  // > timeAlignmentTimerCommon TimeAlignmentTimer
+  out.time_align_timer_common.value = time_align_timer_opts::infinity;
 
-  // PUCCH-ConfigCommon.
-  const pucch_config_common& pucch_cfg     = cfg.init_ul_bwp.pucch_cfg_common.value();
-  out.init_ul_bwp.pucch_cfg_common_present = true;
-  pucch_cfg_common_s& pucch                = out.init_ul_bwp.pucch_cfg_common.set_setup();
-  pucch.pucch_res_common_present           = true;
-  pucch.pucch_res_common                   = pucch_cfg.pucch_resource_common;
-  pucch.pucch_group_hop.value              = pucch_group_hop_convert_to_asn1(pucch_cfg.group_hopping);
-  pucch.p0_nominal_present                 = true;
-  pucch.p0_nominal                         = -90;
-  if (pucch_cfg.hopping_id.has_value()) {
-    pucch.hop_id_present = true;
-    pucch.hop_id         = static_cast<uint16_t>(pucch_cfg.hopping_id.value());
-  } else {
-    pucch.hop_id_present = false;
-  }
-
-  out.time_align_timer_common.value = asn1::rrc_nr::time_align_timer_opts::infinity;
   return out;
 }
 
@@ -401,87 +246,63 @@ static asn1::rrc_nr::serving_cell_cfg_common_sib_s make_asn1_rrc_cell_serving_ce
 {
   using namespace asn1::rrc_nr;
   serving_cell_cfg_common_sib_s cell;
-  cell.dl_cfg_common         = make_asn1_rrc_dl_config_common(du_cfg.dl_cfg_common);
+  cell.dl_cfg_common         = make_asn1_rrc_dl_cfg_common_sib(du_cfg.dl_cfg_common);
   cell.ul_cfg_common_present = true;
   cell.ul_cfg_common         = make_asn1_rrc_ul_config_common(du_cfg.ul_cfg_common);
   // SSB params.
   cell.ssb_positions_in_burst.in_one_group.from_number(static_cast<uint64_t>(du_cfg.ssb_cfg.ssb_bitmap) >>
                                                        static_cast<uint64_t>(56U));
   asn1::number_to_enum(cell.ssb_periodicity_serving_cell, ssb_periodicity_to_value(du_cfg.ssb_cfg.ssb_period));
-  cell.ss_pbch_block_pwr               = du_cfg.ssb_cfg.ssb_block_power;
+  cell.ss_pbch_block_pwr = du_cfg.ssb_cfg.ssb_block_power;
+
+  n_ta_offset ta_offset                = band_helper::get_ta_offset(du_cfg.dl_carrier.band);
   cell.n_timing_advance_offset_present = true;
-  cell.n_timing_advance_offset.value   = asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n0;
+  if (ta_offset == n_ta_offset::n0) {
+    cell.n_timing_advance_offset.value = asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n0;
+  } else if (ta_offset == n_ta_offset::n25600) {
+    cell.n_timing_advance_offset.value =
+        asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n25600;
+  } else if (ta_offset == n_ta_offset::n39936) {
+    cell.n_timing_advance_offset.value =
+        asn1::rrc_nr::serving_cell_cfg_common_sib_s::n_timing_advance_offset_opts::n39936;
+  }
 
   // TDD config
   if (du_cfg.tdd_ul_dl_cfg_common.has_value()) {
-    cell.tdd_ul_dl_cfg_common_present                = true;
-    cell.tdd_ul_dl_cfg_common.ref_subcarrier_spacing = get_asn1_scs(du_cfg.tdd_ul_dl_cfg_common.value().ref_scs);
-    float periodicity_ms = du_cfg.tdd_ul_dl_cfg_common.value().pattern1.dl_ul_tx_period_nof_slots /
-                           get_nof_slots_per_subframe(du_cfg.tdd_ul_dl_cfg_common.value().ref_scs);
-    if (periodicity_ms == 10.0) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms10;
-    } else if (periodicity_ms == 5.0) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms5;
-    } else if (periodicity_ms == 2.5) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms2p5;
-    } else if (periodicity_ms == 2.0) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms2;
-    } else if (periodicity_ms == 1.25) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms1p25;
-    } else if (periodicity_ms == 2) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms1;
-    } else if (periodicity_ms == 0.625) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms0p625;
-    } else if (periodicity_ms == 0.5) {
-      cell.tdd_ul_dl_cfg_common.pattern1.dl_ul_tx_periodicity =
-          asn1::rrc_nr::tdd_ul_dl_pattern_s::dl_ul_tx_periodicity_opts::ms0p5;
-    } else {
-      report_fatal_error("Unsupported TDD UL/DL periodicity {}ms", periodicity_ms);
-    }
-    cell.tdd_ul_dl_cfg_common.pattern1.nrof_dl_slots   = du_cfg.tdd_ul_dl_cfg_common.value().pattern1.nof_dl_slots;
-    cell.tdd_ul_dl_cfg_common.pattern1.nrof_dl_symbols = du_cfg.tdd_ul_dl_cfg_common.value().pattern1.nof_dl_symbols;
-    cell.tdd_ul_dl_cfg_common.pattern1.nrof_ul_slots   = du_cfg.tdd_ul_dl_cfg_common.value().pattern1.nof_ul_slots;
-    cell.tdd_ul_dl_cfg_common.pattern1.nrof_ul_symbols = du_cfg.tdd_ul_dl_cfg_common.value().pattern1.nof_ul_symbols;
+    cell.tdd_ul_dl_cfg_common_present = true;
+    cell.tdd_ul_dl_cfg_common         = srs_du::make_asn1_rrc_tdd_ul_dl_cfg_common(du_cfg.tdd_ul_dl_cfg_common.value());
   }
-
   // TODO: Fill remaining fields.
 
   return cell;
 }
 
-asn1::rrc_nr::sib1_s make_asn1_rrc_cell_sib1(const du_cell_config& du_cfg)
+static asn1::rrc_nr::sib1_s make_asn1_rrc_cell_sib1(const du_cell_config& du_cfg)
 {
   using namespace asn1::rrc_nr;
 
   sib1_s sib1;
 
   sib1.cell_sel_info_present            = true;
-  sib1.cell_sel_info.q_rx_lev_min       = -70;
+  sib1.cell_sel_info.q_rx_lev_min       = du_cfg.cell_sel_info.q_rx_lev_min.value();
   sib1.cell_sel_info.q_qual_min_present = true;
-  sib1.cell_sel_info.q_qual_min         = -20;
+  sib1.cell_sel_info.q_qual_min         = du_cfg.cell_sel_info.q_qual_min.value();
 
-  sib1.cell_access_related_info.plmn_id_list.resize(1);
-  sib1.cell_access_related_info.plmn_id_list[0].plmn_id_list.resize(1);
-  plmn_id_s& plmn  = sib1.cell_access_related_info.plmn_id_list[0].plmn_id_list[0];
+  sib1.cell_access_related_info.plmn_id_info_list.resize(1);
+  sib1.cell_access_related_info.plmn_id_info_list[0].plmn_id_list.resize(1);
+  plmn_id_s& plmn  = sib1.cell_access_related_info.plmn_id_info_list[0].plmn_id_list[0];
   plmn.mcc_present = true;
-  plmn.mcc[0]      = du_cfg.plmn[0] - '0';
-  plmn.mcc[1]      = du_cfg.plmn[1] - '0';
-  plmn.mcc[2]      = du_cfg.plmn[2] - '0';
-  plmn.mnc.resize(du_cfg.plmn.size() == 5 ? 2 : 3);
-  for (unsigned i = 3; i < du_cfg.plmn.size(); ++i) {
-    plmn.mnc[i - 3] = du_cfg.plmn[i] - '0';
+  plmn.mcc[0]      = du_cfg.nr_cgi.plmn[0] - '0';
+  plmn.mcc[1]      = du_cfg.nr_cgi.plmn[1] - '0';
+  plmn.mcc[2]      = du_cfg.nr_cgi.plmn[2] - '0';
+  plmn.mnc.resize(du_cfg.nr_cgi.plmn.size() == 5 ? 2 : 3);
+  for (unsigned i = 3; i < du_cfg.nr_cgi.plmn.size(); ++i) {
+    plmn.mnc[i - 3] = du_cfg.nr_cgi.plmn[i] - '0';
   }
-  sib1.cell_access_related_info.plmn_id_list[0].tac_present = true;
-  sib1.cell_access_related_info.plmn_id_list[0].tac.from_number(du_cfg.tac);
-  sib1.cell_access_related_info.plmn_id_list[0].cell_id.from_number(du_cfg.cell_id);
-  sib1.cell_access_related_info.plmn_id_list[0].cell_reserved_for_oper.value =
+  sib1.cell_access_related_info.plmn_id_info_list[0].tac_present = true;
+  sib1.cell_access_related_info.plmn_id_info_list[0].tac.from_number(du_cfg.tac);
+  sib1.cell_access_related_info.plmn_id_info_list[0].cell_id.from_number(du_cfg.nr_cgi.nci);
+  sib1.cell_access_related_info.plmn_id_info_list[0].cell_reserved_for_oper.value =
       plmn_id_info_s::cell_reserved_for_oper_opts::not_reserved;
 
   sib1.conn_est_fail_ctrl_present                   = true;
@@ -491,19 +312,160 @@ asn1::rrc_nr::sib1_s make_asn1_rrc_cell_sib1(const du_cell_config& du_cfg)
   sib1.conn_est_fail_ctrl.conn_est_fail_offset_present = true;
   sib1.conn_est_fail_ctrl.conn_est_fail_offset         = 1;
 
+  if (du_cfg.si_config.has_value()) {
+    for (auto sib : du_cfg.si_config->sibs) {
+      if (variant_holds_alternative<sib2_info>(sib)) {
+        sib1.si_sched_info_present = true;
+        bool ret = asn1::number_to_enum(sib1.si_sched_info.si_win_len, du_cfg.si_config.value().si_window_len_slots);
+        srsran_assert(ret, "Invalid SI window length");
+        sib1.si_sched_info.sched_info_list.resize(du_cfg.si_config->si_sched_info.size());
+        for (unsigned i = 0; i != du_cfg.si_config->si_sched_info.size(); ++i) {
+          const auto& cfg_si                = du_cfg.si_config->si_sched_info[i];
+          auto&       asn1_si               = sib1.si_sched_info.sched_info_list[i];
+          asn1_si.si_broadcast_status.value = sched_info_s::si_broadcast_status_opts::broadcasting;
+          ret = asn1::number_to_enum(asn1_si.si_periodicity, cfg_si.si_period_radio_frames);
+          srsran_assert(ret, "Invalid SI period");
+          asn1_si.sib_map_info.resize(cfg_si.sib_mapping_info.size());
+          for (unsigned j = 0; j != cfg_si.sib_mapping_info.size(); ++j) {
+            const uint8_t sib_id                      = static_cast<uint8_t>(cfg_si.sib_mapping_info[j]);
+            ret                                       = asn1::number_to_enum(asn1_si.sib_map_info[j].type, sib_id);
+            asn1_si.sib_map_info[j].value_tag_present = true;
+            asn1_si.sib_map_info[j].value_tag         = 0;
+            srsran_assert(ret, "Invalid SIB id {}", sib_id);
+          }
+        }
+      } else if (variant_holds_alternative<sib19_info>(sib)) {
+        sib1.non_crit_ext_present                                               = true;
+        sib1.non_crit_ext.non_crit_ext_present                                  = true;
+        sib1.non_crit_ext.non_crit_ext.non_crit_ext_present                     = true;
+        sib1.non_crit_ext.non_crit_ext.non_crit_ext.si_sched_info_v1700_present = true;
+        auto& si_sched_info_r17 = sib1.non_crit_ext.non_crit_ext.non_crit_ext.si_sched_info_v1700;
+        si_sched_info_r17.sched_info_list2_r17.resize(du_cfg.si_config->si_sched_info.size());
+        for (unsigned i = 0; i != du_cfg.si_config->si_sched_info.size(); ++i) {
+          auto&       asn1_si_r17                   = si_sched_info_r17.sched_info_list2_r17[0];
+          const auto& cfg_si                        = du_cfg.si_config->si_sched_info[i];
+          asn1_si_r17.si_broadcast_status_r17.value = sched_info2_r17_s::si_broadcast_status_r17_opts::broadcasting;
+          bool ret = asn1::number_to_enum(asn1_si_r17.si_periodicity_r17, cfg_si.si_period_radio_frames);
+          srsran_assert(ret, "Invalid SI period");
+          asn1_si_r17.sib_map_info_r17.resize(cfg_si.sib_mapping_info.size());
+          for (unsigned j = 0; j != cfg_si.sib_mapping_info.size(); ++j) {
+            const uint8_t sib_id_r17 = static_cast<uint8_t>(cfg_si.sib_mapping_info[j]);
+            asn1_si_r17.sib_map_info_r17[j].sib_type_r17.set_type1_r17();
+            ret = asn1::number_to_enum(asn1_si_r17.sib_map_info_r17[j].sib_type_r17.type1_r17(), sib_id_r17);
+            srsran_assert(ret, "Invalid SIB id {}", sib_id_r17);
+          }
+        }
+      }
+    }
+  }
+
   sib1.serving_cell_cfg_common_present = true;
   sib1.serving_cell_cfg_common         = make_asn1_rrc_cell_serving_cell_common(du_cfg);
 
-  sib1.ue_timers_and_consts_present    = true;
-  sib1.ue_timers_and_consts.t300.value = ue_timers_and_consts_s::t300_opts::ms1000;
-  sib1.ue_timers_and_consts.t301.value = ue_timers_and_consts_s::t301_opts::ms1000;
-  sib1.ue_timers_and_consts.t310.value = ue_timers_and_consts_s::t310_opts::ms1000;
-  sib1.ue_timers_and_consts.n310.value = ue_timers_and_consts_s::n310_opts::n1;
-  sib1.ue_timers_and_consts.t311.value = ue_timers_and_consts_s::t311_opts::ms30000;
-  sib1.ue_timers_and_consts.n311.value = ue_timers_and_consts_s::n311_opts::n1;
-  sib1.ue_timers_and_consts.t319.value = ue_timers_and_consts_s::t319_opts::ms1000;
+  sib1.ue_timers_and_consts_present = true;
+
+  bool ret = asn1::number_to_enum(sib1.ue_timers_and_consts.t300, du_cfg.ue_timers_and_constants.t300.count());
+  srsran_assert(ret, "Invalid value for T300: {}", du_cfg.ue_timers_and_constants.t300.count());
+
+  ret = asn1::number_to_enum(sib1.ue_timers_and_consts.t301, du_cfg.ue_timers_and_constants.t301.count());
+  srsran_assert(ret, "Invalid value for T301: {}", du_cfg.ue_timers_and_constants.t301.count());
+
+  ret = asn1::number_to_enum(sib1.ue_timers_and_consts.t310, du_cfg.ue_timers_and_constants.t310.count());
+  srsran_assert(ret, "Invalid value for T310: {}", du_cfg.ue_timers_and_constants.t310.count());
+
+  ret = asn1::number_to_enum(sib1.ue_timers_and_consts.n310, du_cfg.ue_timers_and_constants.n310);
+  srsran_assert(ret, "Invalid value for N310: {}", du_cfg.ue_timers_and_constants.n310);
+
+  ret = asn1::number_to_enum(sib1.ue_timers_and_consts.t311, du_cfg.ue_timers_and_constants.t311.count());
+  srsran_assert(ret, "Invalid value for T311: {}", du_cfg.ue_timers_and_constants.t311.count());
+
+  ret = asn1::number_to_enum(sib1.ue_timers_and_consts.n311, du_cfg.ue_timers_and_constants.n311);
+  srsran_assert(ret, "Invalid value for N311: {}", du_cfg.ue_timers_and_constants.n311);
+
+  ret = asn1::number_to_enum(sib1.ue_timers_and_consts.t319, du_cfg.ue_timers_and_constants.t319.count());
+  srsran_assert(ret, "Invalid value for T319: {}", du_cfg.ue_timers_and_constants.t319.count());
 
   return sib1;
+}
+
+asn1::rrc_nr::sib2_s make_asn1_rrc_cell_sib2(const sib2_info& sib2_params)
+{
+  using namespace asn1::rrc_nr;
+  sib2_s sib2;
+
+  if (sib2_params.q_hyst_db) {
+    sib2.cell_resel_info_common.q_hyst = sib2_s::cell_resel_info_common_s_::q_hyst_opts::db3;
+  }
+  sib2.cell_resel_serving_freq_info.thresh_serving_low_p = sib2_params.thresh_serving_low_p;
+  sib2.cell_resel_serving_freq_info.cell_resel_prio      = sib2_params.cell_reselection_priority;
+
+  sib2.intra_freq_cell_resel_info.q_rx_lev_min     = sib2_params.q_rx_lev_min;
+  sib2.intra_freq_cell_resel_info.s_intra_search_p = sib2_params.s_intra_search_p;
+  sib2.intra_freq_cell_resel_info.t_resel_nr       = sib2_params.t_reselection_nr;
+  return sib2;
+}
+
+asn1::rrc_nr::sib19_r17_s make_asn1_rrc_cell_sib19(const sib19_info& sib19_params)
+{
+  using namespace asn1::rrc_nr;
+  sib19_r17_s sib19;
+
+  if (sib19_params.distance_thres.has_value()) {
+    sib19.distance_thresh_r17_present = true;
+    sib19.distance_thresh_r17         = sib19_params.distance_thres.value();
+  }
+  if (sib19_params.ref_location.has_value()) {
+    sib19.ref_location_r17.from_string(sib19_params.ref_location.value());
+  }
+
+  sib19.t_service_r17_present = false;
+  sib19.ntn_cfg_r17_present   = true;
+
+  if (sib19_params.cell_specific_koffset.has_value()) {
+    sib19.ntn_cfg_r17.cell_specific_koffset_r17_present = true;
+    sib19.ntn_cfg_r17.cell_specific_koffset_r17         = sib19_params.cell_specific_koffset.value();
+  }
+
+  if (sib19_params.ephemeris_info.has_value()) {
+    sib19.ntn_cfg_r17.ephemeris_info_r17_present = true;
+    sib19.ntn_cfg_r17.ephemeris_info_r17.set_position_velocity_r17();
+    sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().position_x_r17 =
+        sib19_params.ephemeris_info.value().position_x;
+    sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().position_y_r17 =
+        sib19_params.ephemeris_info.value().position_y;
+    sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().position_z_r17 =
+        sib19_params.ephemeris_info.value().position_z;
+    sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().velocity_vx_r17 =
+        sib19_params.ephemeris_info.value().velocity_vx;
+    sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().velocity_vy_r17 =
+        sib19_params.ephemeris_info.value().velocity_vy;
+    sib19.ntn_cfg_r17.ephemeris_info_r17.position_velocity_r17().velocity_vz_r17 =
+        sib19_params.ephemeris_info.value().velocity_vz;
+  }
+  if (sib19_params.epoch_time.has_value()) {
+    sib19.ntn_cfg_r17.epoch_time_r17_present          = true;
+    sib19.ntn_cfg_r17.epoch_time_r17.sfn_r17          = sib19_params.epoch_time.value().sfn;
+    sib19.ntn_cfg_r17.epoch_time_r17.sub_frame_nr_r17 = sib19_params.epoch_time.value().subframe_number;
+  }
+  if (sib19_params.k_mac.has_value()) {
+    sib19.ntn_cfg_r17.kmac_r17_present = true;
+    sib19.ntn_cfg_r17.kmac_r17         = sib19_params.k_mac.value();
+  }
+
+  sib19.ntn_cfg_r17.ntn_polarization_dl_r17_present      = false;
+  sib19.ntn_cfg_r17.ntn_polarization_ul_r17_present      = false;
+  sib19.ntn_cfg_r17.ntn_ul_sync_validity_dur_r17_present = false;
+  if (sib19_params.ta_info.has_value()) {
+    sib19.ntn_cfg_r17.ta_info_r17_present                             = true;
+    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_r17_present         = false;
+    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_variant_r17_present = false;
+    sib19.ntn_cfg_r17.ta_info_r17.ta_common_r17                       = sib19_params.ta_info.value().ta_common;
+    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_r17                 = sib19_params.ta_info.value().ta_common_drift;
+    sib19.ntn_cfg_r17.ta_info_r17.ta_common_drift_variant_r17 = sib19_params.ta_info.value().ta_common_drift_variant;
+  }
+  sib19.ntn_cfg_r17.ta_report_r17_present = false;
+
+  return sib19;
 }
 
 byte_buffer srsran::srs_du::make_asn1_rrc_cell_sib1_buffer(const du_cell_config& du_cfg, std::string* js_str)
@@ -522,83 +484,177 @@ byte_buffer srsran::srs_du::make_asn1_rrc_cell_sib1_buffer(const du_cell_config&
   return buf;
 }
 
-byte_buffer srsran::srs_du::make_asn1_rrc_cell_bcch_dl_sch_msg(const du_cell_config& du_cfg)
+static asn1::rrc_nr::sys_info_ies_s::sib_type_and_info_item_c_ make_asn1_rrc_sib_item(const sib_info& sib)
+{
+  using namespace asn1::rrc_nr;
+
+  sys_info_ies_s::sib_type_and_info_item_c_ ret;
+
+  switch (get_sib_info_type(sib)) {
+    case sib_type::sib2: {
+      const sib2_info& cfg     = variant_get<sib2_info>(sib);
+      sib2_s&          out_sib = ret.set_sib2();
+      out_sib                  = make_asn1_rrc_cell_sib2(cfg);
+      if (cfg.nof_ssbs_to_average.has_value()) {
+        out_sib.cell_resel_info_common.nrof_ss_blocks_to_average_present = true;
+        out_sib.cell_resel_info_common.nrof_ss_blocks_to_average         = cfg.nof_ssbs_to_average.value();
+      }
+      // TODO
+    } break;
+    case sib_type::sib19: {
+      const sib19_info& cfg     = variant_get<sib19_info>(sib);
+      sib19_r17_s&      out_sib = ret.set_sib19_v1700();
+      out_sib                   = make_asn1_rrc_cell_sib19(cfg);
+    } break;
+    default:
+      srsran_assertion_failure("Invalid SIB type");
+  }
+
+  return ret;
+}
+
+std::vector<byte_buffer> srsran::srs_du::make_asn1_rrc_cell_bcch_dl_sch_msgs(const du_cell_config& du_cfg)
+{
+  std::vector<byte_buffer> msgs;
+
+  // Pack SIB1.
+  {
+    byte_buffer                     buf;
+    asn1::bit_ref                   bref{buf};
+    asn1::rrc_nr::bcch_dl_sch_msg_s msg;
+    msg.msg.set_c1().set_sib_type1() = make_asn1_rrc_cell_sib1(du_cfg);
+    asn1::SRSASN_CODE ret            = msg.pack(bref);
+    srsran_assert(ret == asn1::SRSASN_SUCCESS, "Failed to pack SIB1");
+    msgs.push_back(std::move(buf));
+  }
+
+  // Pack SI messages.
+  if (du_cfg.si_config.has_value()) {
+    const auto& sibs = du_cfg.si_config.value().sibs;
+
+    for (const auto& si_sched : du_cfg.si_config.value().si_sched_info) {
+      byte_buffer                     buf;
+      asn1::bit_ref                   bref{buf};
+      asn1::rrc_nr::bcch_dl_sch_msg_s msg;
+      asn1::rrc_nr::sys_info_ies_s&   si_ies = msg.msg.set_c1().set_sys_info().crit_exts.set_sys_info();
+
+      // Search for SIB contained in this SI message.
+      for (sib_type sib_id : si_sched.sib_mapping_info) {
+        auto it = std::find_if(
+            sibs.begin(), sibs.end(), [sib_id](const sib_info& sib) { return get_sib_info_type(sib) == sib_id; });
+        srsran_assert(it != sibs.end(), "SIB{} in SIB mapping info has no defined config", (unsigned)sib_id);
+
+        si_ies.sib_type_and_info.push_back(make_asn1_rrc_sib_item(*it));
+      }
+
+      asn1::SRSASN_CODE ret = msg.pack(bref);
+      srsran_assert(ret == asn1::SRSASN_SUCCESS, "Failed to pack other SIBs");
+      msgs.push_back(std::move(buf));
+    }
+  }
+
+  return msgs;
+}
+
+byte_buffer srsran::srs_du::make_asn1_meas_time_cfg_buffer(const du_cell_config& du_cfg)
 {
   byte_buffer                     buf;
   asn1::bit_ref                   bref{buf};
-  asn1::rrc_nr::bcch_dl_sch_msg_s msg;
-  msg.msg.set_c1().set_sib_type1() = make_asn1_rrc_cell_sib1(du_cfg);
-  asn1::SRSASN_CODE ret            = msg.pack(bref);
-  srsran_assert(ret == asn1::SRSASN_SUCCESS, "Failed to pack SIB1");
+  asn1::rrc_nr::meas_timing_cfg_s cfg;
+  auto&                           meas_timing = cfg.crit_exts.set_c1().set_meas_timing_conf();
+  meas_timing.meas_timing.resize(1);
+  auto& meas_item = meas_timing.meas_timing[0];
+
+  // MeasTiming
+  meas_item.freq_and_timing_present = true;
+  auto& freq_time                   = meas_item.freq_and_timing;
+  freq_time.ssb_subcarrier_spacing  = get_asn1_scs(du_cfg.ssb_cfg.scs);
+  freq_time.carrier_freq            = du_cfg.dl_cfg_common.freq_info_dl.absolute_frequency_ssb;
+
+  // > Derive SSB periodicity, duration and offset.
+  // TODO: Derive the correct duration.
+  freq_time.ssb_meas_timing_cfg.dur.value = asn1::rrc_nr::ssb_mtc_s::dur_opts::sf5;
+  // TODO: Derive the correct offset.
+  switch (du_cfg.ssb_cfg.ssb_period) {
+    case ssb_periodicity::ms5:
+      freq_time.ssb_meas_timing_cfg.periodicity_and_offset.set_sf5() = 0;
+      break;
+    case ssb_periodicity::ms10:
+      freq_time.ssb_meas_timing_cfg.periodicity_and_offset.set_sf10() = 0;
+      break;
+    case ssb_periodicity::ms20:
+      freq_time.ssb_meas_timing_cfg.periodicity_and_offset.set_sf20() = 0;
+      break;
+    case ssb_periodicity::ms40:
+      freq_time.ssb_meas_timing_cfg.periodicity_and_offset.set_sf40() = 0;
+      break;
+    case ssb_periodicity::ms80:
+      freq_time.ssb_meas_timing_cfg.periodicity_and_offset.set_sf80() = 0;
+      break;
+    case ssb_periodicity::ms160:
+      freq_time.ssb_meas_timing_cfg.periodicity_and_offset.set_sf160() = 0;
+      break;
+    default:
+      report_fatal_error("Invalid SSB periodicity {}.", du_cfg.ssb_cfg.ssb_period);
+  }
+  meas_item.pci_present = true;
+  meas_item.pci         = du_cfg.pci;
+
+  asn1::SRSASN_CODE ret = cfg.pack(bref);
+  srsran_assert(ret == asn1::SRSASN_SUCCESS, "Failed to pack meas_time_cfg");
   return buf;
 }
 
-void srsran::srs_du::fill_asn1_f1_setup_request(asn1::f1ap::f1_setup_request_s& request,
-                                                const du_setup_params&          setup_params,
-                                                span<const du_cell_config*>     cells_to_add,
-                                                std::vector<std::string>*       cell_json_strs)
+void srsran::srs_du::fill_f1_setup_request(f1_setup_request_message&            req,
+                                           const du_manager_params::ran_params& ran_params,
+                                           std::vector<std::string>*            sib1_jsons)
 {
-  byte_buffer buf;
-  // TODO: Add other inputs and set values accordingly
+  req.gnb_du_id   = ran_params.gnb_du_id;
+  req.gnb_du_name = ran_params.gnb_du_name;
+  req.rrc_version = ran_params.rrc_version;
 
-  request->gnb_du_id.value = setup_params.gnb_du_id;
-  request->gnb_du_name.value.from_string(setup_params.gnb_du_name);
-  request->gnb_du_rrc_version.value.latest_rrc_version.from_number(setup_params.rrc_version);
+  req.served_cells.resize(ran_params.cells.size());
 
-  request->gnb_du_served_cells_list_present = true;
-  for (const du_cell_config* cell_cfg : cells_to_add) {
-    // Add Cell in list of served cells.
-    request->gnb_du_served_cells_list->push_back({});
-    request->gnb_du_served_cells_list->back().load_info_obj(ASN1_F1AP_ID_GNB_DU_SERVED_CELLS_LIST);
-    asn1::f1ap::gnb_du_served_cells_item_s& f1ap_cell =
-        request->gnb_du_served_cells_list->back()->gnb_du_served_cells_item();
+  for (unsigned i = 0; i != ran_params.cells.size(); ++i) {
+    const du_cell_config& cell_cfg  = ran_params.cells[i];
+    f1_cell_setup_params& serv_cell = req.served_cells[i];
 
-    // Fill Served Cell Information.
-    f1ap_cell.served_cell_info.nr_pci = cell_cfg->pci;
-    f1ap_cell.served_cell_info.nr_cgi.plmn_id.from_number(plmn_string_to_bcd(cell_cfg->plmn));
-    f1ap_cell.served_cell_info.nr_cgi.nr_cell_id.from_number(cell_cfg->cell_id); // TODO: add gnbID
-    f1ap_cell.served_cell_info.five_gs_tac_present = true;
-    f1ap_cell.served_cell_info.five_gs_tac.from_number(cell_cfg->tac);
-
-    // Add System Information related to the cell.
-    f1ap_cell.gnb_du_sys_info_present = true;
-    buf                               = make_asn1_rrc_cell_mib_buffer(*cell_cfg);
-    f1ap_cell.gnb_du_sys_info.mib_msg = std::move(buf);
-
-    // Enable json conversion if argument is present.
-    std::string* js_str = nullptr;
-    if (cell_json_strs != nullptr) {
-      cell_json_strs->emplace_back();
-      js_str = &cell_json_strs->back();
+    // Fill serving cell info.
+    serv_cell.nr_cgi     = cell_cfg.nr_cgi;
+    serv_cell.pci        = cell_cfg.pci;
+    serv_cell.tac        = cell_cfg.tac;
+    serv_cell.duplx_mode = cell_cfg.tdd_ul_dl_cfg_common.has_value() ? duplex_mode::TDD : duplex_mode::FDD;
+    serv_cell.scs_common = cell_cfg.scs_common;
+    serv_cell.dl_carrier = cell_cfg.dl_carrier;
+    if (serv_cell.duplx_mode == duplex_mode::FDD) {
+      serv_cell.ul_carrier = cell_cfg.ul_carrier;
     }
-    buf                                = make_asn1_rrc_cell_sib1_buffer(*cell_cfg, js_str);
-    f1ap_cell.gnb_du_sys_info.sib1_msg = std::move(buf);
+
+    serv_cell.packed_meas_time_cfg = make_asn1_meas_time_cfg_buffer(cell_cfg);
+
+    // Pack RRC ASN.1 Serving Cell system info.
+    serv_cell.packed_mib = make_asn1_rrc_cell_mib_buffer(cell_cfg);
+    std::string js_str;
+    serv_cell.packed_sib1 = make_asn1_rrc_cell_sib1_buffer(cell_cfg, sib1_jsons != nullptr ? &js_str : nullptr);
+
+    if (sib1_jsons != nullptr) {
+      sib1_jsons->push_back(js_str);
+    }
   }
 }
 
-asn1::rrc_nr::paging_s make_asn1_rrc_cell_cn_paging_msg(const uint64_t five_g_s_tmsi)
+byte_buffer srsran::srs_du::make_asn1_rrc_cell_sib19_buffer(const sib19_info& sib19_params, std::string* js_str)
 {
-  asn1::rrc_nr::paging_record_s pg_rec{};
-  auto&                         rrc_pg_id = pg_rec.ue_id.set_ng_5_g_s_tmsi();
-  rrc_pg_id                               = rrc_pg_id.from_number(five_g_s_tmsi);
+  byte_buffer               buf;
+  asn1::bit_ref             bref{buf};
+  asn1::rrc_nr::sib19_r17_s sib19 = make_asn1_rrc_cell_sib19(sib19_params);
+  asn1::SRSASN_CODE         ret   = sib19.pack(bref);
+  srsran_assert(ret == asn1::SRSASN_SUCCESS, "Failed to pack SIB19");
 
-  asn1::rrc_nr::paging_s rrc_pg{};
-  rrc_pg.paging_record_list.push_back(pg_rec);
-
-  return rrc_pg;
-}
-
-byte_buffer srsran::srs_du::make_asn1_rrc_cell_pcch_pch_msg(uint64_t five_g_s_tmsi)
-{
-  byte_buffer   buf;
-  asn1::bit_ref bref{buf};
-
-  asn1::rrc_nr::pcch_msg_s pcch_msg{};
-  auto&                    pcch_c1 = pcch_msg.msg.set_c1();
-  // TODO: Support RAN Paging.
-  pcch_c1.set_paging() = make_asn1_rrc_cell_cn_paging_msg(five_g_s_tmsi);
-
-  const asn1::SRSASN_CODE ret = pcch_msg.pack(bref);
-  srsran_assert(ret == asn1::SRSASN_SUCCESS, "Failed to pack PCCH-PCH Paging message");
+  if (js_str != nullptr) {
+    asn1::json_writer js;
+    sib19.to_json(js);
+    *js_str = js.to_string();
+  }
   return buf;
 }

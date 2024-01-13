@@ -22,6 +22,7 @@
 
 #include "ofdm_demodulator_impl.h"
 #include "srsran/phy/constants.h"
+#include "srsran/phy/support/resource_grid_writer.h"
 #include "srsran/ran/subcarrier_spacing.h"
 #include "srsran/srsvec/copy.h"
 #include "srsran/srsvec/prod.h"
@@ -68,10 +69,10 @@ ofdm_symbol_demodulator_impl::ofdm_symbol_demodulator_impl(ofdm_demodulator_comm
     window_phase_compensation.resize(dft_size);
 
     // Discrete frequency of the complex exponential.
-    cf_t omega = COMPLEX_J * static_cast<float>(ofdm_config.nof_samples_window_offset) *
-                 static_cast<float>(2.0 * M_PI) / static_cast<float>(dft_size);
+    float omega = static_cast<float>(ofdm_config.nof_samples_window_offset) * static_cast<float>(2.0 * M_PI) /
+                  static_cast<float>(dft_size);
     for (unsigned i = 0; i != dft_size; ++i) {
-      window_phase_compensation[i] = std::exp(omega * static_cast<float>(i));
+      window_phase_compensation[i] = std::polar(1.0F, omega * static_cast<float>(i));
     }
   }
 }

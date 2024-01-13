@@ -26,6 +26,7 @@ add_subdirectory(ue_scheduling)
 
 set(SOURCES
         pdcch_scheduling/pdcch_resource_allocator_impl.cpp
+        pdcch_scheduling/pdcch_slot_resource_allocator.cpp
         policy/scheduler_policy_factory.cpp
         policy/scheduler_time_rr.cpp
         pucch_scheduling/pucch_allocator_impl.cpp
@@ -43,10 +44,18 @@ set(SOURCES
         support/tbs_calculator.cpp
         support/prbs_calculator.cpp
         support/mcs_calculator.cpp
+        support/pdcch_aggregation_level_calculator.cpp
+        support/rb_helper.cpp
+        support/sr_helper.cpp
+        support/dci_builder.cpp
+        support/sch_pdu_builder.cpp
+        support/csi_report_helpers.cpp
+        cell_scheduler.cpp
         scheduler_factory.cpp
         scheduler_impl.cpp)
 
 add_library(srsran_sched STATIC ${SOURCES}
+        $<TARGET_OBJECTS:sched_config_manager>
         $<TARGET_OBJECTS:sched_cell>
         $<TARGET_OBJECTS:common_sched>
         $<TARGET_OBJECTS:ue_sched>)

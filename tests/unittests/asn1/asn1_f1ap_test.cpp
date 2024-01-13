@@ -20,19 +20,21 @@
  *
  */
 
-#include "lib/pcap/f1ap_pcap.h"
 #include "srsran/asn1/f1ap/f1ap.h"
+#include "srsran/pcap/dlt_pcap.h"
+#include "srsran/support/executors/task_worker.h"
 #include "srsran/support/test_utils.h"
 #include <gtest/gtest.h>
 
 using namespace asn1;
+using namespace srsran;
 
-#define JSON_OUTPUT 1
+#define JSON_OUTPUT 0
 
 class asn1_f1ap_test : public ::testing::Test
 {
 protected:
-  void SetUp() override
+  asn1_f1ap_test()
   {
     srslog::fetch_basic_logger("ASN1").set_level(srslog::basic_levels::debug);
     srslog::fetch_basic_logger("ASN1").set_hex_dump_max_size(-1);
@@ -40,23 +42,23 @@ protected:
     test_logger.set_level(srslog::basic_levels::debug);
     test_logger.set_hex_dump_max_size(-1);
 
-    srslog::init();
-
-    pcap_writer.open("f1ap.pcap");
-
     // Start the log backend.
     srslog::init();
   }
 
-  void TearDown() override
+  ~asn1_f1ap_test()
   {
     // flush logger after each test
     srslog::flush();
-
-    pcap_writer.close();
   }
 
-  srsran::f1ap_pcap     pcap_writer;
+#if JSON_OUTPUT
+  task_worker                    worker{"pcap_worker", 128};
+  std::unique_ptr<task_executor> pcap_exec   = make_task_executor_ptr(worker);
+  std::unique_ptr<dlt_pcap>      pcap_writer = create_f1ap_pcap("/tmp/f1ap.pcap", *pcap_exec);
+#else
+  std::unique_ptr<dlt_pcap> pcap_writer = create_null_dlt_pcap();
+#endif
   srslog::basic_logger& test_logger = srslog::fetch_basic_logger("TEST");
 };
 
@@ -68,16 +70,14 @@ TEST_F(asn1_f1ap_test, when_setup_message_correct_then_packing_successful)
   pdu.set_init_msg();
   pdu.init_msg().load_info_obj(ASN1_F1AP_ID_F1_SETUP);
 
-  auto& setup_req                 = pdu.init_msg().value.f1_setup_request();
-  setup_req->transaction_id.value = 99;
-  setup_req->gnb_du_id.value      = 0x11;
-  setup_req->gnb_du_name_present  = true;
-  setup_req->gnb_du_name.value.from_string("srsDU");
-  setup_req->gnb_du_rrc_version.value.latest_rrc_version.from_number(1);
+  auto& setup_req                = pdu.init_msg().value.f1_setup_request();
+  setup_req->transaction_id      = 99;
+  setup_req->gnb_du_id           = 0x11;
+  setup_req->gnb_du_name_present = true;
+  setup_req->gnb_du_name.from_string("srsDU");
+  setup_req->gnb_du_rrc_version.latest_rrc_version.from_number(1);
 
   setup_req->gnb_du_served_cells_list_present = true;
-  setup_req->gnb_du_served_cells_list.id      = ASN1_F1AP_ID_GNB_DU_SERVED_CELLS_LIST;
-  setup_req->gnb_du_served_cells_list.crit    = crit_opts::reject;
 
   asn1::protocol_ie_single_container_s<asn1::f1ap::gnb_du_served_cells_item_ies_o> served_cells_item_container = {};
   served_cells_item_container.set_item(ASN1_F1AP_ID_GNB_DU_SERVED_CELLS_ITEM);
@@ -91,13 +91,10 @@ TEST_F(asn1_f1ap_test, when_setup_message_correct_then_packing_successful)
 
   asn1::f1ap::served_plmns_item_s served_plmn;
   served_plmn.plmn_id.from_string("208991");
-  asn1::protocol_ext_field_s<asn1::f1ap::served_plmns_item_ext_ies_o> plmn_ext_container = {};
-  plmn_ext_container.set_item(ASN1_F1AP_ID_TAI_SLICE_SUPPORT_LIST);
-  auto&                            tai_slice_support_list = plmn_ext_container.value().tai_slice_support_list();
   asn1::f1ap::slice_support_item_s slice_support_item;
   slice_support_item.snssai.sst.from_number(1);
-  tai_slice_support_list.push_back(slice_support_item);
-  served_plmn.ie_exts.push_back(plmn_ext_container);
+  served_plmn.ie_exts.tai_slice_support_list_present = true;
+  served_plmn.ie_exts.tai_slice_support_list.push_back(slice_support_item);
   served_cells_item.served_cell_info.served_plmns.push_back(served_plmn);
 
   served_cells_item.served_cell_info.nr_mode_info.set_tdd();
@@ -115,7 +112,7 @@ TEST_F(asn1_f1ap_test, when_setup_message_correct_then_packing_successful)
       "92002808241099000001000000000a4213407800008c98d6d8d7f616e0804000020107e28180008000088a0dc7008000088a0007141a22"
       "81c874cc00020000232d5c6b6c65462001ec4cc5fc9c0493946a98d4d1e99355c00a1aba010580ec024646f62180");
 
-  setup_req->gnb_du_served_cells_list.value.push_back(served_cells_item_container);
+  setup_req->gnb_du_served_cells_list.push_back(served_cells_item_container);
 
   srsran::byte_buffer tx_buffer;
   asn1::bit_ref       bref(tx_buffer);
@@ -129,8 +126,9 @@ TEST_F(asn1_f1ap_test, when_setup_message_correct_then_packing_successful)
   pdu.to_json(json_writer1);
   test_logger.info(
       bytes.data(), bytes.size(), "F1AP PDU unpacked ({} B): \n {}", bytes.size(), json_writer1.to_string().c_str());
+
+  pcap_writer->push_pdu(bytes);
 #endif
-  pcap_writer.write_pdu(bytes);
 }
 
 // successful outcome F1SetupResponse
@@ -141,11 +139,11 @@ TEST_F(asn1_f1ap_test, when_setup_response_correct_then_packing_successful)
   pdu.set_successful_outcome();
   pdu.successful_outcome().load_info_obj(ASN1_F1AP_ID_F1_SETUP);
 
-  auto& setup_res                 = pdu.successful_outcome().value.f1_setup_resp();
-  setup_res->transaction_id.value = 99;
-  setup_res->gnb_cu_name_present  = true;
-  setup_res->gnb_cu_name.value.from_string("srsCU");
-  setup_res->gnb_cu_rrc_version.value.latest_rrc_version.from_number(2);
+  auto& setup_res                = pdu.successful_outcome().value.f1_setup_resp();
+  setup_res->transaction_id      = 99;
+  setup_res->gnb_cu_name_present = true;
+  setup_res->gnb_cu_name.from_string("srsCU");
+  setup_res->gnb_cu_rrc_version.latest_rrc_version.from_number(2);
 
   srsran::byte_buffer tx_pdu;
   asn1::bit_ref       bref(tx_pdu);
@@ -162,8 +160,9 @@ TEST_F(asn1_f1ap_test, when_setup_response_correct_then_packing_successful)
                    "F1AP PDU unpacked ({} B): \n {}",
                    tx_buffer.size(),
                    json_writer1.to_string().c_str());
+
+  pcap_writer->push_pdu(srsran::span<uint8_t>(tx_buffer.data(), tx_buffer.size()));
 #endif
-  pcap_writer.write_pdu(srsran::span<uint8_t>(tx_buffer.data(), tx_buffer.size()));
 }
 
 // unsuccessful outcome F1SetupFailure
@@ -174,10 +173,10 @@ TEST_F(asn1_f1ap_test, when_setup_failure_correct_then_packing_successful)
   pdu.set_unsuccessful_outcome();
   pdu.unsuccessful_outcome().load_info_obj(ASN1_F1AP_ID_F1_SETUP);
 
-  auto& setup_fail                 = pdu.unsuccessful_outcome().value.f1_setup_fail();
-  setup_fail->transaction_id.value = 99;
-  setup_fail->cause.value.set_radio_network();
-  setup_fail->cause.value.radio_network() =
+  auto& setup_fail           = pdu.unsuccessful_outcome().value.f1_setup_fail();
+  setup_fail->transaction_id = 99;
+  setup_fail->cause.set_radio_network();
+  setup_fail->cause.radio_network() =
       asn1::f1ap::cause_radio_network_opts::options::unknown_or_already_allocated_gnb_cu_ue_f1ap_id;
   setup_fail->time_to_wait_present = true;
   setup_fail->time_to_wait.value   = asn1::f1ap::time_to_wait_opts::v10s;
@@ -198,8 +197,9 @@ TEST_F(asn1_f1ap_test, when_setup_failure_correct_then_packing_successful)
                    "F1AP PDU unpacked ({} B): \n {}",
                    tx_buffer.size(),
                    json_writer1.to_string().c_str());
+
+  pcap_writer->push_pdu(srsran::span<uint8_t>(tx_buffer.data(), tx_buffer.size()));
 #endif
-  pcap_writer.write_pdu(srsran::span<uint8_t>(tx_buffer.data(), tx_buffer.size()));
 }
 
 TEST_F(asn1_f1ap_test, when_ue_context_setup_request_correct_then_unpacking_successful)
@@ -241,7 +241,9 @@ TEST_F(asn1_f1ap_test, when_ue_context_setup_request_correct_then_unpacking_succ
       0x04, 0x20, 0x20, 0x3a, 0x00};
   srsran::byte_buffer rx_pdu{rx_msg};
 
-  pcap_writer.write_pdu(rx_msg);
+#ifdef JSON_OUTPUT
+  pcap_writer->push_pdu(rx_msg);
+#endif
 
   asn1::cbit_ref         bref{rx_pdu};
   asn1::f1ap::f1ap_pdu_c pdu;
@@ -278,7 +280,9 @@ TEST_F(asn1_f1ap_test, when_initial_ul_rrc_message_transfer_correct_then_unpacki
       0x00, 0x00, 0x00, 0x02, 0x82, 0x01, 0x95, 0x03, 0x00, 0xc4, 0x00, 0x00, 0x4e, 0x40, 0x02, 0x00, 0x00};
   srsran::byte_buffer rx_pdu{rx_msg};
 
-  pcap_writer.write_pdu(rx_msg);
+#ifdef JSON_OUTPUT
+  pcap_writer->push_pdu(rx_msg);
+#endif
 
   asn1::cbit_ref         bref{rx_pdu};
   asn1::f1ap::f1ap_pdu_c pdu;
@@ -321,16 +325,16 @@ TEST_F(asn1_f1ap_test, when_initial_ul_rrc_message_transfer_packing_correct_then
   tx_pdu.set_init_msg();
   tx_pdu.init_msg().load_info_obj(ASN1_F1AP_ID_INIT_UL_RRC_MSG_TRANSFER);
 
-  auto& init_ul_rrc                    = tx_pdu.init_msg().value.init_ul_rrc_msg_transfer();
-  init_ul_rrc->gnb_du_ue_f1ap_id.value = 41255; // same as C-RNTI
+  auto& init_ul_rrc              = tx_pdu.init_msg().value.init_ul_rrc_msg_transfer();
+  init_ul_rrc->gnb_du_ue_f1ap_id = 41255; // same as C-RNTI
 
-  init_ul_rrc->nr_cgi.value.nr_cell_id.from_string("000000000000101111000110000101001110");
-  init_ul_rrc->nr_cgi.value.plmn_id.from_string("02f899");
-  init_ul_rrc->c_rnti.value = 41255;
+  init_ul_rrc->nr_cgi.nr_cell_id.from_string("000000000000101111000110000101001110");
+  init_ul_rrc->nr_cgi.plmn_id.from_string("02f899");
+  init_ul_rrc->c_rnti = 41255;
 
-  init_ul_rrc->rrc_container.value.from_string("1dec89d05766");
+  init_ul_rrc->rrc_container.from_string("1dec89d05766");
   init_ul_rrc->du_to_cu_rrc_container_present = true;
-  init_ul_rrc->du_to_cu_rrc_container.value.from_string(
+  init_ul_rrc->du_to_cu_rrc_container.from_string(
       "5c00b001117aec701061e0007c20408d07810020a2090480ca8000f800000000008370842000088165000048200002069a06aa49880002"
       "00204000400d008013b64b1814400e468acf120000096070820f177e060870000000e25038000040bde802000400000000028201950300"
       "c400");

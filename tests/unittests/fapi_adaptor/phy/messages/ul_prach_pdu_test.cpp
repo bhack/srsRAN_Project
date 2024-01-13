@@ -24,6 +24,7 @@
 #include "srsran/fapi_adaptor/phy/messages/prach.h"
 #include "srsran/phy/support/prach_buffer_context.h"
 #include <gtest/gtest.h>
+#include <numeric>
 
 using namespace srsran;
 using namespace fapi_adaptor;
@@ -42,11 +43,11 @@ TEST(FapiPhyUlPrachPduAdaptorTest, valid_pdu_pass)
   fapi::prach_config prach;
   prach.prach_res_config_index = 0;
   prach.prach_sequence_length  = fapi::prach_sequence_length_type::long_sequence;
-  prach.prach_scs              = prach_subcarrier_spacing::values::kHz15;
+  prach.prach_scs              = prach_subcarrier_spacing::kHz15;
   prach.prach_ul_bwp_pusch_scs = subcarrier_spacing::kHz15;
   prach.restricted_set         = restricted_set_config::UNRESTRICTED;
   prach.prach_config_index     = 1;
-  prach.prach_format           = fapi::prach_format_type::zero;
+  prach.prach_format           = prach_format_type::zero;
   prach.num_prach_td_occasions = 1;
   prach.num_preambles          = 1;
   prach.ssb_per_rach           = 1;
@@ -66,13 +67,19 @@ TEST(FapiPhyUlPrachPduAdaptorTest, valid_pdu_pass)
   slot_point           slot(to_numerology_value(prach.prach_ul_bwp_pusch_scs), sfn, slot_id);
   fapi::carrier_config carrier_cfg;
   carrier_cfg.ul_grid_size = {25, 50, 100, 150, 170};
+  carrier_cfg.num_rx_ant   = 4;
+
+  std::vector<uint8_t> prach_rx_ports(carrier_cfg.num_rx_ant);
+  std::iota(prach_rx_ports.begin(), prach_rx_ports.end(), 0);
 
   prach_buffer_context context;
-  convert_prach_fapi_to_phy(context, fapi_pdu, prach, carrier_cfg, sfn, slot_id, sector);
+  convert_prach_fapi_to_phy(context, fapi_pdu, prach, carrier_cfg, prach_rx_ports, sfn, slot_id, sector);
 
   ASSERT_EQ(static_cast<unsigned>(fapi_pdu.prach_format), static_cast<unsigned>(context.format));
   ASSERT_EQ(fapi_pdu.prach_start_symbol, context.start_symbol);
+  ASSERT_EQ(fapi_pdu.num_prach_ocas, context.nof_td_occasions);
   const fapi::ul_prach_maintenance_v3& v3 = fapi_pdu.maintenance_v3;
+  ASSERT_EQ(v3.num_fd_ra, context.nof_fd_occasions);
   ASSERT_EQ(v3.start_preamble_index, context.start_preamble_index);
   ASSERT_EQ(v3.num_preamble_indices, context.nof_preamble_indices);
   ASSERT_EQ(static_cast<unsigned>(prach.restricted_set), static_cast<unsigned>(context.restricted_set));
@@ -82,5 +89,6 @@ TEST(FapiPhyUlPrachPduAdaptorTest, valid_pdu_pass)
   ASSERT_EQ(ocass.prach_zero_corr_conf, context.zero_correlation_zone);
   ASSERT_EQ(slot, context.slot);
   ASSERT_EQ(sector, context.sector);
+  ASSERT_EQ(span<const uint8_t>(prach_rx_ports), span<const uint8_t>(context.ports));
   ASSERT_EQ(carrier_cfg.ul_grid_size[to_numerology_value(prach.prach_ul_bwp_pusch_scs)], context.nof_prb_ul_grid);
 }

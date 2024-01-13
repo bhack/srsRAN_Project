@@ -20,21 +20,19 @@
 
 set_directory_properties(PROPERTIES LABELS "support")
 
-add_subdirectory(io_broker)
-
-add_executable(task_worker_test task_worker_test.cpp)
-target_link_libraries(task_worker_test srslog srsran_support gtest gtest_main)
-gtest_discover_tests(task_worker_test)
+add_subdirectory(network)
+add_subdirectory(executors)
 
 add_executable(timer_test timer_test.cpp)
-target_link_libraries(timer_test srslog srsran_support pthread)
+target_link_libraries(timer_test srslog srsran_support gtest gtest_main)
 add_test(timer_test timer_test)
+set_tests_properties(timer_test PROPERTIES LABELS "tsan")
 
 add_executable(function_signature_test function_signature_test.cpp)
 add_test(function_signature_test function_signature_test)
 
 add_executable(async_event_test async_event_test.cpp)
-target_link_libraries(async_event_test srslog)
+target_link_libraries(async_event_test srslog gtest gtest_main)
 add_test(async_event_test async_event_test)
 
 add_executable(async_task_test async_task_test.cpp)
@@ -49,9 +47,9 @@ add_executable(async_queue_test async_queue_test.cpp)
 target_link_libraries(async_queue_test srslog srsran_support gtest gtest_main)
 add_test(async_queue_test async_queue_test)
 
-add_executable(async_task_sequencer_test async_task_sequencer_test.cpp)
-target_link_libraries(async_task_sequencer_test srslog srsran_support)
-add_test(async_task_sequencer_test async_task_sequencer_test)
+add_executable(fifo_async_task_scheduler_test fifo_async_task_scheduler_test.cpp)
+target_link_libraries(fifo_async_task_scheduler_test srslog srsran_support)
+add_test(fifo_async_task_scheduler_test fifo_async_task_scheduler_test)
 
 add_executable(unique_thread_test unique_thread_test.cpp)
 target_link_libraries(unique_thread_test srslog srsran_support)
@@ -69,6 +67,10 @@ add_test(bit_encoding_test bit_encoding_test)
 add_executable(async_event_observer_test async_event_observer_test.cpp protocol_transaction_manager_test.cpp)
 target_link_libraries(async_event_observer_test srslog srsran_support gtest gtest_main)
 gtest_discover_tests(async_event_observer_test)
+
+add_executable(memory_block_list_test memory_block_list_test.cpp)
+target_link_libraries(memory_block_list_test srsran_support gtest gtest_main)
+add_test(memory_block_list_test memory_block_list_test)
 
 add_executable(ring_buffer_pool_test ring_buffer_pool_test.cpp)
 target_link_libraries(ring_buffer_pool_test srsran_support gtest gtest_main)
@@ -89,3 +91,11 @@ add_backward(backtrace_test)
 add_executable(validator_helpers_test config/validator_helpers_test.cpp)
 target_link_libraries(validator_helpers_test srsran_support gtest gtest_main)
 add_test(validator_helpers_test validator_helpers_test)
+
+add_executable(event_tracer_test event_tracer_test.cpp)
+target_link_libraries(event_tracer_test srsran_support gtest gtest_main)
+add_test(event_tracer_test event_tracer_test)
+
+add_executable(complex_normal_random_test complex_normal_random_test.cpp)
+target_link_libraries(complex_normal_random_test srslog gtest gtest_main)
+add_test(complex_normal_random_test complex_normal_random_test)

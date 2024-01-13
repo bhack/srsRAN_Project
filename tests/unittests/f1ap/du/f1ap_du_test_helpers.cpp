@@ -27,13 +27,23 @@
 using namespace srsran;
 using namespace srs_du;
 
+gnb_du_ue_f1ap_id_t srsran::srs_du::generate_random_gnb_du_ue_f1ap_id()
+{
+  return int_to_gnb_du_ue_f1ap_id(test_rgen::uniform_int<uint64_t>(
+      gnb_du_ue_f1ap_id_to_uint(gnb_du_ue_f1ap_id_t::min), gnb_du_ue_f1ap_id_to_uint(gnb_du_ue_f1ap_id_t::max) - 1));
+}
+
 f1_setup_request_message srsran::srs_du::generate_f1_setup_request_message()
 {
-  f1_setup_request_message           request_msg  = {};
-  du_setup_params                    setup_params = {};
-  du_cell_config                     cell         = config_helpers::make_default_du_cell_config();
-  std::vector<const du_cell_config*> cells        = {&cell};
-  fill_asn1_f1_setup_request(request_msg.msg, setup_params, cells);
+  f1_setup_request_message      request_msg = {};
+  du_manager_params::ran_params ran_params;
+  ran_params.gnb_du_name  = "srsgnb";
+  ran_params.gnb_du_id    = 1;
+  ran_params.rrc_version  = 1;
+  ran_params.du_bind_addr = {"127.0.0.1"};
+  du_cell_config cell     = config_helpers::make_default_du_cell_config();
+  ran_params.cells        = {cell};
+  fill_f1_setup_request(request_msg, ran_params);
 
   return request_msg;
 }
@@ -58,6 +68,11 @@ asn1::f1ap::drbs_to_be_setup_item_s srsran::srs_du::generate_drb_am_setup_item(d
   drb_info.snssai.sst.from_string("01");
   drb_info.snssai.sd.from_string("0027db");
   drb.rlc_mode.value = rlc_mode_opts::rlc_am;
+  drb.ul_up_tnl_info_to_be_setup_list.resize(1);
+  auto&                   gtp_tun = drb.ul_up_tnl_info_to_be_setup_list[0].ul_up_tnl_info.set_gtp_tunnel();
+  transport_layer_address addr{"127.0.0.1"};
+  gtp_tun.transport_layer_address.from_string(addr.to_bitstring());
+  gtp_tun.gtp_teid.from_number(1);
 
   return drb;
 }
@@ -69,25 +84,26 @@ f1ap_message srsran::srs_du::generate_ue_context_setup_request(const std::initia
 
   msg.pdu.set_init_msg().load_info_obj(ASN1_F1AP_ID_UE_CONTEXT_SETUP);
   ue_context_setup_request_s& dl_msg    = msg.pdu.init_msg().value.ue_context_setup_request();
-  dl_msg->gnb_cu_ue_f1ap_id->value      = 0;
-  dl_msg->gnb_du_ue_f1ap_id->value      = 0;
+  dl_msg->gnb_cu_ue_f1ap_id             = 0;
+  dl_msg->gnb_du_ue_f1ap_id_present     = true;
+  dl_msg->gnb_du_ue_f1ap_id             = 0;
   dl_msg->srbs_to_be_setup_list_present = true;
-  dl_msg->srbs_to_be_setup_list.value.resize(1);
-  dl_msg->srbs_to_be_setup_list.value[0].load_info_obj(ASN1_F1AP_ID_SRBS_SETUP_ITEM);
-  srbs_to_be_setup_item_s& srb2 = dl_msg->srbs_to_be_setup_list.value[0]->srbs_to_be_setup_item();
+  dl_msg->srbs_to_be_setup_list.resize(1);
+  dl_msg->srbs_to_be_setup_list[0].load_info_obj(ASN1_F1AP_ID_SRBS_SETUP_ITEM);
+  srbs_to_be_setup_item_s& srb2 = dl_msg->srbs_to_be_setup_list[0]->srbs_to_be_setup_item();
   srb2.srb_id                   = 2;
 
   dl_msg->drbs_to_be_setup_list_present = drbs_to_add.size() > 0;
-  dl_msg->drbs_to_be_setup_list.value.resize(drbs_to_add.size());
+  dl_msg->drbs_to_be_setup_list.resize(drbs_to_add.size());
   unsigned count = 0;
   for (drb_id_t drbid : drbs_to_add) {
-    dl_msg->drbs_to_be_setup_list.value[count].load_info_obj(ASN1_F1AP_ID_DRB_INFO);
-    dl_msg->drbs_to_be_setup_list.value[count]->drbs_to_be_setup_item() = generate_drb_am_setup_item(drbid);
+    dl_msg->drbs_to_be_setup_list[count].load_info_obj(ASN1_F1AP_ID_DRB_INFO);
+    dl_msg->drbs_to_be_setup_list[count]->drbs_to_be_setup_item() = generate_drb_am_setup_item(drbid);
     ++count;
   }
 
   dl_msg->rrc_container_present = true;
-  dl_msg->rrc_container.value.append(test_rgen::random_vector<uint8_t>(test_rgen::uniform_int<unsigned>(1, 100)));
+  dl_msg->rrc_container.append(test_rgen::random_vector<uint8_t>(test_rgen::uniform_int<unsigned>(3, 100)));
 
   return msg;
 }
@@ -127,21 +143,61 @@ srsran::srs_du::generate_ue_context_modification_request(const std::initializer_
 
   msg.pdu.set_init_msg().load_info_obj(ASN1_F1AP_ID_UE_CONTEXT_MOD);
   ue_context_mod_request_s& dl_msg = msg.pdu.init_msg().value.ue_context_mod_request();
-  dl_msg->gnb_cu_ue_f1ap_id->value = 0;
-  dl_msg->gnb_du_ue_f1ap_id->value = 0;
+  dl_msg->gnb_cu_ue_f1ap_id        = 0;
+  dl_msg->gnb_du_ue_f1ap_id        = 0;
 
   dl_msg->drbs_to_be_setup_mod_list_present = drbs_to_add.size() > 0;
-  dl_msg->drbs_to_be_setup_mod_list.value.resize(drbs_to_add.size());
+  dl_msg->drbs_to_be_setup_mod_list.resize(drbs_to_add.size());
   unsigned count = 0;
   for (drb_id_t drbid : drbs_to_add) {
-    dl_msg->drbs_to_be_setup_mod_list.value[count].load_info_obj(ASN1_F1AP_ID_DRBS_SETUP_MOD_ITEM);
-    dl_msg->drbs_to_be_setup_mod_list.value[count]->drbs_to_be_setup_mod_item() = generate_drb_am_mod_item(drbid);
+    dl_msg->drbs_to_be_setup_mod_list[count].load_info_obj(ASN1_F1AP_ID_DRBS_SETUP_MOD_ITEM);
+    dl_msg->drbs_to_be_setup_mod_list[count]->drbs_to_be_setup_mod_item() = generate_drb_am_mod_item(drbid);
     ++count;
   }
 
   dl_msg->rrc_container_present = true;
-  dl_msg->rrc_container.value.append(test_rgen::random_vector<uint8_t>(test_rgen::uniform_int<unsigned>(1, 100)));
+  dl_msg->rrc_container.append(test_rgen::random_vector<uint8_t>(test_rgen::uniform_int<unsigned>(1, 100)));
   return msg;
+}
+
+f1ap_message srsran::srs_du::generate_ue_context_release_command()
+{
+  using namespace asn1::f1ap;
+  f1ap_message msg;
+
+  msg.pdu.set_init_msg().load_info_obj(ASN1_F1AP_ID_UE_CONTEXT_RELEASE);
+  ue_context_release_cmd_s& dl_msg = msg.pdu.init_msg().value.ue_context_release_cmd();
+  dl_msg->gnb_cu_ue_f1ap_id        = 0;
+  dl_msg->gnb_du_ue_f1ap_id        = 0;
+  dl_msg->cause.set(cause_c::types_opts::misc);
+  dl_msg->cause.misc().value    = asn1::f1ap::cause_misc_opts::unspecified;
+  dl_msg->srb_id_present        = true;
+  dl_msg->srb_id                = 1;
+  dl_msg->rrc_container_present = true;
+  dl_msg->rrc_container         = byte_buffer{0x1, 0x2, 0x3, 0x4};
+
+  return msg;
+}
+
+namespace {
+
+class dummy_f1ap_tx_pdu_notifier : public f1ap_message_notifier
+{
+public:
+  dummy_f1ap_tx_pdu_notifier(f1ap_message& last_tx_pdu_) : last_tx_pdu(last_tx_pdu_) {}
+
+  void on_new_message(const f1ap_message& msg) override { last_tx_pdu = msg; }
+
+  f1ap_message& last_tx_pdu;
+};
+
+} // namespace
+
+std::unique_ptr<f1ap_message_notifier>
+dummy_f1c_connection_client::handle_du_connection_request(std::unique_ptr<f1ap_message_notifier> du_rx_pdu_notifier_)
+{
+  du_rx_pdu_notifier = std::move(du_rx_pdu_notifier_);
+  return std::make_unique<dummy_f1ap_tx_pdu_notifier>(last_tx_f1ap_pdu);
 }
 
 //////////////////////////////////
@@ -151,7 +207,7 @@ f1ap_du_test::f1ap_du_test()
   srslog::fetch_basic_logger("TEST").set_level(srslog::basic_levels::debug);
   srslog::init();
 
-  f1ap = create_f1ap(msg_notifier, f1ap_du_cfg_handler, ctrl_worker, ue_exec_mapper);
+  f1ap = create_f1ap(f1c_gw, f1ap_du_cfg_handler, ctrl_worker, ue_exec_mapper, paging_handler);
   f1ap_du_cfg_handler.connect(*f1ap);
 }
 
@@ -163,14 +219,18 @@ f1ap_du_test::~f1ap_du_test()
 
 void f1ap_du_test::run_f1_setup_procedure()
 {
-  // Action 1: Launch F1 setup procedure
+  // > Establish connection to CU-CP.
+  bool ret = f1ap->connect_to_cu_cp();
+  srsran_assert(ret, "Failed to connect to CU-CP");
+
+  // > Launch F1 setup procedure
   f1_setup_request_message request_msg = generate_f1_setup_request_message();
   test_logger.info("Launch f1 setup request procedure...");
   async_task<f1_setup_response_message>         t = f1ap->handle_f1_setup_request(request_msg);
   lazy_task_launcher<f1_setup_response_message> t_launcher(t);
 
-  // Action 2: F1 setup response received.
-  unsigned     transaction_id    = get_transaction_id(msg_notifier.last_f1ap_msg.pdu).value();
+  // > F1 setup response received.
+  unsigned     transaction_id    = get_transaction_id(f1c_gw.last_tx_f1ap_pdu.pdu).value();
   f1ap_message f1_setup_response = generate_f1_setup_response_message(transaction_id);
   test_logger.info("Injecting F1SetupResponse");
   f1ap->handle_message(f1_setup_response);
@@ -213,10 +273,18 @@ void f1ap_du_test::run_ue_context_setup_procedure(du_ue_index_t ue_index, const 
 {
   ue_test_context& ue = test_ues[ue_index];
 
+  // Update F1AP UE IDs if not set yet.
+  const auto& f1ap_req = msg.pdu.init_msg().value.ue_context_setup_request();
+  if (not ue.gnb_du_ue_f1ap_id.has_value()) {
+    ue.gnb_du_ue_f1ap_id = (gnb_du_ue_f1ap_id_t)f1ap_req->gnb_du_ue_f1ap_id;
+  }
+  if (not ue.gnb_cu_ue_f1ap_id.has_value()) {
+    ue.gnb_cu_ue_f1ap_id = (gnb_cu_ue_f1ap_id_t)f1ap_req->gnb_cu_ue_f1ap_id;
+  }
+
   // Generate dummy DU manager UE Config Update command to F1AP.
-  const auto& f1ap_req                         = msg.pdu.init_msg().value.ue_context_setup_request();
   f1ap_du_cfg_handler.next_ue_cfg_req.ue_index = ue_index;
-  for (const auto& srb : f1ap_req->srbs_to_be_setup_list.value) {
+  for (const auto& srb : f1ap_req->srbs_to_be_setup_list) {
     srb_id_t srb_id = (srb_id_t)srb.value().srbs_to_be_setup_item().srb_id;
 
     // Create F1-C bearer in test ue.
@@ -228,7 +296,7 @@ void f1ap_du_test::run_ue_context_setup_procedure(du_ue_index_t ue_index, const 
     bearer.rx_sdu_notifier = &ue.f1c_bearers[srb_id_to_uint(srb_id)].rx_sdu_notifier;
     f1ap_du_cfg_handler.next_ue_cfg_req.f1c_bearers_to_add.push_back(bearer);
   }
-  for (const auto& drb : f1ap_req->drbs_to_be_setup_list.value) {
+  for (const auto& drb : f1ap_req->drbs_to_be_setup_list) {
     drb_id_t drb_id = (drb_id_t)drb.value().drbs_to_be_setup_item().drb_id;
     ue.f1u_bearers.emplace(drb_id_to_uint(drb_id) - 1);
     auto& f1u_bearer  = ue.f1u_bearers[drb_id_to_uint(drb_id) - 1];
@@ -273,4 +341,10 @@ f1ap_ue_configuration_response f1ap_du_test::update_f1ap_ue_config(du_ue_index_t
 
   test_logger.info("Configuring ue={}", ue_index);
   return f1ap->handle_ue_configuration_request(req);
+}
+
+void f1ap_du_test::tick()
+{
+  timer_service.tick();
+  ctrl_worker.run_pending_tasks();
 }

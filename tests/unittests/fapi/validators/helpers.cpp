@@ -173,6 +173,7 @@ dl_ssb_pdu unittest::build_valid_dl_ssb_pdu()
   pdu.ssb_maintenance_v3.L_max                       = 4;
   pdu.ssb_maintenance_v3.beta_pss_profile_sss        = std::numeric_limits<int16_t>::min();
   pdu.ssb_maintenance_v3.ss_pbch_block_power_scaling = std::numeric_limits<int16_t>::min();
+  pdu.precoding_and_beamforming                      = build_valid_tx_precoding_and_beamforming_pdu();
 
   return pdu;
 }
@@ -207,6 +208,7 @@ dl_pdcch_pdu unittest::build_valid_dl_pdcch_pdu()
   dci.aggregation_level                  = 2;
   dci.power_control_offset_ss_profile_nr = 0;
   dci.payload                            = {1, 1, 0, 0, 0, 0, 0, 1, 1, 0, 1, 0};
+  dci.precoding_and_beamforming          = build_valid_tx_precoding_and_beamforming_pdu();
 
   pdu.maintenance_v3.info.emplace_back();
   dl_pdcch_pdu_maintenance_v3::maintenance_info& dci_v3 = pdu.maintenance_v3.info.back();
@@ -251,6 +253,8 @@ dl_pdsch_pdu unittest::build_valid_dl_pdsch_pdu()
   pdu.power_control_offset_profile_nr    = 6;
   pdu.power_control_offset_ss_profile_nr = fapi::nzp_csi_rs_epre_to_ssb::dB3;
   pdu.is_inline_tb_crc                   = fapi::inline_tb_crc_type::control_message;
+  pdu.dl_dmrs_symb_pos                   = 0;
+  pdu.precoding_and_beamforming          = build_valid_tx_precoding_and_beamforming_pdu();
 
   // Maintenance v3.
   pdu.pdsch_maintenance_v3.trans_type = srsran::fapi::pdsch_trans_type::interleaved_common_any_coreset0_not_present;
@@ -282,16 +286,18 @@ dl_csi_rs_pdu unittest::build_valid_dl_csi_pdu()
   pdu.start_rb                                              = 23;
   pdu.num_rbs                                               = 28;
   pdu.type                                                  = csi_rs_type::CSI_RS_NZP;
-  pdu.row                                                   = 4;
-  pdu.freq_domain                                           = {1, 0, 0};
+  pdu.row                                                   = 1;
+  pdu.freq_domain                                           = {1, 0, 0, 0, 0, 0};
   pdu.symb_L0                                               = 8;
   pdu.symb_L1                                               = 7;
   pdu.cdm_type                                              = csi_rs_cdm_type::no_CDM;
-  pdu.freq_density                                          = csi_rs_freq_density_type::one;
+  pdu.freq_density                                          = csi_rs_freq_density_type::three;
   pdu.scramb_id                                             = 123;
   pdu.power_control_offset_profile_nr                       = 0;
   pdu.power_control_offset_ss_profile_nr                    = nzp_csi_rs_epre_to_ssb::dB0;
   pdu.csi_rs_maintenance_v3.csi_rs_power_offset_profile_sss = -32768;
+  pdu.csi_rs_maintenance_v3.csi_rs_pdu_index                = 0;
+  pdu.precoding_and_beamforming                             = build_valid_tx_precoding_and_beamforming_pdu();
 
   return pdu;
 }
@@ -325,6 +331,8 @@ dl_tti_request_message unittest::build_valid_dl_tti_request()
   msg.pdus.back().pdu_type   = dl_pdu_type::CSI_RS;
   msg.pdus.back().csi_rs_pdu = build_valid_dl_csi_pdu();
 
+  msg.is_last_message_in_slot = false;
+
   return msg;
 }
 
@@ -342,6 +350,8 @@ ul_dci_request_message unittest::build_valid_ul_dci_request()
   msg.pdus.emplace_back();
   msg.pdus.back().pdu_type = ul_dci_pdu_type::PDCCH;
   msg.pdus.back().pdu      = build_valid_dl_pdcch_pdu();
+
+  msg.is_last_message_in_slot = true;
 
   return msg;
 }
@@ -385,6 +395,62 @@ error_indication_message unittest::build_valid_out_of_sync_error_indication()
   return msg;
 }
 
+error_indication_message unittest::build_valid_invalid_sfn_error_indication()
+{
+  error_indication_message msg;
+  msg.message_type  = message_type_id::error_indication;
+  msg.slot          = generate_slot();
+  msg.sfn           = generate_sfn();
+  msg.message_id    = message_type_id::ul_dci_request;
+  msg.error_code    = error_code_id::msg_invalid_sfn;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
+
+  return msg;
+}
+
+error_indication_message unittest::build_valid_msg_slot_error_indication()
+{
+  error_indication_message msg;
+  msg.message_type  = message_type_id::error_indication;
+  msg.slot          = generate_slot();
+  msg.sfn           = generate_sfn();
+  msg.message_id    = message_type_id::dl_tti_request;
+  msg.error_code    = error_code_id::msg_slot_err;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
+
+  return msg;
+}
+
+error_indication_message unittest::build_valid_tx_err_error_indication()
+{
+  error_indication_message msg;
+  msg.message_type  = message_type_id::error_indication;
+  msg.slot          = generate_slot();
+  msg.sfn           = generate_sfn();
+  msg.message_id    = message_type_id::tx_data_request;
+  msg.error_code    = error_code_id::msg_tx_err;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
+
+  return msg;
+}
+
+error_indication_message unittest::build_valid_ul_dci_err_error_indication()
+{
+  error_indication_message msg;
+  msg.message_type  = message_type_id::error_indication;
+  msg.slot          = generate_slot();
+  msg.sfn           = generate_sfn();
+  msg.message_id    = message_type_id::ul_dci_request;
+  msg.error_code    = error_code_id::msg_ul_dci_err;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
+
+  return msg;
+}
+
 rx_data_indication_message unittest::build_valid_rx_data_indication()
 {
   rx_data_indication_message msg;
@@ -395,13 +461,14 @@ rx_data_indication_message unittest::build_valid_rx_data_indication()
   msg.control_length = 0;
 
   msg.pdus.emplace_back();
-  auto& pdu   = msg.pdus.back();
-  pdu.handle  = generate_handle();
-  pdu.rnti    = generate_rnti();
-  pdu.rapid   = generate_rapid();
-  pdu.harq_id = generate_harq();
-  pdu.pdu_tag = rx_data_indication_pdu::pdu_tag_type::custom;
-  pdu.data    = reinterpret_cast<uint8_t*>(&pdu.data);
+  auto& pdu      = msg.pdus.back();
+  pdu.handle     = generate_handle();
+  pdu.rnti       = generate_rnti();
+  pdu.rapid      = generate_rapid();
+  pdu.harq_id    = generate_harq();
+  pdu.pdu_tag    = rx_data_indication_pdu::pdu_tag_type::custom;
+  pdu.pdu_length = 1;
+  pdu.data       = reinterpret_cast<uint8_t*>(&pdu.data);
 
   return msg;
 }
@@ -552,7 +619,7 @@ uci_pusch_pdu unittest::build_valid_uci_pusch_pdu()
   uci_pusch_pdu pdu;
 
   pdu.handle                   = generate_handle();
-  pdu.rnti                     = generate_rnti();
+  pdu.rnti                     = to_value(generate_rnti());
   pdu.ul_sinr_metric           = static_cast<int16_t>(generate_ul_sinr_metric());
   pdu.timing_advance_offset    = generate_timing_advance_offset();
   pdu.timing_advance_offset_ns = static_cast<int16_t>(generate_timing_advance_offset_in_ns());
@@ -602,7 +669,7 @@ uci_pucch_pdu_format_0_1 unittest::build_valid_uci_pucch_format01_pdu()
   uci_pucch_pdu_format_0_1 pdu;
 
   pdu.handle                   = generate_handle();
-  pdu.rnti                     = generate_rnti();
+  pdu.rnti                     = to_value(generate_rnti());
   pdu.ul_sinr_metric           = static_cast<int16_t>(generate_ul_sinr_metric());
   pdu.timing_advance_offset    = generate_timing_advance_offset();
   pdu.timing_advance_offset_ns = static_cast<int16_t>(generate_timing_advance_offset_in_ns());
@@ -636,7 +703,7 @@ uci_pucch_pdu_format_2_3_4 unittest::build_valid_uci_pucch_format234_pdu()
   uci_pucch_pdu_format_2_3_4 pdu;
 
   pdu.handle                   = generate_handle();
-  pdu.rnti                     = generate_rnti();
+  pdu.rnti                     = to_value(generate_rnti());
   pdu.ul_sinr_metric           = static_cast<int16_t>(generate_ul_sinr_metric());
   pdu.timing_advance_offset    = generate_timing_advance_offset();
   pdu.timing_advance_offset_ns = static_cast<int16_t>(generate_timing_advance_offset_in_ns());
@@ -943,6 +1010,7 @@ ul_pusch_pdu unittest::build_valid_ul_pusch_pdu()
 {
   ul_pusch_pdu pdu;
 
+  pdu.rb_bitmap                           = {};
   pdu.rnti                                = generate_rnti();
   pdu.handle                              = generate_handle();
   pdu.bwp_size                            = generate_bwp_size();
@@ -997,9 +1065,9 @@ ul_pusch_pdu unittest::build_valid_ul_pusch_pdu()
   pdu.uci_correspondence.part2.emplace_back();
   auto& corr                = pdu.uci_correspondence.part2.back();
   corr.priority             = 3;
-  corr.param_offsets        = {1, 2, 3};
-  corr.param_sizes          = {1, 2, 3};
-  corr.part2_size_map_index = 43;
+  corr.param_offsets        = {1, 2};
+  corr.param_sizes          = {1, 2};
+  corr.part2_size_map_index = 0;
   corr.part2_size_map_scope = uci_part1_to_part2_correspondence_v3::map_scope_type::common_context;
 
   auto& ptrs = pdu.pusch_ptrs;
@@ -1160,4 +1228,16 @@ srsran::fapi::crc_indication_message unittest::build_valid_crc_indication()
   pdu.rsrp                     = 10;
 
   return msg;
+}
+
+srsran::fapi::tx_precoding_and_beamforming_pdu unittest::build_valid_tx_precoding_and_beamforming_pdu()
+{
+  srsran::fapi::tx_precoding_and_beamforming_pdu pdu;
+
+  pdu.trp_scheme        = 0U;
+  pdu.prg_size          = 1U;
+  pdu.dig_bf_interfaces = 2U;
+  pdu.prgs              = {{3U, {5U, 6U}}};
+
+  return pdu;
 }

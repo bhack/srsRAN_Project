@@ -22,8 +22,9 @@
 
 #pragma once
 
-#include "../du_rnti_table.h"
+#include "srsran/du_high/rnti_value_table.h"
 #include "srsran/mac/mac.h"
+#include "srsran/mac/mac_config.h"
 #include "srsran/ran/du_types.h"
 #include "srsran/ran/du_ue_list.h"
 #include "srsran/scheduler/harq_id.h"
@@ -31,20 +32,56 @@
 
 namespace srsran {
 
+// Array of bytes used to store the UE Contention Resolution Id.
 constexpr static size_t UE_CON_RES_ID_LEN = 6;
 using ue_con_res_id_t                     = std::array<uint8_t, UE_CON_RES_ID_LEN>;
 
+// Table for conversion between RNTI and ue indexes.
+using du_rnti_table = rnti_value_table<du_ue_index_t, du_ue_index_t::INVALID_DU_UE_INDEX>;
+
+/// Context of a UE in the MAC DL.
+class mac_dl_ue_context
+{
+public:
+  explicit mac_dl_ue_context(const mac_ue_create_request& req);
+  // expensive copy due to HARQ buffers. Cheap move.
+  mac_dl_ue_context(const mac_dl_ue_context&)                = delete;
+  mac_dl_ue_context(mac_dl_ue_context&&) noexcept            = default;
+  mac_dl_ue_context& operator=(const mac_dl_ue_context&)     = delete;
+  mac_dl_ue_context& operator=(mac_dl_ue_context&&) noexcept = default;
+
+  du_ue_index_t get_ue_index() const { return ue_index; }
+
+  // HARQ buffer methods.
+  span<uint8_t>       dl_harq_buffer(harq_id_t h_id) { return harq_buffers[h_id]; }
+  span<const uint8_t> dl_harq_buffer(harq_id_t h_id) const { return harq_buffers[h_id]; }
+
+  // DL Logical Channel methods.
+  const slotted_id_vector<lcid_t, mac_sdu_tx_builder*>& logical_channels() const { return dl_bearers; }
+  void addmod_logical_channels(span<const mac_logical_channel_config> dl_logical_channels);
+  void remove_logical_channels(span<const lcid_t> lcids_to_remove);
+
+  const ue_con_res_id_t& get_con_res_id() const { return msg3_subpdu; }
+
+private:
+  du_ue_index_t                                  ue_index;
+  std::vector<std::vector<uint8_t>>              harq_buffers;
+  slotted_id_vector<lcid_t, mac_sdu_tx_builder*> dl_bearers;
+  ue_con_res_id_t                                msg3_subpdu = {};
+};
+
+/// Repository of UE MAC DL contexts.
 class mac_dl_ue_manager
 {
 public:
-  mac_dl_ue_manager(du_rnti_table& rnti_table_) : rnti_table(rnti_table_) {}
+  mac_dl_ue_manager(du_rnti_table& rnti_table_);
 
   /// Check if UE with provided C-RNTI exists.
   /// \param rnti C-RNTI of the UE.
   /// \return True if UE exists. False, otherwise.
   bool contains_rnti(rnti_t rnti) const
   {
-    du_ue_index_t ue_index = rnti_table[rnti];
+    const du_ue_index_t ue_index = rnti_table[rnti];
     if (is_du_ue_index_valid(ue_index)) {
       std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
       return ue_db.contains(ue_index);
@@ -52,13 +89,13 @@ public:
     return false;
   }
 
-  /// Checks if bearer with provided C-RNTI and LCID exists.
+  /// Checks if Logical Channel with provided C-RNTI and LCID exists.
   bool contains_lcid(rnti_t rnti, lcid_t lcid) const
   {
-    du_ue_index_t ue_index = rnti_table[rnti];
+    const du_ue_index_t ue_index = rnti_table[rnti];
     if (is_du_ue_index_valid(ue_index)) {
       std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
-      return ue_db.contains(ue_index) and ue_db[ue_index].dl_bearers.contains(lcid);
+      return ue_db.contains(ue_index) and ue_db[ue_index].logical_channels().contains(lcid);
     }
     return false;
   }
@@ -82,130 +119,40 @@ public:
     if (not ue_db.contains(ue_index)) {
       return nullptr;
     }
-    ue_item& u = ue_db[ue_index];
-    return u.dl_bearers.contains(lcid) ? u.dl_bearers[lcid] : nullptr;
-  }
-
-  bool add_ue(const mac_ue_create_request_message& request, std::vector<std::vector<uint8_t>> dl_harq_buffers)
-  {
-    std::lock_guard<std::mutex> lock(ue_mutex[request.ue_index]);
-    return add_ue_nolock(request.ue_index,
-                         request.crnti,
-                         request.ul_ccch_msg,
-                         *request.ue_activity_timer,
-                         std::move(dl_harq_buffers)) and
-           addmod_bearers_nolock(request.ue_index, request.bearers);
-  }
-
-  bool remove_ue(du_ue_index_t ue_index)
-  {
-    std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
-    if (not ue_db.contains(ue_index)) {
-      return false;
-    }
-    ue_db.erase(ue_index);
-    return true;
-  }
-
-  bool addmod_bearers(du_ue_index_t ue_index, span<const mac_logical_channel_to_setup> dl_logical_channels)
-  {
-    std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
-    return addmod_bearers_nolock(ue_index, dl_logical_channels);
-  }
-
-  bool remove_bearers(du_ue_index_t ue_index, span<const lcid_t> lcids)
-  {
-    std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
-    if (not ue_db.contains(ue_index)) {
-      return false;
-    }
     auto& u = ue_db[ue_index];
-    for (lcid_t lcid : lcids) {
-      u.dl_bearers.erase(lcid);
-    }
-    return true;
+    return u.logical_channels().contains(lcid) ? u.logical_channels()[lcid] : nullptr;
   }
+
+  bool add_ue(mac_dl_ue_context ue_to_add);
+
+  bool remove_ue(du_ue_index_t ue_index);
+
+  bool addmod_bearers(du_ue_index_t ue_index, span<const mac_logical_channel_config> dl_logical_channels);
+
+  bool remove_bearers(du_ue_index_t ue_index, span<const lcid_t> lcids);
 
   /// \brief Returns UE Contention Resolution Id, which is derived from Msg3 bytes.
-  ue_con_res_id_t get_con_res_id(rnti_t rnti)
-  {
-    du_ue_index_t               ue_index = rnti_table[rnti];
-    std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
-    if (not ue_db.contains(ue_index)) {
-      return {};
-    }
-    return ue_db[ue_index].msg3_subpdu;
-  }
-
-  void restart_activity_timer(du_ue_index_t ue_index)
-  {
-    std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
-    if (ue_db.contains(ue_index)) {
-      ue_db[ue_index].activity_timer->run();
-    }
-  }
+  ue_con_res_id_t get_con_res_id(rnti_t rnti);
 
   span<uint8_t> get_dl_harq_buffer(rnti_t rnti, harq_id_t h_id, unsigned tb_idx)
   {
-    du_ue_index_t               ue_index = rnti_table[rnti];
+    du_ue_index_t ue_index = rnti_table[rnti];
+    if (ue_index == INVALID_DU_UE_INDEX) {
+      return {};
+    }
     std::lock_guard<std::mutex> lock(ue_mutex[ue_index]);
     if (not ue_db.contains(ue_index)) {
       return {};
     }
-    return ue_db[ue_index].harq_buffers[h_id];
+    return ue_db[ue_index].dl_harq_buffer(h_id);
   }
 
 private:
-  struct ue_item {
-    rnti_t                              rnti     = INVALID_RNTI;
-    du_ue_index_t                       ue_index = MAX_NOF_DU_UES;
-    slotted_vector<mac_sdu_tx_builder*> dl_bearers;
-    ue_con_res_id_t                     msg3_subpdu;
-    unique_timer*                       activity_timer;
-    std::vector<std::vector<uint8_t>>   harq_buffers;
-  };
-
-  bool add_ue_nolock(du_ue_index_t                     ue_index,
-                     rnti_t                            crnti,
-                     const byte_buffer*                ul_ccch_msg,
-                     unique_timer&                     activity_timer,
-                     std::vector<std::vector<uint8_t>> dl_harq_buffers)
-  {
-    if (ue_db.contains(ue_index)) {
-      return false;
-    }
-    ue_db.emplace(ue_index);
-    auto& u        = ue_db[ue_index];
-    u.ue_index     = ue_index;
-    u.rnti         = crnti;
-    u.harq_buffers = std::move(dl_harq_buffers);
-    if (ul_ccch_msg != nullptr) {
-      // Store Msg3.
-      srsran_assert(
-          ul_ccch_msg->length() >= UE_CON_RES_ID_LEN, "Invalid UL-CCCH message length ({} < 6)", ul_ccch_msg->length());
-      std::copy(ul_ccch_msg->begin(), ul_ccch_msg->begin() + UE_CON_RES_ID_LEN, u.msg3_subpdu.begin());
-    }
-    u.activity_timer = &activity_timer;
-    return true;
-  }
-
-  bool addmod_bearers_nolock(du_ue_index_t ue_index, span<const mac_logical_channel_to_setup> dl_logical_channels)
-  {
-    if (not ue_db.contains(ue_index)) {
-      return false;
-    }
-    auto& u = ue_db[ue_index];
-    for (const mac_logical_channel_to_setup& lc : dl_logical_channels) {
-      u.dl_bearers.insert(lc.lcid, lc.dl_bearer);
-    }
-    return true;
-  }
-
   du_rnti_table& rnti_table;
 
   mutable std::array<std::mutex, MAX_NOF_DU_UES> ue_mutex;
 
-  du_ue_list<ue_item> ue_db;
+  du_ue_list<mac_dl_ue_context> ue_db;
 };
 
 } // namespace srsran

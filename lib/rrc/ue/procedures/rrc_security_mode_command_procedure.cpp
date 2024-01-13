@@ -29,11 +29,11 @@ using namespace asn1::rrc_nr;
 
 rrc_security_mode_command_procedure::rrc_security_mode_command_procedure(
     rrc_ue_context_t&                           context_,
-    rrc_init_security_context                   sec_ctx_,
+    security::security_context                  sec_ctx_,
     rrc_ue_security_mode_command_proc_notifier& rrc_ue_notifier_,
     rrc_ue_event_manager&                       event_mng_,
-    srslog::basic_logger&                       logger_) :
-  context(context_), sec_ctx(sec_ctx_), rrc_ue(rrc_ue_notifier_), event_mng(event_mng_), logger(logger_)
+    rrc_ue_logger&                              logger_) :
+  context(context_), rrc_ue(rrc_ue_notifier_), event_mng(event_mng_), logger(logger_)
 {
 }
 
@@ -41,89 +41,66 @@ void rrc_security_mode_command_procedure::operator()(coro_context<async_task<boo
 {
   CORO_BEGIN(ctx);
 
-  logger.debug("ue={} \"{}\" initialized", context.ue_index, name());
+  logger.log_debug("\"{}\" initialized", name());
   // create new transaction for RRCSecurityModeCommand
-  transaction = event_mng.transactions.create_transaction(rrc_smc_timeout_ms);
+  transaction =
+      event_mng.transactions.create_transaction(std::chrono::milliseconds(context.cfg.rrc_procedure_timeout_ms));
 
   // select security algorithms to be used
   if (not select_security_algo()) {
-    logger.debug("{}: \"{}\" could not select security algorithms", context.ue_index, name());
-    rrc_ue.on_ue_delete_request(); // delete UE context if SMC fails
+    logger.log_debug("\"{}\" could not select security algorithms", name());
   } else {
     // send RRC SMC to UE
-    logger.debug("ue={} \"{}\" selected security algorithms integrity=NIA{} ciphering=NEA{}",
-                 context.ue_index,
-                 name(),
-                 sec_cfg.integ_algo,
-                 sec_cfg.cipher_algo);
+    logger.log_debug("\"{}\" selected security algorithms integrity=NIA{} ciphering=NEA{}",
+                     name(),
+                     context.sec_context.sel_algos.integ_algo,
+                     context.sec_context.sel_algos.cipher_algo);
 
     generate_as_keys();
 
     // activate SRB1 PDCP security
-    rrc_ue.on_new_security_config(sec_cfg);
+    rrc_ue.on_new_as_security_context();
 
     send_rrc_security_mode_command();
     // Await UE response
     CORO_AWAIT(transaction);
 
-    auto coro_res = transaction.result();
-    if (coro_res.has_value()) {
-      logger.debug("ue={} \"{}\" finished successfully", context.ue_index, name());
+    if (transaction.has_response()) {
+      logger.log_debug("\"{}\" finished successfully", name());
+      rrc_ue.on_security_context_sucessful();
       procedure_result = true;
     } else {
-      logger.debug("ue={} \"{}\" timed out", context.ue_index, name());
-      rrc_ue.on_ue_delete_request(); // delete UE context if SMC fails
+      logger.log_warning("\"{}\" timed out after {}ms", name(), context.cfg.rrc_procedure_timeout_ms);
     }
   }
-  logger.debug("ue={} \"{}\" finalized.", context.ue_index, name());
+  logger.log_debug("\"{}\" finalized", name());
   CORO_RETURN(procedure_result);
 }
 
 bool rrc_security_mode_command_procedure::select_security_algo()
 {
   // Select preferred integrity algorithm.
-  security::preferred_integrity_algorithms inc_algo_pref_list  = {security::integrity_algorithm::nia2,
-                                                                  security::integrity_algorithm::nia1,
-                                                                  security::integrity_algorithm::nia3,
-                                                                  security::integrity_algorithm::nia0};
-  security::preferred_ciphering_algorithms ciph_algo_pref_list = {security::ciphering_algorithm::nea0,
-                                                                  security::ciphering_algorithm::nea2,
-                                                                  security::ciphering_algorithm::nea1,
-                                                                  security::ciphering_algorithm::nea3};
-  logger.debug("Integrity protection algorithms preference list: {}", inc_algo_pref_list);
-  logger.debug("Ciphering algorithms preference list: {}", ciph_algo_pref_list);
-  logger.debug("Integrity protection algorithms supported list: {}", sec_ctx.supported_int_algos);
-  logger.debug("Ciphering algorithms preference list: {}", sec_ctx.supported_enc_algos);
-  if (not security::select_algorithms(sec_cfg,
-                                      inc_algo_pref_list,
-                                      ciph_algo_pref_list,
-                                      sec_ctx.supported_int_algos,
-                                      sec_ctx.supported_enc_algos,
-                                      logger)) {
-    logger.error("ue={} \"{}\" could not select security algorithm", context.ue_index, name());
+  security::preferred_integrity_algorithms inc_algo_pref_list  = context.cfg.int_algo_pref_list;
+  security::preferred_ciphering_algorithms ciph_algo_pref_list = context.cfg.enc_algo_pref_list;
+  logger.log_debug("Integrity protection algorithms preference list: {}", inc_algo_pref_list);
+  logger.log_debug("Ciphering algorithms preference list: {}", ciph_algo_pref_list);
+  logger.log_debug("Integrity protection algorithms supported list: {}", context.sec_context.supported_int_algos);
+  logger.log_debug("Ciphering algorithms preference list: {}", context.sec_context.supported_enc_algos);
+  if (not context.sec_context.select_algorithms(inc_algo_pref_list, ciph_algo_pref_list)) {
+    logger.log_error("\"{}\" could not select security algorithm", name());
     return false;
   }
-  logger.debug("ue={} \"{}\" selected security algorithms NIA=NIA{} NEA=NEA{} ",
-               context.ue_index,
-               name(),
-               sec_cfg.integ_algo,
-               sec_cfg.cipher_algo);
+  logger.log_debug("\"{}\" selected security algorithms NIA=NIA{} NEA=NEA{} ",
+                   name(),
+                   context.sec_context.sel_algos.integ_algo,
+                   context.sec_context.sel_algos.cipher_algo);
   return true;
 }
 
 void rrc_security_mode_command_procedure::generate_as_keys()
 {
   // Generate K_rrc_enc and K_rrc_int
-  security::generate_k_rrc(sec_cfg.k_rrc_enc, sec_cfg.k_rrc_int, sec_ctx.k, sec_cfg.cipher_algo, sec_cfg.integ_algo);
-
-  // Generate K_up_enc and K_up_int
-  security::generate_k_up(sec_cfg.k_up_enc, sec_cfg.k_up_int, sec_ctx.k, sec_cfg.cipher_algo, sec_cfg.integ_algo);
-
-  logger.debug("K_gNB {}", security::sec_as_key_to_string(sec_ctx.k));
-  logger.debug("RRC Integrity Key {}", security::sec_as_key_to_string(sec_cfg.k_rrc_int));
-  logger.debug("RRC Encryption Key {}", security::sec_as_key_to_string(sec_cfg.k_rrc_enc));
-  logger.debug("UP Encryption Key {}", security::sec_as_key_to_string(sec_cfg.k_up_enc));
-  logger.debug("UP Integrity Key {}", security::sec_as_key_to_string(sec_cfg.k_up_int));
+  context.sec_context.generate_as_keys();
 }
 
 void rrc_security_mode_command_procedure::send_rrc_security_mode_command()
@@ -131,6 +108,7 @@ void rrc_security_mode_command_procedure::send_rrc_security_mode_command()
   dl_dcch_msg_s dl_dcch_msg;
   dl_dcch_msg.msg.set_c1().set_security_mode_cmd();
   security_mode_cmd_s& rrc_smc = dl_dcch_msg.msg.c1().security_mode_cmd();
-  fill_asn1_rrc_smc_msg(rrc_smc, sec_cfg.integ_algo, sec_cfg.cipher_algo, transaction.id());
-  rrc_ue.on_new_dl_dcch(dl_dcch_msg);
+  fill_asn1_rrc_smc_msg(
+      rrc_smc, context.sec_context.sel_algos.integ_algo, context.sec_context.sel_algos.cipher_algo, transaction.id());
+  rrc_ue.on_new_dl_dcch(srb_id_t::srb1, dl_dcch_msg);
 }

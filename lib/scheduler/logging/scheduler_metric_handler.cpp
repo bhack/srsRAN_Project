@@ -47,41 +47,56 @@ void scheduler_metrics_handler::handle_ue_deletion(du_ue_index_t ue_index)
   }
 }
 
-void scheduler_metrics_handler::handle_crc_indication(const ul_crc_pdu_indication& crc_pdu)
+void scheduler_metrics_handler::handle_crc_indication(const ul_crc_pdu_indication& crc_pdu, units::bytes tbs)
 {
   if (ues.contains(crc_pdu.ue_index)) {
-    ues[crc_pdu.ue_index].data.count_crc_acks += crc_pdu.tb_crc_success ? 1 : 0;
-    ues[crc_pdu.ue_index].data.count_crc_pdus++;
+    auto& u = ues[crc_pdu.ue_index];
+    u.data.count_crc_acks += crc_pdu.tb_crc_success ? 1 : 0;
+    u.data.count_crc_pdus++;
     if (crc_pdu.ul_sinr_metric.has_value()) {
-      ues[crc_pdu.ue_index].data.nof_pusch_snr_reports++;
-      ues[crc_pdu.ue_index].data.sum_pusch_snrs += crc_pdu.ul_sinr_metric.value();
+      u.data.nof_pusch_snr_reports++;
+      u.data.sum_pusch_snrs += crc_pdu.ul_sinr_metric.value();
+    }
+    if (crc_pdu.tb_crc_success) {
+      u.data.sum_ul_tb_bytes += tbs.value();
     }
   }
 }
 
-void scheduler_metrics_handler::handle_csi_report(
-    du_ue_index_t                                                         ue_index,
-    const bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>& csi)
+void scheduler_metrics_handler::handle_csi_report(du_ue_index_t ue_index, const csi_report_data& csi)
 {
   if (ues.contains(ue_index)) {
-    auto&               u                = ues[ue_index];
-    static const size_t cqi_payload_size = 4;
-    if (csi.size() != cqi_payload_size) {
-      return;
+    auto& u = ues[ue_index];
+    if (csi.first_tb_wideband_cqi.has_value()) {
+      u.last_cqi = csi.first_tb_wideband_cqi->to_uint();
     }
-    // Refer to \ref mac_uci_pdu::pucch_f2_or_f3_or_f4_type::uci_payload_or_csi_information for the CSI payload bit
-    // encoding.
-    u.last_cqi = (static_cast<unsigned>(csi.test(0)) << 3) + (static_cast<unsigned>(csi.test(1)) << 2) +
-                 (static_cast<unsigned>(csi.test(2)) << 1) + (static_cast<unsigned>(csi.test(3)));
+    if (csi.ri.has_value()) {
+      u.last_ri = csi.ri->to_uint();
+    }
   }
 }
 
-void scheduler_metrics_handler::handle_dl_harq_ack(du_ue_index_t ue_index, bool ack)
+void scheduler_metrics_handler::handle_dl_harq_ack(du_ue_index_t ue_index, bool ack, units::bytes tbs)
 {
   if (ues.contains(ue_index)) {
     auto& u = ues[ue_index];
     u.data.count_uci_harq_acks += ack ? 1 : 0;
     u.data.count_uci_harqs++;
+    if (ack) {
+      u.data.sum_dl_tb_bytes += tbs.value();
+    }
+  }
+}
+
+void scheduler_metrics_handler::handle_harq_timeout(du_ue_index_t ue_index, bool is_dl)
+{
+  if (ues.contains(ue_index)) {
+    auto& u = ues[ue_index];
+    if (is_dl) {
+      u.data.count_uci_harqs++;
+    } else {
+      u.data.count_crc_pdus++;
+    }
   }
 }
 
@@ -110,6 +125,26 @@ void scheduler_metrics_handler::handle_ul_bsr_indication(const ul_bsr_indication
   }
 }
 
+void scheduler_metrics_handler::handle_ul_phr_indication(const ul_phr_indication_message& phr_ind)
+{
+  if (ues.contains(phr_ind.ue_index)) {
+    auto& u = ues[phr_ind.ue_index];
+
+    // Store last PHR.
+    u.last_phr = phr_ind.phr;
+  }
+}
+
+void scheduler_metrics_handler::handle_dl_buffer_state_indication(const dl_buffer_state_indication_message& dl_bs)
+{
+  if (ues.contains(dl_bs.ue_index)) {
+    auto& u = ues[dl_bs.ue_index];
+
+    // Store last DL buffer state.
+    u.last_dl_bs[dl_bs.lcid] = dl_bs.bs;
+  }
+}
+
 void scheduler_metrics_handler::report_metrics()
 {
   static_vector<scheduler_ue_metrics, MAX_NOF_DU_UES> metrics_report;
@@ -134,7 +169,6 @@ void scheduler_metrics_handler::handle_slot_result(const sched_result& slot_resu
     ue_metric_context& u = ues[it->second];
     for (auto& cw : dl_grant.pdsch_cfg.codewords) {
       u.data.dl_mcs += cw.mcs_index.to_uint();
-      u.data.sum_dl_tb_bytes += cw.tb_size_bytes;
       u.data.nof_dl_cws++;
     }
   }
@@ -147,7 +181,6 @@ void scheduler_metrics_handler::handle_slot_result(const sched_result& slot_resu
     }
     ue_metric_context& u = ues[it->second];
     u.data.ul_mcs += ul_grant.pusch_cfg.mcs_index.to_uint();
-    u.data.sum_ul_tb_bytes += ul_grant.pusch_cfg.tb_size_bytes;
     u.data.nof_puschs++;
   }
 }
@@ -176,6 +209,7 @@ scheduler_metrics_handler::ue_metric_context::compute_report(std::chrono::millis
   ret.pci           = pci;
   ret.rnti          = rnti;
   ret.cqi           = last_cqi;
+  ret.ri            = last_ri;
   uint8_t mcs       = data.nof_dl_cws > 0 ? std::roundf(static_cast<float>(data.dl_mcs) / data.nof_dl_cws) : 0;
   ret.dl_mcs        = sch_mcs_index{mcs};
   mcs               = data.nof_puschs > 0 ? std::roundf(static_cast<float>(data.ul_mcs) / data.nof_puschs) : 0;
@@ -189,6 +223,10 @@ scheduler_metrics_handler::ue_metric_context::compute_report(std::chrono::millis
   ret.pusch_snr_db  = data.nof_pusch_snr_reports > 0 ? data.sum_pusch_snrs / data.nof_pusch_snr_reports : 0;
   ret.pucch_snr_db  = data.nof_pucch_snr_reports > 0 ? data.sum_pucch_snrs / data.nof_pucch_snr_reports : 0;
   ret.bsr           = last_bsr;
+  ret.dl_bs         = 0;
+  for (const unsigned value : last_dl_bs) {
+    ret.dl_bs += value;
+  }
   // TODO: update PUSCH and PUCCH SNR metrics based on indications.
 
   // Reset UE stats metrics on every report.

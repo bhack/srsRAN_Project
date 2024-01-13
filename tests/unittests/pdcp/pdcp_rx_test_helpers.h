@@ -26,6 +26,7 @@
 #include "lib/pdcp/pdcp_interconnect.h"
 #include "pdcp_test_vectors.h"
 #include "srsran/pdcp/pdcp_config.h"
+#include "srsran/support/executors/manual_task_worker.h"
 #include "srsran/support/timers.h"
 #include <gtest/gtest.h>
 #include <queue>
@@ -38,15 +39,15 @@ class pdcp_rx_test_frame : public pdcp_tx_status_handler,
                            public pdcp_rx_upper_control_notifier
 {
 public:
-  std::queue<byte_buffer>             sdu_queue              = {};
-  uint32_t                            sdu_counter            = 0;
-  uint32_t                            integrity_fail_counter = 0;
-  uint32_t                            nof_max_count_reached  = 0;
-  uint32_t                            nof_protocol_failure   = 0;
-  std::queue<byte_buffer_slice_chain> status_report_queue    = {};
+  std::queue<byte_buffer>       sdu_queue              = {};
+  uint32_t                      sdu_counter            = 0;
+  uint32_t                      integrity_fail_counter = 0;
+  uint32_t                      nof_max_count_reached  = 0;
+  uint32_t                      nof_protocol_failure   = 0;
+  std::queue<byte_buffer_chain> status_report_queue    = {};
 
   /// PDCP TX status handler
-  void on_status_report(byte_buffer_slice_chain status) override { status_report_queue.push(std::move(status)); }
+  void on_status_report(byte_buffer_chain status) override { status_report_queue.push(std::move(status)); }
 
   /// PDCP RX upper layer data notifier
   void on_new_sdu(byte_buffer sdu) override
@@ -67,36 +68,50 @@ class pdcp_rx_test_helper
 protected:
   /// \brief Initializes fixture according to size sequence number size
   /// \param sn_size_ size of the sequence number
-  void init(pdcp_sn_size      sn_size_,
-            pdcp_t_reordering t_reordering = pdcp_t_reordering::ms10,
-            pdcp_max_count    max_count    = {pdcp_rx_default_max_count_notify, pdcp_rx_default_max_count_hard})
+  void init(std::tuple<pdcp_sn_size, unsigned> cfg_param,
+            pdcp_rb_type                       rb_type_     = pdcp_rb_type::drb,
+            pdcp_rlc_mode                      rlc_mode_    = pdcp_rlc_mode::am,
+            pdcp_t_reordering                  t_reordering = pdcp_t_reordering::ms10,
+            pdcp_max_count max_count = {pdcp_rx_default_max_count_notify, pdcp_rx_default_max_count_hard})
   {
-    logger.info("Creating PDCP RX ({} bit)", pdcp_sn_size_to_uint(sn_size_));
-
-    sn_size = sn_size_;
+    sn_size = std::get<pdcp_sn_size>(cfg_param);
+    algo    = std::get<unsigned>(cfg_param);
+    logger.info("Creating PDCP RX ({} bit nia={} nea={})", pdcp_sn_size_to_uint(sn_size), algo, algo);
 
     // Set Rx config
-    config.rb_type               = pdcp_rb_type::drb;
-    config.rlc_mode              = pdcp_rlc_mode::am;
+    config.rb_type               = rb_type_;
+    config.rlc_mode              = rlc_mode_;
     config.sn_size               = sn_size;
     config.direction             = pdcp_security_direction::downlink;
     config.out_of_order_delivery = false;
     config.t_reordering          = t_reordering;
-    config.max_count             = max_count;
+    config.custom.max_count      = max_count;
+
+    // RB_id and security domain
+    rb_id_t rb_id;
+    switch (rb_type_) {
+      case pdcp_rb_type::srb:
+        sec_cfg.domain = security::sec_domain::rrc;
+        rb_id          = srb_id_t::srb1;
+        break;
+      case pdcp_rb_type::drb:
+        sec_cfg.domain = security::sec_domain::up;
+        rb_id          = drb_id_t::drb1;
+        break;
+    }
 
     // Set security keys
-    sec_cfg.k_128_rrc_int = k_128_int;
-    sec_cfg.k_128_up_int  = k_128_int;
-    sec_cfg.k_128_rrc_enc = k_128_enc;
-    sec_cfg.k_128_up_enc  = k_128_enc;
+    sec_cfg.k_128_int = k_128_int;
+    sec_cfg.k_128_enc = k_128_enc;
 
     // Set encription/integrity algorithms
-    sec_cfg.integ_algo  = security::integrity_algorithm::nia1;
-    sec_cfg.cipher_algo = security::ciphering_algorithm::nea1;
+    sec_cfg.integ_algo  = static_cast<security::integrity_algorithm>(algo);
+    sec_cfg.cipher_algo = static_cast<security::ciphering_algorithm>(algo);
 
     // Create PDCP RX entity
     test_frame = std::make_unique<pdcp_rx_test_frame>();
-    pdcp_rx    = std::make_unique<pdcp_entity_rx>(0, srb_id_t::srb1, config, *test_frame, *test_frame, timers);
+    pdcp_rx =
+        std::make_unique<pdcp_entity_rx>(0, rb_id, config, *test_frame, *test_frame, timer_factory{timers, worker});
     pdcp_rx->set_status_handler(test_frame.get());
 
     srslog::flush();
@@ -107,7 +122,7 @@ protected:
   /// \param exp_pdu Expected PDU that is set to the correct test vector
   void get_test_pdu(uint32_t count, byte_buffer& exp_pdu)
   {
-    ASSERT_EQ(true, get_pdu_test_vector(sn_size, count, exp_pdu));
+    ASSERT_EQ(true, get_pdu_test_vector(sn_size, count, exp_pdu, algo));
   }
 
   /// \brief Helper to advance the timers
@@ -115,7 +130,8 @@ protected:
   void tick_all(uint32_t nof_ticks)
   {
     for (uint32_t i = 0; i < nof_ticks; i++) {
-      timers.tick_all();
+      timers.tick();
+      worker.run_pending_tasks();
     }
   }
 
@@ -126,8 +142,10 @@ protected:
   srslog::basic_logger& logger = srslog::fetch_basic_logger("TEST", false);
 
   pdcp_sn_size                        sn_size = {};
-  pdcp_config::pdcp_rx_config         config  = {};
+  unsigned                            algo    = {};
+  pdcp_rx_config                      config  = {};
   timer_manager                       timers;
+  manual_task_worker                  worker{64};
   std::unique_ptr<pdcp_rx_test_frame> test_frame = {};
 
   security::sec_128_as_config sec_cfg;

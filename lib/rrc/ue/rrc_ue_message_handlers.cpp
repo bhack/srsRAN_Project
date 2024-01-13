@@ -21,32 +21,36 @@
  */
 
 #include "../../ran/gnb_format.h"
+#include "procedures/rrc_reconfiguration_procedure.h"
+#include "procedures/rrc_reestablishment_procedure.h"
 #include "procedures/rrc_setup_procedure.h"
+#include "procedures/rrc_ue_capability_transfer_procedure.h"
 #include "rrc_asn1_helpers.h"
+#include "rrc_ue_helpers.h"
 #include "rrc_ue_impl.h"
+#include "ue/rrc_measurement_types_asn1_converters.h"
+#include "srsran/cu_cp/cell_meas_manager.h"
+#include "srsran/ran/lcid.h"
 
 using namespace srsran;
 using namespace srs_cu_cp;
 using namespace asn1::rrc_nr;
 
-void rrc_ue_impl::handle_ul_ccch_pdu(byte_buffer_slice pdu)
+void rrc_ue_impl::handle_ul_ccch_pdu(byte_buffer pdu)
 {
   // Parse UL-CCCH
   ul_ccch_msg_s ul_ccch_msg;
   {
-    asn1::cbit_ref bref({pdu.begin(), pdu.end()});
+    asn1::cbit_ref bref(pdu);
     if (ul_ccch_msg.unpack(bref) != asn1::SRSASN_SUCCESS or
         ul_ccch_msg.msg.type().value != ul_ccch_msg_type_c::types_opts::c1) {
-      log_rx_pdu_fail(context.ue_index, "CCCH UL", pdu.view(), "Failed to unpack message", true);
+      logger.log_error(pdu.begin(), pdu.end(), "Failed to unpack CCCH UL PDU");
       return;
     }
   }
 
   // Log Rx message
-  fmt::memory_buffer fmtbuf, fmtbuf2;
-  fmt::format_to(fmtbuf, "ue={}", context.ue_index);
-  fmt::format_to(fmtbuf2, "CCCH UL {}", ul_ccch_msg.msg.c1().type().to_string());
-  log_rrc_message(to_c_str(fmtbuf), Rx, pdu.view(), ul_ccch_msg, to_c_str(fmtbuf2));
+  log_rrc_message(logger, Rx, pdu, ul_ccch_msg, "CCCH UL");
 
   // Handle message
   switch (ul_ccch_msg.msg.c1().type().value) {
@@ -57,7 +61,7 @@ void rrc_ue_impl::handle_ul_ccch_pdu(byte_buffer_slice pdu)
       handle_rrc_reest_request(ul_ccch_msg.msg.c1().rrc_reest_request());
       break;
     default:
-      log_rx_pdu_fail(context.ue_index, "CCCH UL", pdu.view(), "Unsupported message type");
+      logger.log_error("Unsupported CCCH UL message type");
       // TODO Remove user
   }
 }
@@ -66,58 +70,82 @@ void rrc_ue_impl::handle_rrc_setup_request(const asn1::rrc_nr::rrc_setup_request
 {
   // Perform various checks to make sure we can serve the RRC Setup Request
   if (reject_users) {
-    logger.error("RRC connections not allowed. Sending Connection Reject");
+    logger.log_error("Sending Connection Reject. Cause: RRC connections not allowed");
     send_rrc_reject(rrc_reject_max_wait_time_s);
-    on_ue_delete_request();
+    on_ue_release_required(cause_radio_network_t::unspecified);
     return;
   }
 
   // Extract the setup ID and cause
   const rrc_setup_request_ies_s& request_ies = request_msg.rrc_setup_request;
   switch (request_ies.ue_id.type().value) {
-    case init_ue_id_c::types_opts::ng_5_g_s_tmsi_part1:
+    case init_ue_id_c::types_opts::ng_5_g_s_tmsi_part1: {
       context.setup_ue_id = request_ies.ue_id.ng_5_g_s_tmsi_part1().to_number();
+
+      // As per TS 23.003 section 2.10.1 the last 32Bits of the 5G-S-TMSI are the 5G-TMSI
+      unsigned shift_bits =
+          request_ies.ue_id.ng_5_g_s_tmsi_part1().length() - 32; // calculate the number of bits to shift
+      context.five_g_tmsi = ((request_ies.ue_id.ng_5_g_s_tmsi_part1().to_number() << shift_bits) >> shift_bits);
+
       break;
+    }
     case asn1::rrc_nr::init_ue_id_c::types_opts::random_value:
       context.setup_ue_id = request_ies.ue_id.random_value().to_number();
       // TODO: communicate with NGAP
       break;
     default:
-      logger.error("Unsupported RRCSetupRequest");
+      logger.log_error("Unsupported RRCSetupRequest");
       send_rrc_reject(rrc_reject_max_wait_time_s);
-      on_ue_delete_request();
+      on_ue_release_required(cause_protocol_t::unspecified);
       return;
   }
   context.connection_cause.value = request_ies.establishment_cause.value;
 
   // Launch RRC setup procedure
-  task_sched.schedule_async_task(launch_async<rrc_setup_procedure>(
-      context, request_msg, du_to_cu_container, *this, du_processor_notifier, nas_notifier, *event_mng, logger));
+  task_sched.schedule_async_task(launch_async<rrc_setup_procedure>(context,
+                                                                   request_ies.establishment_cause.value,
+                                                                   du_to_cu_container,
+                                                                   *this,
+                                                                   get_rrc_ue_srb_handler(),
+                                                                   nas_notifier,
+                                                                   *event_mng,
+                                                                   logger));
 }
 
 void rrc_ue_impl::handle_rrc_reest_request(const asn1::rrc_nr::rrc_reest_request_s& msg)
 {
-  // TODO: handle RRC reestablishment request
+  task_sched.schedule_async_task(launch_async<rrc_reestablishment_procedure>(msg,
+                                                                             context,
+                                                                             du_to_cu_container,
+                                                                             up_resource_mng,
+                                                                             *this,
+                                                                             *this,
+                                                                             get_rrc_ue_srb_handler(),
+                                                                             du_processor_notifier,
+                                                                             cu_cp_notifier,
+                                                                             ngap_ctrl_notifier,
+                                                                             nas_notifier,
+                                                                             *event_mng,
+                                                                             logger));
 }
 
-void rrc_ue_impl::handle_ul_dcch_pdu(byte_buffer_slice pdu)
+void rrc_ue_impl::handle_pdu(const srb_id_t srb_id, byte_buffer rrc_pdu)
 {
-  // Parse UL-CCCH
+  // Parse UL-DCCH
   ul_dcch_msg_s ul_dcch_msg;
   {
-    asn1::cbit_ref bref({pdu.begin(), pdu.end()});
+    asn1::cbit_ref bref(rrc_pdu);
     if (ul_dcch_msg.unpack(bref) != asn1::SRSASN_SUCCESS or
         ul_dcch_msg.msg.type().value != ul_dcch_msg_type_c::types_opts::c1) {
-      log_rx_pdu_fail(context.ue_index, "DCCH UL", pdu.view(), "Failed to unpack message", true);
+      logger.log_error(rrc_pdu.begin(), rrc_pdu.end(), "Failed to unpack DCCH UL PDU");
       return;
     }
   }
 
   // Log Rx message
-  fmt::memory_buffer fmtbuf, fmtbuf2;
-  fmt::format_to(fmtbuf, "ue={} SRB1", context.ue_index);
-  fmt::format_to(fmtbuf2, "DCCH UL {}", ul_dcch_msg.msg.c1().type().to_string());
-  log_rrc_message(to_c_str(fmtbuf), Rx, pdu.view(), ul_dcch_msg, to_c_str(fmtbuf2));
+  fmt::memory_buffer fmtbuf;
+  fmt::format_to(fmtbuf, "{} DCCH UL", srb_id);
+  log_rrc_message(logger, Rx, rrc_pdu, ul_dcch_msg, to_c_str(fmtbuf));
 
   switch (ul_dcch_msg.msg.c1().type().value) {
     case ul_dcch_msg_type_c::c1_c_::types_opts::options::ul_info_transfer:
@@ -129,39 +157,86 @@ void rrc_ue_impl::handle_ul_dcch_pdu(byte_buffer_slice pdu)
     case ul_dcch_msg_type_c::c1_c_::types_opts::security_mode_complete:
       handle_rrc_transaction_complete(ul_dcch_msg, ul_dcch_msg.msg.c1().security_mode_complete().rrc_transaction_id);
       break;
+    case ul_dcch_msg_type_c::c1_c_::types_opts::ue_cap_info:
+      handle_rrc_transaction_complete(ul_dcch_msg, ul_dcch_msg.msg.c1().ue_cap_info().rrc_transaction_id);
+      break;
     case ul_dcch_msg_type_c::c1_c_::types_opts::rrc_recfg_complete:
-      handle_rrc_transaction_complete(ul_dcch_msg, ul_dcch_msg.msg.c1().rrc_recfg_complete().rrc_transaction_id);
+      if (context.transfer_context.has_value() && context.transfer_context.value().is_inter_cu_handover) {
+        logger.log_debug("Received a RRC Reconfiguration Complete during inter CU handover. Notifying NGAP");
+        ngap_ctrl_notifier.on_inter_cu_ho_rrc_recfg_complete_received(
+            context.ue_index, context.cell.cgi, context.cell.tac);
+        context.transfer_context.value().is_inter_cu_handover = false;
+      } else {
+        handle_rrc_transaction_complete(ul_dcch_msg, ul_dcch_msg.msg.c1().rrc_recfg_complete().rrc_transaction_id);
+      }
+      break;
+    case ul_dcch_msg_type_c::c1_c_::types_opts::rrc_reest_complete:
+      handle_rrc_transaction_complete(ul_dcch_msg, ul_dcch_msg.msg.c1().rrc_reest_complete().rrc_transaction_id);
+      break;
+    case ul_dcch_msg_type_c::c1_c_::types_opts::meas_report:
+      handle_measurement_report(ul_dcch_msg.msg.c1().meas_report());
       break;
     default:
-      log_rx_pdu_fail(context.ue_index, "DCCH UL", pdu.view(), "Unsupported message type");
+      logger.log_error("Unsupported DCCH UL message type");
       break;
   }
   // TODO: Handle message
 }
 
+void rrc_ue_impl::handle_ul_dcch_pdu(const srb_id_t srb_id, byte_buffer pdcp_pdu)
+{
+  logger.log_debug(pdcp_pdu.begin(), pdcp_pdu.end(), "RX {} PDCP PDU", srb_id);
+
+  if (context.srbs.find(srb_id) == context.srbs.end()) {
+    logger.log_error(pdcp_pdu.begin(), pdcp_pdu.end(), "Dropping UlDcchPdu. Rx {} is not set up", srb_id);
+    return;
+  }
+
+  // Unpack PDCP PDU
+  byte_buffer rrc_pdu = context.srbs.at(srb_id).unpack_pdcp_pdu(std::move(pdcp_pdu));
+  if (rrc_pdu.empty()) {
+    logger.log_warning("Dropping empty PDU. RX {}", srb_id);
+    logger.log_debug("original len={}, new_len={}", pdcp_pdu.length(), rrc_pdu.length());
+    return;
+  }
+
+  handle_pdu(srb_id, std::move(rrc_pdu));
+}
+
 void rrc_ue_impl::handle_ul_info_transfer(const ul_info_transfer_ies_s& ul_info_transfer)
 {
-  ul_nas_transport_message ul_nas_msg = {};
-  ul_nas_msg.ue_index                 = context.ue_index;
-  ul_nas_msg.cell                     = context.cell;
-
-  ul_nas_msg.nas_pdu.resize(ul_info_transfer.ded_nas_msg.size());
-  std::copy(ul_info_transfer.ded_nas_msg.begin(), ul_info_transfer.ded_nas_msg.end(), ul_nas_msg.nas_pdu.begin());
+  cu_cp_ul_nas_transport ul_nas_msg         = {};
+  ul_nas_msg.ue_index                       = context.ue_index;
+  ul_nas_msg.nas_pdu                        = ul_info_transfer.ded_nas_msg.copy();
+  ul_nas_msg.user_location_info.nr_cgi      = context.cell.cgi;
+  ul_nas_msg.user_location_info.tai.plmn_id = context.cell.cgi.plmn_hex;
+  ul_nas_msg.user_location_info.tai.tac     = context.cell.tac;
 
   nas_notifier.on_ul_nas_transport_message(ul_nas_msg);
 }
 
-void rrc_ue_impl::handle_dl_nas_transport_message(const dl_nas_transport_message& msg)
+void rrc_ue_impl::handle_measurement_report(const asn1::rrc_nr::meas_report_s& msg)
 {
-  logger.debug("Received DlNasTransportMessage ({} B)", msg.nas_pdu.length());
+  // convert asn1 to common type
+  rrc_meas_results meas_results = asn1_to_measurement_results(msg.crit_exts.meas_report().meas_results);
+  // send measurement results to cell measurement manager
+  cell_meas_mng.report_measurement(context.ue_index, meas_results);
+}
+
+void rrc_ue_impl::handle_dl_nas_transport_message(byte_buffer nas_pdu)
+{
+  logger.log_debug("Received DlNasTransportMessage ({} B)", nas_pdu.length());
 
   dl_dcch_msg_s           dl_dcch_msg;
   dl_info_transfer_ies_s& dl_info_transfer =
       dl_dcch_msg.msg.set_c1().set_dl_info_transfer().crit_exts.set_dl_info_transfer();
-  dl_info_transfer.ded_nas_msg.resize(msg.nas_pdu.length());
-  std::copy(msg.nas_pdu.begin(), msg.nas_pdu.end(), dl_info_transfer.ded_nas_msg.begin());
+  dl_info_transfer.ded_nas_msg = nas_pdu.copy();
 
-  send_dl_dcch(dl_dcch_msg);
+  if (context.srbs.find(srb_id_t::srb2) != context.srbs.end()) {
+    send_dl_dcch(srb_id_t::srb2, dl_dcch_msg);
+  } else {
+    send_dl_dcch(srb_id_t::srb1, dl_dcch_msg);
+  }
 }
 
 void rrc_ue_impl::handle_rrc_transaction_complete(const ul_dcch_msg_s& msg, uint8_t transaction_id_)
@@ -169,25 +244,193 @@ void rrc_ue_impl::handle_rrc_transaction_complete(const ul_dcch_msg_s& msg, uint
   expected<uint8_t> transaction_id = transaction_id_;
 
   // Set transaction result and resume suspended procedure.
-  if (not event_mng->transactions.set(transaction_id.value(), msg)) {
-    logger.warning("Unexpected transaction id={}", transaction_id.value());
+  if (not event_mng->transactions.set_response(transaction_id.value(), msg)) {
+    logger.log_warning("Unexpected RRC transaction id={}", transaction_id.value());
   }
 }
 
-void rrc_ue_impl::handle_new_guami(const guami& msg)
+async_task<bool> rrc_ue_impl::handle_rrc_reconfiguration_request(const rrc_reconfiguration_procedure_request& msg)
 {
-  context.current_guami = msg;
+  return launch_async<rrc_reconfiguration_procedure>(
+      context, msg, *this, ngap_ctrl_notifier, *event_mng, get_rrc_ue_srb_handler(), logger);
 }
 
-async_task<bool> rrc_ue_impl::handle_rrc_reconfiguration_request(const cu_cp_rrc_reconfiguration_procedure_request& msg)
+uint8_t rrc_ue_impl::handle_handover_reconfiguration_request(const rrc_reconfiguration_procedure_request& msg)
 {
-  return launch_async<rrc_reconfiguration_procedure>(context, msg, *this, *event_mng, logger);
+  // Create transaction to get transaction ID
+  rrc_transaction transaction    = event_mng->transactions.create_transaction();
+  unsigned        transaction_id = transaction.id();
+
+  dl_dcch_msg_s dl_dcch_msg;
+  dl_dcch_msg.msg.set_c1().set_rrc_recfg();
+  rrc_recfg_s& rrc_reconfig = dl_dcch_msg.msg.c1().rrc_recfg();
+  fill_asn1_rrc_reconfiguration_msg(rrc_reconfig, transaction_id, msg);
+  on_new_dl_dcch(srb_id_t::srb1, dl_dcch_msg);
+
+  return transaction_id;
 }
 
-void rrc_ue_impl::handle_rrc_ue_release()
+async_task<bool> rrc_ue_impl::handle_handover_reconfiguration_complete_expected(uint8_t transaction_id)
 {
+  // arbitrary timeout for RRC Reconfig procedure, UE will be removed if timer fires
+  const std::chrono::milliseconds timeout_ms{1000};
+
+  return launch_async(
+      [this, timeout_ms, transaction_id, transaction = rrc_transaction{}](coro_context<async_task<bool>>& ctx) mutable {
+        CORO_BEGIN(ctx);
+
+        logger.log_debug("Awaiting RRC Reconfiguration Complete");
+        // create new transaction for RRC Reconfiguration procedure
+        transaction = event_mng->transactions.create_transaction(transaction_id, timeout_ms);
+
+        CORO_AWAIT(transaction);
+
+        bool procedure_result = false;
+        if (transaction.has_response()) {
+          logger.log_debug("Received RRC Reconfiguration Complete after HO");
+          procedure_result = true;
+        } else {
+          logger.log_debug("Did not receive RRC Reconfiguration Complete after HO (timeout)");
+        }
+
+        CORO_RETURN(procedure_result);
+      });
+}
+
+async_task<bool> rrc_ue_impl::handle_rrc_ue_capability_transfer_request(const rrc_ue_capability_transfer_request& msg)
+{
+  //  Launch RRC UE capability transfer procedure
+  return launch_async<rrc_ue_capability_transfer_procedure>(context, *this, *event_mng, logger);
+}
+
+rrc_ue_release_context rrc_ue_impl::get_rrc_ue_release_context()
+{
+  // prepare location info to return
+  rrc_ue_release_context release_context;
+  release_context.user_location_info.nr_cgi      = context.cell.cgi;
+  release_context.user_location_info.tai.plmn_id = context.cell.cgi.plmn_hex;
+  release_context.user_location_info.tai.tac     = context.cell.tac;
+
   dl_dcch_msg_s dl_dcch_msg;
   dl_dcch_msg.msg.set_c1().set_rrc_release().crit_exts.set_rrc_release();
 
-  send_dl_dcch(dl_dcch_msg);
+  // pack DL CCCH msg
+  if (context.srbs.find(srb_id_t::srb1) == context.srbs.end()) {
+    logger.log_error("Can't create RRC Release PDU. RX {} is not set up", srb_id_t::srb1);
+  } else {
+    release_context.rrc_release_pdu = context.srbs.at(srb_id_t::srb1).pack_rrc_pdu(pack_into_pdu(dl_dcch_msg));
+    release_context.srb_id          = srb_id_t::srb1;
+  }
+
+  return release_context;
+}
+
+optional<rrc_meas_cfg> rrc_ue_impl::generate_meas_config(optional<rrc_meas_cfg> current_meas_config)
+{
+  // (Re-)generate measurement config and return result.
+  context.meas_cfg = cell_meas_mng.get_measurement_config(context.cell.cgi.nci, current_meas_config);
+  return context.meas_cfg;
+}
+
+rrc_ue_transfer_context rrc_ue_impl::get_transfer_context()
+{
+  rrc_ue_transfer_context transfer_context;
+  transfer_context.sec_context               = context.sec_context;
+  transfer_context.meas_cfg                  = context.meas_cfg;
+  transfer_context.srbs                      = get_srbs();
+  transfer_context.up_ctx                    = up_resource_mng.get_up_context();
+  transfer_context.handover_preparation_info = get_packed_handover_preparation_message();
+  return transfer_context;
+}
+
+rrc_reestablishment_ue_context_t rrc_ue_impl::get_context()
+{
+  rrc_reestablishment_ue_context_t rrc_reest_context;
+  rrc_reest_context.sec_context = context.sec_context;
+
+  if (context.capabilities.has_value()) {
+    rrc_reest_context.capabilities = context.capabilities.value();
+  }
+  rrc_reest_context.up_ctx = up_resource_mng.get_up_context();
+
+  return rrc_reest_context;
+}
+
+bool rrc_ue_impl::handle_new_security_context(const security::security_context& sec_context)
+{
+  // Copy security context to RRC UE context
+  context.sec_context = sec_context;
+
+  // Select preferred integrity algorithm.
+  security::preferred_integrity_algorithms inc_algo_pref_list  = context.cfg.int_algo_pref_list;
+  security::preferred_ciphering_algorithms ciph_algo_pref_list = context.cfg.enc_algo_pref_list;
+  if (not context.sec_context.select_algorithms(inc_algo_pref_list, ciph_algo_pref_list)) {
+    logger.log_error("Could not select security algorithm");
+    return false;
+  }
+  logger.log_debug("Selected security algorithms NIA=NIA{} NEA=NEA{}",
+                   context.sec_context.sel_algos.integ_algo,
+                   context.sec_context.sel_algos.cipher_algo);
+
+  // Generate K_rrc_enc and K_rrc_int
+  context.sec_context.generate_as_keys();
+
+  // activate SRB1 PDCP security
+  on_new_as_security_context();
+
+  return true;
+}
+
+byte_buffer rrc_ue_impl::get_rrc_handover_command(const rrc_reconfiguration_procedure_request& request,
+                                                  unsigned                                     transaction_id)
+{
+  // pack RRC Reconfig
+  rrc_recfg_s rrc_reconfig;
+  fill_asn1_rrc_reconfiguration_msg(rrc_reconfig, transaction_id, request);
+  byte_buffer reconfig_pdu = pack_into_pdu(rrc_reconfig);
+
+  ho_cmd_s ho_cmd;
+  ho_cmd.crit_exts.set_c1().set_ho_cmd().ho_cmd_msg = reconfig_pdu.copy();
+
+  // pack Handover Command
+  byte_buffer ho_cmd_pdu = pack_into_pdu(ho_cmd);
+
+  // Log message
+  logger.log_debug(ho_cmd_pdu.begin(), ho_cmd_pdu.end(), "RrcHandoverCommand ({} B)", ho_cmd_pdu.length());
+  if (logger.get_basic_logger().debug.enabled()) {
+    asn1::json_writer js;
+    ho_cmd.to_json(js);
+    logger.log_debug("Containerized RrcHandoverCommand: {}", js.to_string());
+  }
+
+  return ho_cmd_pdu;
+}
+
+bool rrc_ue_impl::handle_rrc_handover_command(byte_buffer cmd)
+{
+  // Unpack HGandover Command
+  asn1::rrc_nr::ho_cmd_s handover_command;
+  asn1::cbit_ref         bref({cmd.begin(), cmd.end()});
+
+  if (handover_command.unpack(bref) != asn1::SRSASN_SUCCESS) {
+    logger.log_error("Couldn't unpack Handover Command RRC container");
+    return false;
+  }
+
+  // Unpack RRC Reconfiguration to new DL DCCH Message
+  asn1::cbit_ref bref2({handover_command.crit_exts.c1().ho_cmd().ho_cmd_msg.begin(),
+                        handover_command.crit_exts.c1().ho_cmd().ho_cmd_msg.end()});
+
+  dl_dcch_msg_s dl_dcch_msg;
+  auto&         rrc_recfg = dl_dcch_msg.msg.set_c1().set_rrc_recfg();
+
+  if (rrc_recfg.unpack(bref2) != asn1::SRSASN_SUCCESS) {
+    logger.log_error("Couldn't unpack RRC Reconfiguration container");
+    return false;
+  }
+
+  // Send to UE
+  on_new_dl_dcch(srb_id_t::srb1, dl_dcch_msg);
+
+  return true;
 }

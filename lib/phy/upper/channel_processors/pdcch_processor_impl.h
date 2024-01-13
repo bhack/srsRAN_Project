@@ -58,7 +58,7 @@ private:
   /// Provides the DMRS for PDCCH.
   std::unique_ptr<dmrs_pdcch_processor> dmrs;
   /// Temporary encoded bits.
-  std::array<uint8_t, pdcch_constants::MAX_NOF_BITS> temp_encoded = {};
+  std::array<uint8_t, pdcch_constants::MAX_NOF_BITS> temp_encoded;
 
   /// \brief Calculates the number of encoded bits for a PDCCH transmission.
   /// \param[in] aggregation_level Indicates the PDCCH transmission aggregation level.
@@ -87,7 +87,7 @@ public:
   }
 
   // See interface for documentation.
-  void process(resource_grid_writer& grid, const pdu_t& pdu) override;
+  void process(resource_grid_mapper& grid, const pdu_t& pdu) override;
 };
 
 } // namespace srsran

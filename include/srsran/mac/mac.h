@@ -26,6 +26,7 @@
 #include "srsran/mac/mac_cell_manager.h"
 #include "srsran/mac/mac_cell_rach_handler.h"
 #include "srsran/mac/mac_cell_slot_handler.h"
+#include "srsran/mac/mac_paging_information_handler.h"
 #include "srsran/mac/mac_pdu_handler.h"
 #include "srsran/mac/mac_ue_configurator.h"
 #include "srsran/mac/mac_ue_control_information_handler.h"
@@ -58,7 +59,10 @@ public:
   virtual mac_ue_configurator& get_ue_configurator() = 0;
 
   /// Returns PDU handler.
-  virtual mac_pdu_handler& get_pdu_handler(du_cell_index_t cell_index) = 0;
+  virtual mac_pdu_handler& get_pdu_handler() = 0;
+
+  /// Returns Paging handler.
+  virtual mac_paging_information_handler& get_cell_paging_info_handler() = 0;
 };
 
 } // namespace srsran

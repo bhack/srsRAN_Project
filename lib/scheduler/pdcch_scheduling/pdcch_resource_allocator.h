@@ -2,7 +2,7 @@
 #pragma once
 
 #include "../cell/resource_grid.h"
-#include "../ue_scheduling/ue_configuration.h"
+#include "../config/ue_configuration.h"
 #include "srsran/scheduler/scheduler_slot_handler.h"
 
 namespace srsran {
@@ -18,10 +18,10 @@ public:
   /// \param ss_id Search Space Id to use.
   /// \param aggr_lvl Aggregation Level of PDCCH allocation.
   /// \return Allocated PDCCH if successful.
-  virtual pdcch_dl_information* alloc_pdcch_common(cell_slot_resource_allocator& slot_alloc,
-                                                   rnti_t                        rnti,
-                                                   search_space_id               ss_id,
-                                                   aggregation_level             aggr_lvl) = 0;
+  virtual pdcch_dl_information* alloc_dl_pdcch_common(cell_slot_resource_allocator& slot_alloc,
+                                                      rnti_t                        rnti,
+                                                      search_space_id               ss_id,
+                                                      aggregation_level             aggr_lvl) = 0;
 
   /// Allocates RE space for common UL PDCCH, avoiding in the process collisions with other PDCCH allocations.
   /// \param slot_alloc Grid Resources for the slot where PDCCH is going to be allocated.
@@ -44,7 +44,6 @@ public:
   virtual pdcch_dl_information* alloc_dl_pdcch_ue(cell_slot_resource_allocator& slot_alloc,
                                                   rnti_t                        rnti,
                                                   const ue_cell_configuration&  user,
-                                                  bwp_id_t                      bwpid,
                                                   search_space_id               ss_id,
                                                   aggregation_level             aggr_lvl) = 0;
 
@@ -58,7 +57,6 @@ public:
   virtual pdcch_ul_information* alloc_ul_pdcch_ue(cell_slot_resource_allocator& slot_alloc,
                                                   rnti_t                        rnti,
                                                   const ue_cell_configuration&  user,
-                                                  bwp_id_t                      bwpid,
                                                   search_space_id               ss_id,
                                                   aggregation_level             aggr_lvl) = 0;
 

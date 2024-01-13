@@ -44,7 +44,7 @@ void dmrs_pucch_processor_format2_impl::generate_sequence(span<cf_t>            
                                                           unsigned                              starting_prb,
                                                           const dmrs_pucch_processor::config_t& config)
 {
-  // Initialise pseudo-random generator.
+  // Initialize pseudo-random generator.
   prg->init(c_init(symbol, config));
 
   // Discard unused pilots.
@@ -107,20 +107,20 @@ void dmrs_pucch_processor_format2_impl::estimate(channel_estimate&              
   // For each symbol carrying DM-RS (up to 2 symbols maximum).
   for (unsigned i_symb = i_symb_start, i_dmrs_symb = 0; i_symb != i_symb_end; ++i_symb, ++i_dmrs_symb) {
     // Generate sequence.
-    unsigned prb_start = ((i_symb != 0) && (config.intra_slot_hopping)) ? config.second_hop_prb : config.starting_prb;
+    unsigned prb_start =
+        ((i_symb != i_symb_start) && (config.intra_slot_hopping)) ? config.second_hop_prb : config.starting_prb;
     generate_sequence(temp_symbols.get_symbol(i_dmrs_symb, 0), i_symb, prb_start, config);
   }
 
   // Prepare channel estimator configuration.
-  port_channel_estimator::configuration est_cfg = {};
-
-  // Generate the DM-RS allocation pattern.
-  est_cfg.dmrs_pattern.emplace_back(generate_dmrs_pattern(config));
-
+  port_channel_estimator::configuration est_cfg;
   est_cfg.scs          = to_subcarrier_spacing(config.slot.numerology());
+  est_cfg.cp           = config.cp;
   est_cfg.first_symbol = config.start_symbol_index;
   est_cfg.nof_symbols  = config.nof_symbols;
+  est_cfg.dmrs_pattern = {generate_dmrs_pattern(config)};
   est_cfg.rx_ports     = config.ports;
+  est_cfg.scaling      = 1.0F;
 
   // Perform estimation for each receive port.
   for (unsigned i_port = 0; i_port != nof_rx_ports; ++i_port) {

@@ -33,9 +33,8 @@
 /// A frequency is considered valid within a range if the range clips the frequency value within 1 Hz error.
 static bool radio_uhd_device_validate_freq_range(const uhd::freq_range_t& range, double freq)
 {
-  uint64_t clipped_freq = static_cast<uint64_t>(std::round(range.clip(freq)));
-  uint64_t uint_freq    = static_cast<uint64_t>(freq);
-  return (clipped_freq == uint_freq);
+  double clipped_freq = range.clip(freq);
+  return std::abs(clipped_freq - freq) < 1.0;
 }
 
 /// \brief Determines whether a gain is valid within a range.
@@ -101,43 +100,79 @@ public:
       type = radio_uhd_device_type(device_addr.get("type"));
 
       switch (type) {
-        case radio_uhd_device_type::types::X300:
-          // Set the default master clock rate.
-          if (!device_addr.has_key("master_clock_rate")) {
-            device_addr.set("master_clock_rate", "184.32e6");
-          }
-          // Set the default send frame size.
-          if (!device_addr.has_key("send_frame_size")) {
-            device_addr.set("send_frame_size", "8000");
-          }
-          // Set the default receive frame size.
-          if (!device_addr.has_key("recv_frame_size")) {
-            device_addr.set("recv_frame_size", "8000");
-          }
-          break;
-        case radio_uhd_device_type::types::N300:
-          // Set the default master clock rate.
-          if (!device_addr.has_key("master_clock_rate")) {
-            device_addr.set("master_clock_rate", "122.88e6");
-          }
-          break;
-        case radio_uhd_device_type::types::E3X0:
+        case radio_uhd_device_type::types::E3xx:
           // Set the default master clock rate.
           if (!device_addr.has_key("master_clock_rate")) {
             device_addr.set("master_clock_rate", "30.72e6");
           }
           break;
-        case radio_uhd_device_type::types::B200:
+        case radio_uhd_device_type::types::X3x0:
+          // Set the default master clock rate.
+          if (!device_addr.has_key("master_clock_rate")) {
+            device_addr.set("master_clock_rate", "184.32e6");
+          }
+          break;
+        case radio_uhd_device_type::types::X410:
+          // Set the default master clock rate.
+          if (!device_addr.has_key("master_clock_rate")) {
+            device_addr.set("master_clock_rate", "245.76e6");
+          }
+          break;
+        case radio_uhd_device_type::types::N3x0:
+          // Set the default master clock rate.
+          if (!device_addr.has_key("master_clock_rate")) {
+            device_addr.set("master_clock_rate", "122.88e6");
+          }
+          break;
+        case radio_uhd_device_type::types::N32x:
+          // Set the default master clock rate.
+          if (!device_addr.has_key("master_clock_rate")) {
+            device_addr.set("master_clock_rate", "245.76e6");
+          }
+          break;
+        case radio_uhd_device_type::types::B2xx:
         case radio_uhd_device_type::types::UNKNOWN:
         default:
           // No default parameters are required.
           break;
+      }
+
+      // Set frame sizes for network based USRP devices.
+      if ((type == radio_uhd_device_type::types::N32x) || (type == radio_uhd_device_type::types::N3x0) ||
+          (type == radio_uhd_device_type::types::X3x0) || (type == radio_uhd_device_type::types::X410)) {
+        // Set the default send frame size.
+        if (!device_addr.has_key("send_frame_size")) {
+          device_addr.set("send_frame_size", "8000");
+        }
+        // Set the default receive frame size.
+        if (!device_addr.has_key("recv_frame_size")) {
+          device_addr.set("recv_frame_size", "8000");
+        }
       }
     }
 
     fmt::print("Making USRP object with args '{}'\n", device_addr.to_string());
 
     return safe_execution([this, &device_addr]() { usrp = uhd::usrp::multi_usrp::make(device_addr); });
+  }
+  bool is_connection_valid()
+  {
+    // If the device is a B2xx, check if the USB is version 3.
+    if (type == radio_uhd_device_type::types::B2xx) {
+      // Get USB version.
+      unsigned usb_version = 0;
+      bool     success     = safe_execution([this, &usb_version]() {
+        usb_version = usrp->get_device()->get_tree()->access<unsigned>("/mboards/0/usb_version").get();
+      });
+
+      // The USB version is invalid if the USB version is accessed successfully and the version is not 3.
+      if (success && (usb_version != 3)) {
+        fmt::print("USRP operating over USB version {}, USB 3 is required.\n", usb_version);
+        return false;
+      }
+    }
+
+    return true;
   }
   radio_uhd_device_type get_type() const { return type; }
   bool                  get_mboard_sensor_names(std::vector<std::string>& sensors)
@@ -236,38 +271,38 @@ public:
     return safe_execution([this, &sync_source, &clock_source]() { usrp->set_sync_source(clock_source, sync_source); });
 #endif
   }
-  bool set_rx_rate(double rate)
+  bool set_rx_rate(double& actual_rate, double rate)
   {
     logger.debug("Setting Rx Rate to {} MHz.", to_MHz(rate));
 
-    return safe_execution([this, rate]() {
+    return safe_execution([this, &actual_rate, rate]() {
       uhd::meta_range_t range = usrp->get_rx_rates();
 
       if (!radio_uhd_device_validate_freq_range(range, rate)) {
-        on_error("Rx Rate {:.2f} MHz is invalid. The nearest valid value is {:.2f}.",
-                 to_MHz(rate),
-                 to_MHz(range.clip(rate)));
+        on_error("Rx Rate {} MHz is invalid. The nearest valid value is {}.", to_MHz(rate), to_MHz(range.clip(rate)));
         return;
       }
 
       usrp->set_rx_rate(rate);
+
+      actual_rate = usrp->get_rx_rate();
     });
   }
-  bool set_tx_rate(double rate)
+  bool set_tx_rate(double& actual_rate, double rate)
   {
     logger.debug("Setting Tx Rate to {} MHz.", to_MHz(rate));
 
-    return safe_execution([this, rate]() {
+    return safe_execution([this, &actual_rate, rate]() {
       uhd::meta_range_t range = usrp->get_tx_rates();
 
       if (!radio_uhd_device_validate_freq_range(range, rate)) {
-        on_error("Tx Rate {:.2f} MHz is invalid. The nearest valid value is {:.2f}.",
-                 to_MHz(rate),
-                 to_MHz(range.clip(rate)));
+        on_error("Tx Rate {} MHz is invalid. The nearest valid value is {}.", to_MHz(rate), to_MHz(range.clip(rate)));
         return;
       }
 
       usrp->set_tx_rate(rate);
+
+      actual_rate = usrp->get_tx_rate();
     });
   }
   bool set_command_time(const uhd::time_spec_t& timespec)

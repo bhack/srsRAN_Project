@@ -22,7 +22,6 @@
 
 #pragma once
 
-#include "srsran/asn1/f1ap/f1ap.h"
 #include "srsran/f1ap/du/f1ap_du_ue_context_update.h"
 #include "srsran/ran/up_transport_layer_info.h"
 
@@ -62,7 +61,8 @@ f1ap_drb_to_setup make_drb_to_setup(const Asn1Type& drb_item)
     drb_obj.uluptnl_info_list[j] =
         asn1_to_up_transport_layer_info(drb_item.ul_up_tnl_info_to_be_setup_list[j].ul_up_tnl_info);
   }
-  drb_obj.five_qi = drb_item.qos_info.choice_ext().value().drb_info().drb_qos.qos_characteristics.non_dyn_5qi().five_qi;
+  drb_obj.five_qi = uint_to_five_qi(
+      drb_item.qos_info.choice_ext().value().drb_info().drb_qos.qos_characteristics.non_dyn_5qi().five_qi);
   return drb_obj;
 }
 

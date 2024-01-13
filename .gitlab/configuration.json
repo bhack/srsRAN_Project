@@ -34,7 +34,7 @@
     "container_expiration_policy_attributes": {
         "enabled": false
     },
-    "container_registry_access_level": "disabled",
+    "container_registry_access_level": "enabled",
     "default_branch": "dev",
     "enforce_auth_checks_on_uploads": true,
     "forking_access_level": "disabled",
@@ -48,7 +48,6 @@
     "merge_trains_enabled": false,
     "only_allow_merge_if_all_discussions_are_resolved": false,
     "only_allow_merge_if_pipeline_succeeds": true,
-    "operations_access_level": "enabled",
     "packages_enabled": true,
     "pages_access_level": "private",
     "protectedbranches": [
@@ -86,20 +85,20 @@
             "allowed_to_push": [
                 {
                     "access_level": 40,
-                    "access_level_description": "codebot",
+                    "access_level_description": "$CODEBOT_USERNAME",
                     "group_id": null,
-                    "user_id": 11604565
+                    "user_id": $CODEBOT_USER_ID
                 }
             ],
             "code_owner_approval_required": false,
-            "name": "next"
+            "name": "main"
         },
         {
             "allow_force_push": false,
             "allowed_to_merge": [
                 {
-                    "access_level": 0,
-                    "access_level_description": "No one",
+                    "access_level": 40,
+                    "access_level_description": "Maintainers",
                     "group_id": null,
                     "user_id": null
                 }
@@ -107,16 +106,28 @@
             "allowed_to_push": [
                 {
                     "access_level": 40,
-                    "access_level_description": "codebot",
+                    "access_level_description": "Maintainers",
                     "group_id": null,
-                    "user_id": 11604565
+                    "user_id": null
                 }
             ],
             "code_owner_approval_required": false,
-            "name": "main"
+            "name": "agpl_main"
         }
     ],
-    "protectedtags": [],
+    "protectedtags": [
+        {
+            "name": "*",
+            "create_access_levels": [
+                {
+                    "access_level": 40,
+                    "access_level_description": "Maintainers",
+                    "group_id": null,
+                    "user_id": null
+                }
+            ]
+        }
+    ],
     "pushrules": {
         "prevent_secrets": true
     },

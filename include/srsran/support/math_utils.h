@@ -27,13 +27,8 @@
 
 #include "srsran_assert.h"
 #include "srsran/adt/complex.h"
-#include <cassert>
-#include <cmath>
 
 namespace srsran {
-
-/// Defines the complex imaginary unit.
-static constexpr cf_t COMPLEX_J(0, 1);
 
 /// Defines two times Pi.
 static constexpr float TWOPI = 2.0F * static_cast<float>(M_PI);
@@ -131,7 +126,7 @@ inline float convert_power_to_dB(float value)
 /// \remark Only works for prime numbers not larger than 3299.
 unsigned prime_greater_than(unsigned n);
 
-/// \brief Finds the biggest prime number lesser than \c n.
+/// \brief Finds the biggest prime number less than \c n.
 /// \remark Only works for prime numbers not larger than 3299.
 unsigned prime_lower_than(unsigned n);
 

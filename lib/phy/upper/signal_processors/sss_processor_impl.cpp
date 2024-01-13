@@ -21,6 +21,7 @@
  */
 
 #include "sss_processor_impl.h"
+#include "srsran/phy/support/resource_grid_writer.h"
 #include "srsran/srsvec/prod.h"
 #include "srsran/srsvec/sc_prod.h"
 
@@ -29,14 +30,14 @@ using namespace srsran;
 sss_processor_impl::pregen_d0_s::pregen_d0_s()
 {
   // Initialize M sequence x0
-  std::array<uint32_t, SEQUENCE_LEN + 7> x0 = {};
-  x0[6]                                     = 0;
-  x0[5]                                     = 0;
-  x0[4]                                     = 0;
-  x0[3]                                     = 0;
-  x0[2]                                     = 0;
-  x0[1]                                     = 0;
-  x0[0]                                     = 1;
+  std::array<uint32_t, SEQUENCE_LEN + 7> x0;
+  x0[6] = 0;
+  x0[5] = 0;
+  x0[4] = 0;
+  x0[3] = 0;
+  x0[2] = 0;
+  x0[1] = 0;
+  x0[0] = 1;
 
   // Generate M sequence x0
   for (uint32_t i = 0; i < SEQUENCE_LEN; i++) {
@@ -52,14 +53,14 @@ sss_processor_impl::pregen_d0_s::pregen_d0_s()
 sss_processor_impl::pregen_d1_s::pregen_d1_s()
 {
   // Initialize M sequence x1
-  std::array<uint32_t, SEQUENCE_LEN + 7> x1 = {};
-  x1[6]                                     = 0;
-  x1[5]                                     = 0;
-  x1[4]                                     = 0;
-  x1[3]                                     = 0;
-  x1[2]                                     = 0;
-  x1[1]                                     = 0;
-  x1[0]                                     = 1;
+  std::array<uint32_t, SEQUENCE_LEN + 7> x1;
+  x1[6] = 0;
+  x1[5] = 0;
+  x1[4] = 0;
+  x1[3] = 0;
+  x1[2] = 0;
+  x1[1] = 0;
+  x1[0] = 1;
 
   // Generate M sequence x0
   for (uint32_t i = 0; i < SEQUENCE_LEN; i++) {

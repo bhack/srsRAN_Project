@@ -84,27 +84,34 @@ constexpr auto buffer_size_levels_8bit =
                         49179951,   52372284, 55771835, 59392055, 63247269,
                         67352729,   71724679, 76380419, 81338368, /* > */ 81338368});
 
-long_bsr_report srsran::decode_lbsr(bsr_format format, byte_buffer_view payload)
+expected<long_bsr_report> srsran::decode_lbsr(bsr_format format, byte_buffer_view payload)
 {
   long_bsr_report lbsr = {};
 
   byte_buffer_reader reader = payload;
-  lbsr.bitmap               = *reader; // read LCG bitmap
-  ++reader;                            // skip LCG bitmap
+
+  // read LCG bitmap
+  const uint8_t bitmap = *reader;
+  ++reader;
 
   // early stop if LBSR is empty
-  if (lbsr.bitmap == 0) {
+  if (bitmap == 0) {
     return lbsr;
   }
 
   for (uint8_t i = 0; i != MAX_NOF_LCGS; i++) {
     // If LCGi bit is enabled, it means the next 8-bit BSR value corresponds to it
-    if (lbsr.bitmap & (0x1U << i)) {
+    if ((bitmap & (0x1U << i)) != 0) {
       lcg_bsr_report bsr = {};
       bsr.lcg_id         = uint_to_lcg_id(i);
       if (reader.length() > 0) {
         bsr.buffer_size = *reader;
         ++reader;
+
+        if (bsr.buffer_size == 255) {
+          srslog::fetch_basic_logger("MAC").warning("lcg={}: Discarding BSR. Cause: BSR=255 is invalid.", i);
+          return {default_error_t{}};
+        }
       } else if (format == bsr_format::LONG_TRUNC_BSR) {
         // In the case of Long truncated BSR, some LCG buffer sizes may not be present. Assume BSR > 0 in that case.
         // Assume that the LCG has 64 bytes pending (implementation-defined).
@@ -113,6 +120,7 @@ long_bsr_report srsran::decode_lbsr(bsr_format format, byte_buffer_view payload)
         srslog::fetch_basic_logger("MAC").error("Error parsing LongBSR CE: sdu_length={} but there are {} active bsr\n",
                                                 payload.length(),
                                                 lbsr.list.size());
+        return {default_error_t{}};
       }
       lbsr.list.push_back(bsr);
     }
@@ -127,7 +135,8 @@ long_bsr_report srsran::decode_lbsr(bsr_format format, byte_buffer_view payload)
 /// \return The actual buffer size level in Bytes.
 uint32_t srsran::buff_size_field_to_bytes(size_t buff_size_index, bsr_format format)
 {
-  static const uint32_t max_offset = 1; // make the reported value bigger than the 2nd biggest
+  // Difference between the 2nd largest and the largest UL buffer size in bytes (Implementation-defined).
+  static constexpr uint32_t max_offset = 150000;
 
   // early exit
   if (buff_size_index == 0) {
@@ -151,9 +160,4 @@ uint32_t srsran::buff_size_field_to_bytes(size_t buff_size_index, bsr_format for
       break;
   }
   return 0;
-}
-
-ul_bsr_lcg_report srsran::make_sched_lcg_report(const lcg_bsr_report& ul_mac_bsr, bsr_format bsr_format)
-{
-  return ul_bsr_lcg_report{ul_mac_bsr.lcg_id, buff_size_field_to_bytes(ul_mac_bsr.buffer_size, bsr_format)};
 }

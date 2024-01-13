@@ -23,7 +23,7 @@
 #include "rrc_ue_test_helpers.h"
 #include "rrc_ue_test_messages.h"
 #include "srsran/adt/byte_buffer.h"
-#include "srsran/support/async/async_task_loop.h"
+#include "srsran/support/async/fifo_async_task_scheduler.h"
 #include "srsran/support/test_utils.h"
 #include <gtest/gtest.h>
 
@@ -63,14 +63,14 @@ protected:
   }
 };
 
-/// Test the RRC setup with connected AMF
+/// Test the RRC reconfig with connected AMF
 TEST_F(rrc_ue_reconfig, when_reconfig_complete_received_proc_successful)
 {
   // Prepare args
-  cu_cp_rrc_reconfiguration_procedure_request args = generate_rrc_reconfiguration_procedure_request();
+  rrc_reconfiguration_procedure_request args = generate_rrc_reconfiguration_procedure_request();
 
   // Trigger Reconfig
-  async_task<bool>         t = get_rrc_ue_reconfiguration_handler()->start_rrc_reconfiguration(args);
+  async_task<bool>         t = get_rrc_ue_control_message_handler()->handle_rrc_reconfiguration_request(args);
   lazy_task_launcher<bool> t_launcher(t);
 
   ASSERT_FALSE(t.ready());

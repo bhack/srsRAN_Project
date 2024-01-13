@@ -20,12 +20,25 @@
  *
  */
 
-#include "../../support/resource_grid_test_doubles.h"
+#include "../../support/resource_grid_mapper_test_doubles.h"
 #include "nzp_csi_rs_generator_test_data.h"
+#include "srsran/phy/support/support_factories.h"
 #include "srsran/phy/upper/signal_processors/signal_processor_factories.h"
+#include "srsran/phy/upper/signal_processors/signal_processor_formatters.h"
+#include <fmt/ostream.h>
 #include <gtest/gtest.h>
 
 using namespace srsran;
+
+namespace srsran {
+
+std::ostream& operator<<(std::ostream& os, test_case_t tcase)
+{
+  fmt::print(os, "{}", tcase.config);
+  return os;
+}
+
+} // namespace srsran
 
 namespace {
 class NzpCsiRsGeneratorFixture : public ::testing::TestWithParam<test_case_t>
@@ -66,14 +79,19 @@ TEST_P(NzpCsiRsGeneratorFixture, Vector)
   ASSERT_NE(generator, nullptr);
   ASSERT_NE(validator, nullptr);
 
-  // Create resource grid.
-  resource_grid_writer_spy grid(MAX_PORTS, MAX_NSYMB_PER_SLOT, test_case.config.start_rb + test_case.config.nof_rb);
+  unsigned max_symb  = MAX_NSYMB_PER_SLOT;
+  unsigned max_prb   = test_case.config.start_rb + test_case.config.nof_rb;
+  unsigned max_ports = test_case.config.precoding.get_nof_ports();
+
+  // Prepare resource grid and resource grid mapper spies.
+  resource_grid_writer_spy              grid(max_ports, max_symb, max_prb);
+  std::unique_ptr<resource_grid_mapper> mapper = create_resource_grid_mapper(max_ports, NRE * max_prb, grid);
 
   // The configuration must be valid.
   ASSERT_TRUE(validator->is_valid(test_case.config));
 
   // Map NZP-CSI-RS using the test case arguments.
-  generator->map(grid, test_case.config);
+  generator->map(*mapper, test_case.config);
 
   // Load output golden data.
   const std::vector<resource_grid_writer_spy::expected_entry_t> testvector_symbols = test_case.symbols.read();

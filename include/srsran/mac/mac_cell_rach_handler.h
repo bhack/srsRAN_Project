@@ -25,6 +25,7 @@
 #include "srsran/adt/static_vector.h"
 #include "srsran/ran/phy_time_unit.h"
 #include "srsran/ran/prach/prach_constants.h"
+#include "srsran/ran/slot_pdu_capacity_constants.h"
 #include "srsran/ran/slot_point.h"
 
 namespace srsran {
@@ -53,7 +54,11 @@ struct mac_rach_indication {
 class mac_cell_rach_handler
 {
 public:
-  virtual ~mac_cell_rach_handler()                                         = default;
+  virtual ~mac_cell_rach_handler() = default;
+
+  /// Handles incoming RACH indication from the L1.
+  ///
+  /// \param rach_ind Received RACH indication.
   virtual void handle_rach_indication(const mac_rach_indication& rach_ind) = 0;
 };
 

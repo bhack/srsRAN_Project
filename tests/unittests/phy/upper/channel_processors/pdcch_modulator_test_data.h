@@ -22,14 +22,17 @@
 
 #pragma once
 
-// This file was generated using the following MATLAB class:
+// This file was generated using the following MATLAB class on 13-12-2023 (seed 0):
 //   + "srsPDCCHModulatorUnittest.m"
 
 #include "../../support/resource_grid_test_doubles.h"
 #include "srsran/phy/upper/channel_processors/pdcch_modulator.h"
+#include "srsran/ran/precoding/precoding_codebooks.h"
 #include "srsran/support/file_vector.h"
 
 namespace srsran {
+
+static const precoding_configuration default_precoding = precoding_configuration::make_wideband(make_single_port());
 
 struct test_case_t {
   pdcch_modulator::config_t                               config;
@@ -39,22 +42,22 @@ struct test_case_t {
 
 static const std::vector<test_case_t> pdcch_modulator_test_data = {
     // clang-format off
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 11, 1, 905, 2068, 1, { 0}}, {"test_data/pdcch_modulator_test_input0.dat"}, {"test_data/pdcch_modulator_test_output0.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 4, 1, 680, 61014, 1, { 7}}, {"test_data/pdcch_modulator_test_input1.dat"}, {"test_data/pdcch_modulator_test_output1.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 2, 1, 386, 35321, 1, { 7}}, {"test_data/pdcch_modulator_test_input2.dat"}, {"test_data/pdcch_modulator_test_output2.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 2, 1, 92, 24605, 1, { 4}}, {"test_data/pdcch_modulator_test_input3.dat"}, {"test_data/pdcch_modulator_test_output3.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10, 2, 681, 15497, 1, { 4}}, {"test_data/pdcch_modulator_test_input4.dat"}, {"test_data/pdcch_modulator_test_output4.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 9, 2, 424, 58405, 1, { 0}}, {"test_data/pdcch_modulator_test_input5.dat"}, {"test_data/pdcch_modulator_test_output5.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 6, 2, 78, 15490, 1, { 6}}, {"test_data/pdcch_modulator_test_input6.dat"}, {"test_data/pdcch_modulator_test_output6.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 8, 2, 328, 47139, 1, { 0}}, {"test_data/pdcch_modulator_test_input7.dat"}, {"test_data/pdcch_modulator_test_output7.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 3, 2, 686, 58791, 1, { 6}}, {"test_data/pdcch_modulator_test_input8.dat"}, {"test_data/pdcch_modulator_test_output8.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 10, 2, 346, 51849, 1, { 6}}, {"test_data/pdcch_modulator_test_input9.dat"}, {"test_data/pdcch_modulator_test_output9.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0}, 8, 3, 564, 4892, 1, { 6}}, {"test_data/pdcch_modulator_test_input10.dat"}, {"test_data/pdcch_modulator_test_output10.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 4, 3, 143, 23339, 1, { 4}}, {"test_data/pdcch_modulator_test_input11.dat"}, {"test_data/pdcch_modulator_test_output11.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 1, 3, 896, 36031, 1, { 1}}, {"test_data/pdcch_modulator_test_input12.dat"}, {"test_data/pdcch_modulator_test_output12.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10, 3, 199, 62186, 1, { 1}}, {"test_data/pdcch_modulator_test_input13.dat"}, {"test_data/pdcch_modulator_test_output13.dat"}},
-  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 1, 3, 602, 19514, 1, { 1}}, {"test_data/pdcch_modulator_test_input14.dat"}, {"test_data/pdcch_modulator_test_output14.dat"}},
-  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0}, 10, 3, 381, 5917, 1, { 2}}, {"test_data/pdcch_modulator_test_input15.dat"}, {"test_data/pdcch_modulator_test_output15.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 3, 1, 608, 3085, 1, default_precoding}, {"test_data/pdcch_modulator_test_input0.dat"}, {"test_data/pdcch_modulator_test_output0.dat"}},
+  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 10, 1, 451, 1983, 1, default_precoding}, {"test_data/pdcch_modulator_test_input1.dat"}, {"test_data/pdcch_modulator_test_output1.dat"}},
+  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 11, 1, 122, 33801, 1, default_precoding}, {"test_data/pdcch_modulator_test_input2.dat"}, {"test_data/pdcch_modulator_test_output2.dat"}},
+  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 2, 1, 447, 2747, 1, default_precoding}, {"test_data/pdcch_modulator_test_input3.dat"}, {"test_data/pdcch_modulator_test_output3.dat"}},
+  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 12, 1, 871, 26161, 1, default_precoding}, {"test_data/pdcch_modulator_test_input4.dat"}, {"test_data/pdcch_modulator_test_output4.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 5, 2, 771, 3978, 1, default_precoding}, {"test_data/pdcch_modulator_test_input5.dat"}, {"test_data/pdcch_modulator_test_output5.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 8, 2, 98, 10335, 1, default_precoding}, {"test_data/pdcch_modulator_test_input6.dat"}, {"test_data/pdcch_modulator_test_output6.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 11, 2, 745, 66, 1, default_precoding}, {"test_data/pdcch_modulator_test_input7.dat"}, {"test_data/pdcch_modulator_test_output7.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 12, 2, 173, 37852, 1, default_precoding}, {"test_data/pdcch_modulator_test_input8.dat"}, {"test_data/pdcch_modulator_test_output8.dat"}},
+  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 1, 2, 332, 32278, 1, default_precoding}, {"test_data/pdcch_modulator_test_input9.dat"}, {"test_data/pdcch_modulator_test_output9.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0}, 11, 3, 634, 44988, 1, default_precoding}, {"test_data/pdcch_modulator_test_input10.dat"}, {"test_data/pdcch_modulator_test_output10.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 11, 3, 555, 56472, 1, default_precoding}, {"test_data/pdcch_modulator_test_input11.dat"}, {"test_data/pdcch_modulator_test_output11.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 7, 3, 970, 1588, 1, default_precoding}, {"test_data/pdcch_modulator_test_input12.dat"}, {"test_data/pdcch_modulator_test_output12.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 9, 3, 395, 22542, 1, default_precoding}, {"test_data/pdcch_modulator_test_input13.dat"}, {"test_data/pdcch_modulator_test_output13.dat"}},
+  {{{1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 4, 3, 931, 11535, 1, default_precoding}, {"test_data/pdcch_modulator_test_input14.dat"}, {"test_data/pdcch_modulator_test_output14.dat"}},
+  {{{0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0}, 3, 3, 698, 13475, 1, default_precoding}, {"test_data/pdcch_modulator_test_input15.dat"}, {"test_data/pdcch_modulator_test_output15.dat"}},
     // clang-format on
 };
 

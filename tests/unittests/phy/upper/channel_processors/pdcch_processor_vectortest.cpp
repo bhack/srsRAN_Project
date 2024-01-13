@@ -20,7 +20,9 @@
  *
  */
 
+#include "../../support/resource_grid_mapper_test_doubles.h"
 #include "pdcch_processor_test_data.h"
+#include "srsran/phy/support/support_factories.h"
 #include "srsran/phy/upper/channel_processors/channel_processor_factories.h"
 #include "srsran/phy/upper/channel_processors/channel_processor_formatters.h"
 #include "fmt/ostream.h"
@@ -94,16 +96,18 @@ TEST_P(PdcchProcessorFixture, FromVector)
 
   const test_case_t& test_case = GetParam();
 
-  unsigned max_prb  = MAX_RB;
-  unsigned max_symb = test_case.config.coreset.start_symbol_index + test_case.config.coreset.duration;
-
-  // Create resource grid spy.
-  resource_grid_writer_spy grid(MAX_PORTS, max_symb, max_prb);
+  unsigned max_prb   = MAX_RB;
+  unsigned max_symb  = test_case.config.coreset.start_symbol_index + test_case.config.coreset.duration;
+  unsigned max_ports = test_case.config.dci.precoding.get_nof_ports();
 
   ASSERT_TRUE(validator->is_valid(test_case.config));
 
+  // Prepare resource grid and resource grid mapper spies.
+  resource_grid_writer_spy              grid(max_ports, max_symb, max_prb);
+  std::unique_ptr<resource_grid_mapper> mapper = create_resource_grid_mapper(max_ports, NRE * max_prb, grid);
+
   // Process.
-  processor->process(grid, test_case.config);
+  processor->process(*mapper, test_case.config);
 
   // Load output golden data
   const std::vector<resource_grid_writer_spy::expected_entry_t> expected = test_case.data.read();

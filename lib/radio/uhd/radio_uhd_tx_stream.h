@@ -25,14 +25,18 @@
 #include "radio_uhd_exception_handler.h"
 #include "radio_uhd_multi_usrp.h"
 #include "radio_uhd_tx_stream_fsm.h"
-#include "srsran/gateways/baseband/baseband_gateway_buffer.h"
+#include "srsran/gateways/baseband/baseband_gateway_transmitter.h"
+#include "srsran/gateways/baseband/buffer/baseband_gateway_buffer_dynamic.h"
+#include "srsran/gateways/baseband/buffer/baseband_gateway_buffer_reader.h"
 #include "srsran/radio/radio_configuration.h"
 #include "srsran/radio/radio_notification_handler.h"
 #include "srsran/support/executors/task_executor.h"
 #include <mutex>
 
 namespace srsran {
-class radio_uhd_tx_stream : public uhd_exception_handler
+
+/// Implements a gateway transmitter based on UHD transmit stream.
+class radio_uhd_tx_stream : public baseband_gateway_transmitter, public uhd_exception_handler
 {
 private:
   /// Receive asynchronous message timeout in seconds.
@@ -48,6 +52,8 @@ private:
   radio_notification_handler& notifier;
   /// Owns the UHD Tx stream.
   uhd::tx_streamer::sptr stream;
+  /// Maximum number of samples in a single packet.
+  unsigned max_packet_size;
   /// Protects concurrent stream transmit.
   std::mutex stream_transmit_mutex;
   /// Sampling rate in Hz.
@@ -56,6 +62,14 @@ private:
   unsigned nof_channels;
   /// Indicates the current internal state.
   radio_uhd_tx_stream_fsm state_fsm;
+  /// Discontinous transmission mode flag.
+  bool discontinuous_tx;
+  /// Number of samples to advance the burst start to protect agains power ramping effects.
+  unsigned power_ramping_nof_samples;
+  /// Stores the time of the last transmitted sample.
+  uhd::time_spec_t last_tx_timespec;
+  /// Power ramping transmit buffer. It is filled with zeros, used to absorb power ramping when starting a transmission.
+  baseband_gateway_buffer_dynamic power_ramping_buffer;
 
   /// Receive asynchronous message.
   void recv_async_msg();
@@ -65,14 +79,14 @@ private:
 
   /// \brief Transmits a single baseband block.
   /// \param[out] nof_txd_samples Number of transmitted samples.
-  /// \param[in] data Provides the buffers tpo transmit.
-  /// \param[in] offset Indicates the sample offset in the transmit buffers.
-  /// \param[in] time_spec Indicates the transmission timestamp.
-  /// \return True if no exception is caught in the transmission process. Otherwise, false.
-  bool transmit_block(unsigned&                nof_txd_samples,
-                      baseband_gateway_buffer& data,
-                      unsigned                 offset,
-                      uhd::time_spec_t&        time_spec);
+  /// \param[in] data             Buffer to transmit.
+  /// \param[in] offset           Sample offset in the transmit buffers.
+  /// \param[in] md               Transmission metadata.
+  /// \return True if no exception is caught in the transmission process, false otherwise.
+  bool transmit_block(unsigned&                             nof_txd_samples,
+                      const baseband_gateway_buffer_reader& data,
+                      unsigned                              offset,
+                      const uhd::tx_metadata_t&             md);
 
 public:
   /// Describes the necessary parameters to create an UHD transmit stream.
@@ -87,6 +101,10 @@ public:
     std::string args;
     /// Indicates the port indexes for the stream.
     std::vector<size_t> ports;
+    /// Enables discontinuous transmission mode.
+    bool discontiuous_tx;
+    /// Time by which to advance the burst start, using zero padding to protect against power ramping.
+    float power_ramping_us;
   };
 
   /// \brief Constructs an UHD transmit stream.
@@ -99,13 +117,17 @@ public:
                       task_executor&               async_executor_,
                       radio_notification_handler&  notifier_);
 
-  /// \brief Transmits baseband signal.
-  /// \param[in] data Provides the baseband buffers to transmit.
-  /// \param[in] time_spec Indicates the transmission time.
-  /// \return True if the transmission was successful. Otherwise, false.
-  bool transmit(baseband_gateway_buffer& data, uhd::time_spec_t time_spec);
+  /// Gets the optimal transmitter buffer size.
+  unsigned get_buffer_size() const;
+
+  // See interface for documentation.
+  void transmit(const baseband_gateway_buffer_reader&        data,
+                const baseband_gateway_transmitter_metadata& metadata) override;
 
   /// Stop the transmission.
   void stop();
+
+  /// Wait until radio is notify_stop.
+  void wait_stop();
 };
 } // namespace srsran

@@ -21,9 +21,9 @@
  */
 
 #include "mcs_tbs_calculator.h"
-#include "../ue_scheduling/ue_sch_pdu_builder.h"
 #include "dmrs_helpers.h"
 #include "prbs_calculator.h"
+#include "sch_pdu_builder.h"
 #include "tbs_calculator.h"
 #include "srsran/adt/variant.h"
 #include "srsran/ran/pdsch/dlsch_info.h"
@@ -218,9 +218,8 @@ optional<sch_mcs_tbs> srsran::compute_dl_mcs_tbs(const pdsch_config_params&   pd
     return nullopt;
   }
 
-  optional<sch_mcs_tbs> output;
-  const unsigned        tbs_bytes = tbs_bits / NOF_BITS_PER_BYTE;
-  return output.emplace(sch_mcs_tbs{.mcs = mcs, .tbs = tbs_bytes});
+  const unsigned tbs_bytes = tbs_bits / NOF_BITS_PER_BYTE;
+  return optional<sch_mcs_tbs>{sch_mcs_tbs{.mcs = mcs, .tbs = tbs_bytes}};
 }
 
 optional<sch_mcs_tbs> srsran::compute_ul_mcs_tbs(const pusch_config_params&   pusch_cfg,
@@ -277,6 +276,5 @@ optional<sch_mcs_tbs> srsran::compute_ul_mcs_tbs(const pusch_config_params&   pu
     return nullopt;
   }
 
-  optional<sch_mcs_tbs> output;
-  return output.emplace(sch_mcs_tbs{.mcs = mcs, .tbs = tbs_bytes});
+  return optional<sch_mcs_tbs>{sch_mcs_tbs{.mcs = mcs, .tbs = tbs_bytes}};
 }

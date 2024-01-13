@@ -28,7 +28,7 @@
 
 namespace srsran {
 
-/// Number of subframers per frame. This constant doesn't depend on the numerology used
+/// Number of subframers per frame. This constant doesn't depend on the numerology used.
 constexpr uint32_t NOF_SUBFRAMES_PER_FRAME = 10;
 
 /// Number of system Frame Number values.
@@ -42,11 +42,11 @@ using slot_difference = int;
 
 /// Represents the numerology, SFN and slot index of the current slot.
 /// It provides several functionalities compared to a simple integer type, namely:
-/// - automatic wrap-around of SFN and slot_index on increment/decrement
+/// - automatic wrap-around of SFN and slot_index on increment/decrement.
 /// - comparison of slot_points accounts for wrap-around. For instance slot point with SFN=1023 and slot index=9 is
 ///   lower than slot point with SFN=0 and slot index=0.
-/// - it provides several helper methods to convert slot point to SFN, slot_index and frame number
-/// - it can encode an invalid slot_point state
+/// - it provides several helper methods to convert slot point to SFN, slot_index and frame number.
+/// - it can encode an invalid slot_point state.
 class slot_point
 {
   /// Number of possible numerologies.
@@ -63,6 +63,9 @@ public:
     srsran_assert(count < nof_slots_per_system_frame(), "Invalid slot count={} passed", count);
   }
 
+  /// Takes a SCS and total count value.
+  constexpr slot_point(subcarrier_spacing scs, uint32_t count) : slot_point(to_numerology_value(scs), count) {}
+
   /// Takes a numerology, SFN and slot index in radio frame.
   constexpr slot_point(uint32_t numerology, uint32_t sfn_val, uint32_t slot_radio_frame_idx_) :
     numerology_val(numerology), count_val(slot_radio_frame_idx_ + sfn_val * nof_slots_per_frame())
@@ -77,15 +80,8 @@ public:
 
   /// Takes a subcarrier spacing, SFN and slot index in radio frame.
   constexpr slot_point(subcarrier_spacing scs, uint32_t sfn_val, uint32_t slot_radio_frame_idx_) :
-    numerology_val(to_numerology_value(scs)), count_val(slot_radio_frame_idx_ + sfn_val * nof_slots_per_frame())
+    slot_point(to_numerology_value(scs), sfn_val, slot_radio_frame_idx_)
   {
-    srsran_assert(
-        to_numerology_value(scs) < NOF_NUMEROLOGIES, "Invalid numerology idx={} passed", to_numerology_value(scs));
-    srsran_assert(sfn_val < NOF_SFNS, "Invalid SFN={} provided", sfn_val);
-    srsran_assert(slot_radio_frame_idx_ < nof_slots_per_frame(),
-                  "Slot index={} exceeds maximum number of slots={}",
-                  slot_radio_frame_idx_,
-                  nof_slots_per_frame());
   }
 
   /// Takes a numerology, SFN, subframe index and slot index within subframe.
@@ -111,8 +107,11 @@ public:
   /// Numerology index (0..4).
   constexpr uint32_t numerology() const { return numerology_val; }
 
+  /// Subcarrier spacing. Values: {15kHz, 30kHz, 60kHz, 120kHz, 240kHz}.
+  constexpr subcarrier_spacing scs() const { return to_subcarrier_spacing(numerology_val); }
+
   /// Slot index in radio frame.
-  /// Value: SCS=15kHz: (0..9), SCS=30kHz: (0..19), SCS=60kHz: (0..39), SCS=120kHz: (0..79), SCS=240kHz: (0..159)
+  /// Value: SCS=15kHz: (0..9), SCS=30kHz: (0..19), SCS=60kHz: (0..39), SCS=120kHz: (0..79), SCS=240kHz: (0..159).
   constexpr uint32_t slot_index() const { return static_cast<uint32_t>(count_val) % nof_slots_per_frame(); }
 
   /// Radio Frame Number. Value: (0..1023).
@@ -135,16 +134,16 @@ public:
   constexpr uint32_t to_uint() const { return count_val; }
   constexpr explicit operator uint32_t() const { return count_val; }
 
-  /// Get Half Radio Frame size in number of slots
+  /// Get Half Radio Frame size in number of slots.
   constexpr uint32_t nof_hrf_slots() const { return nof_slots_per_frame() / 2; }
 
   /// Checks if slot is in second half of the radio frame.
   constexpr bool is_odd_hrf() const { return subframe_index() >= (NOF_SUBFRAMES_PER_FRAME / 2); }
 
-  /// Get MOD(slot index, Nof slots in Half Frame)
+  /// Get MOD(slot index, Nof slots in Half Frame).
   constexpr uint32_t hrf_slot_index() const { return static_cast<uint32_t>(count_val) % nof_hrf_slots(); }
 
-  /// Get MOD(slot index, Nof slots in a subframe)
+  /// Get MOD(slot index, Nof slots in a subframe).
   constexpr uint32_t subframe_slot_index() const { return static_cast<uint32_t>(count_val) % nof_slots_per_subframe(); }
 
   /// Equality comparison of two slot_point objects. Two slot points are equal if their numerology, SFN and slot index
@@ -154,7 +153,7 @@ public:
     return other.count_val == count_val and other.numerology_val == numerology_val;
   }
 
-  /// Inequality comparison of two slot_point objects
+  /// Inequality comparison of two slot_point objects.
   constexpr bool operator!=(const slot_point& other) const { return not(*this == other); }
 
   /// Checks if "lhs" slot point is lower than "rhs". It assumes that both "lhs" and "rhs" use the same numerology

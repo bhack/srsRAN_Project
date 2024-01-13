@@ -39,9 +39,10 @@ protected:
   mac_cell_processor_tester() :
     ue_mng(rnti_table),
     mac_cell(test_helpers::make_default_mac_cell_config(),
-             sched,
+             sched_adapter,
              ue_mng,
              phy_notifier,
+             task_worker,
              task_worker,
              task_worker,
              task_worker,
@@ -49,12 +50,12 @@ protected:
   {
   }
 
-  test_helpers::dummy_mac_scheduler            sched;
+  test_helpers::dummy_mac_scheduler_adapter    sched_adapter;
   du_rnti_table                                rnti_table;
   mac_dl_ue_manager                            ue_mng;
   test_helpers::dummy_mac_cell_result_notifier phy_notifier;
   manual_task_worker                           task_worker{128};
-  test_helpers::dummy_mac_pcap                 pcap;
+  null_mac_pcap                                pcap;
   mac_cell_processor                           mac_cell;
 
   bool is_pdsch_scheduled() const
@@ -66,21 +67,23 @@ protected:
   void init(test_params params)
   {
     // Creates the next sched result based on test parameters.
-    sched.next_sched_result.dl.bc.sibs.resize(params.nof_sib_allocated);
-    for (auto& sib_grant : sched.next_sched_result.dl.bc.sibs) {
-      sib_grant.pdsch_cfg.rnti = SI_RNTI;
+    sched_adapter.next_sched_result.success           = true;
+    sched_adapter.next_sched_result.dl.nof_dl_symbols = NOF_OFDM_SYM_PER_SLOT_NORMAL_CP;
+    sched_adapter.next_sched_result.dl.bc.sibs.resize(params.nof_sib_allocated);
+    for (auto& sib_grant : sched_adapter.next_sched_result.dl.bc.sibs) {
+      sib_grant.pdsch_cfg.rnti = rnti_t::SI_RNTI;
       sib_grant.pdsch_cfg.codewords.resize(1);
       sib_grant.pdsch_cfg.codewords[0].tb_size_bytes = 128;
     }
-    sched.next_sched_result.dl.rar_grants.resize(params.nof_rar_allocated);
-    for (auto& rar_grant : sched.next_sched_result.dl.rar_grants) {
+    sched_adapter.next_sched_result.dl.rar_grants.resize(params.nof_rar_allocated);
+    for (auto& rar_grant : sched_adapter.next_sched_result.dl.rar_grants) {
       rar_grant.pdsch_cfg.rnti = to_rnti(0x1);
       rar_grant.pdsch_cfg.codewords.resize(1);
       rar_grant.pdsch_cfg.codewords[0].tb_size_bytes = 128;
       rar_grant.grants.resize(1);
     }
-    sched.next_sched_result.dl.ue_grants.resize(params.nof_ue_allocated);
-    for (auto& ue_grant : sched.next_sched_result.dl.ue_grants) {
+    sched_adapter.next_sched_result.dl.ue_grants.resize(params.nof_ue_allocated);
+    for (auto& ue_grant : sched_adapter.next_sched_result.dl.ue_grants) {
       ue_grant.pdsch_cfg.rnti = to_rnti(0x4601);
       ue_grant.pdsch_cfg.codewords.resize(1);
       ue_grant.pdsch_cfg.codewords[0].tb_size_bytes = 128;

@@ -34,6 +34,12 @@
 
 namespace srsran {
 
+/// \brief Generate a random gnb_cu_cp_ue_e1ap_id
+gnb_cu_cp_ue_e1ap_id_t generate_random_gnb_cu_cp_ue_e1ap_id();
+
+/// \brief Generate a random gnb_cu_up_ue_e1ap_id
+gnb_cu_up_ue_e1ap_id_t generate_random_gnb_cu_up_ue_e1ap_id();
+
 class dummy_e1ap_cu_up_processor_notifier : public srs_cu_cp::e1ap_cu_up_processor_notifier
 {
 public:
@@ -59,15 +65,6 @@ class dummy_e1ap_cu_up_notifier : public srs_cu_up::e1ap_cu_up_notifier
 public:
   dummy_e1ap_cu_up_notifier() : logger(srslog::fetch_basic_logger("TEST")) {}
 
-  cu_cp_e1_setup_response on_cu_cp_e1_setup_request_received(const cu_cp_e1_setup_request& msg) override
-  {
-    logger.info("Received E1SetupRequest");
-    last_cu_cp_e1_setup_request = msg;
-
-    cu_cp_e1_setup_response res = {};
-    return res;
-  }
-
   srs_cu_up::e1ap_bearer_context_setup_response
   on_bearer_context_setup_request_received(const srs_cu_up::e1ap_bearer_context_setup_request& msg) override
   {
@@ -85,6 +82,21 @@ public:
     srs_cu_up::e1ap_bearer_context_setup_response response = {};
     response.ue_index                                      = ue_index;
     response.success                                       = true;
+    for (const auto& request_setup_item : msg.pdu_session_res_to_setup_list) {
+      e1ap_pdu_session_resource_setup_modification_item response_setup_item;
+      response_setup_item.pdu_session_id               = request_setup_item.pdu_session_id;
+      response_setup_item.ng_dl_up_tnl_info.gtp_teid   = int_to_gtpu_teid(1);
+      response_setup_item.ng_dl_up_tnl_info.tp_address = transport_layer_address{"127.0.0.1"};
+
+      for (const auto& request_drb_item : request_setup_item.drb_to_setup_list_ng_ran) {
+        e1ap_drb_setup_item_ng_ran response_drb_item;
+        response_drb_item.drb_id = request_drb_item.drb_id;
+
+        response_setup_item.drb_setup_list_ng_ran.emplace(request_drb_item.drb_id, response_drb_item);
+      }
+
+      response.pdu_session_resource_setup_list.emplace(request_setup_item.pdu_session_id, response_setup_item);
+    }
 
     return response;
   }
@@ -93,7 +105,49 @@ public:
       const srs_cu_up::e1ap_bearer_context_modification_request& msg) override
   {
     logger.info("Received BearerContextModificationRequest");
-    last_bearer_context_modification_request                      = msg;
+
+    // copy message
+    if (last_bearer_context_modification_request.security_info.has_value()) {
+      e1ap_security_info security_info             = {};
+      security_info.security_algorithm             = msg.security_info.value().security_algorithm;
+      security_info.up_security_key.encryption_key = msg.security_info.value().up_security_key.encryption_key.copy();
+      security_info.up_security_key.integrity_protection_key =
+          msg.security_info.value().up_security_key.integrity_protection_key.copy();
+      last_bearer_context_modification_request.security_info = security_info;
+    }
+    if (msg.ue_dl_aggr_max_bit_rate.has_value()) {
+      last_bearer_context_modification_request.ue_dl_aggr_max_bit_rate = msg.ue_dl_aggr_max_bit_rate.value();
+    }
+    if (msg.ue_dl_max_integrity_protected_data_rate.has_value()) {
+      last_bearer_context_modification_request.ue_dl_max_integrity_protected_data_rate =
+          msg.ue_dl_max_integrity_protected_data_rate.value();
+    }
+    if (msg.bearer_context_status_change.has_value()) {
+      last_bearer_context_modification_request.bearer_context_status_change = msg.bearer_context_status_change.value();
+    }
+    if (msg.new_ul_tnl_info_required.has_value()) {
+      last_bearer_context_modification_request.new_ul_tnl_info_required = msg.new_ul_tnl_info_required.value();
+    }
+    if (msg.ue_inactivity_timer.has_value()) {
+      last_bearer_context_modification_request.ue_inactivity_timer = msg.ue_inactivity_timer.value();
+    }
+    if (msg.data_discard_required.has_value()) {
+      last_bearer_context_modification_request.data_discard_required = msg.data_discard_required.value();
+    }
+    if (msg.ng_ran_bearer_context_mod_request.has_value()) {
+      last_bearer_context_modification_request.ng_ran_bearer_context_mod_request =
+          msg.ng_ran_bearer_context_mod_request.value();
+    }
+    if (msg.ran_ue_id.has_value()) {
+      last_bearer_context_modification_request.ran_ue_id = msg.ran_ue_id.value();
+    }
+    if (msg.gnb_du_id.has_value()) {
+      last_bearer_context_modification_request.gnb_du_id = msg.gnb_du_id.value();
+    }
+    if (msg.activity_notif_level.has_value()) {
+      last_bearer_context_modification_request.activity_notif_level = msg.activity_notif_level.value();
+    }
+
     srs_cu_up::e1ap_bearer_context_modification_response response = {};
     response.ue_index                                             = ue_index;
     response.success                                              = true;
@@ -114,7 +168,6 @@ public:
   srs_cu_up::e1ap_bearer_context_release_command      last_bearer_context_release_command;
   srs_cu_up::e1ap_bearer_context_modification_request last_bearer_context_modification_request;
   srs_cu_up::e1ap_bearer_context_setup_request        last_bearer_context_setup_request;
-  cu_cp_e1_setup_request                              last_cu_cp_e1_setup_request;
 
 private:
   srslog::basic_logger& logger;
@@ -174,7 +227,6 @@ public:
   {
     cu_cp   = cu_cp_;
     handler = handler_;
-    cu_cp->handle_new_cu_up_connection();
   };
   void on_new_message(const e1ap_message& msg) override
   {
@@ -223,6 +275,31 @@ public:
   }
 
   e1ap_message last_msg;
+
+private:
+  srslog::basic_logger& logger;
+};
+
+/// Dummy notifier just printing the received msg.
+class dummy_e1ap_cu_cp_notifier : public srs_cu_cp::e1ap_cu_cp_notifier
+{
+public:
+  dummy_e1ap_cu_cp_notifier() : logger(srslog::fetch_basic_logger("TEST")){};
+
+  void on_e1ap_created(srs_cu_cp::e1ap_bearer_context_manager&         bearer_context_manager,
+                       srs_cu_cp::e1ap_bearer_context_removal_handler& bearer_removal_handler,
+                       srs_cu_cp::e1ap_statistics_handler&             e1ap_statistic_handler) override
+  {
+    logger.info("Received E1AP creation notification");
+  }
+
+  void on_bearer_context_inactivity_notification_received(const srs_cu_cp::cu_cp_inactivity_notification& msg) override
+  {
+    last_msg = msg;
+    logger.info("Received an inactivity notification");
+  }
+
+  srs_cu_cp::cu_cp_inactivity_notification last_msg;
 
 private:
   srslog::basic_logger& logger;

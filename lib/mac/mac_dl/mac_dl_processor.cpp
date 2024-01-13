@@ -22,13 +22,15 @@
 
 #include "mac_dl_processor.h"
 #include "srsran/ran/pdsch/pdsch_constants.h"
+#include "srsran/support/async/execute_on.h"
 
 using namespace srsran;
 
-mac_dl_processor::mac_dl_processor(mac_common_config_t& cfg_, mac_scheduler& sched_, du_rnti_table& rnti_table_) :
-  cfg(cfg_), logger(cfg.logger), ue_mng(rnti_table_), sched_obj(sched_)
+mac_dl_processor::mac_dl_processor(const mac_dl_config&             mac_cfg,
+                                   mac_scheduler_cell_info_handler& sched_,
+                                   du_rnti_table&                   rnti_table_) :
+  cfg(mac_cfg), ue_mng(rnti_table_), sched(sched_)
 {
-  (void)logger;
 }
 
 bool mac_dl_processor::has_cell(du_cell_index_t cell_index) const
@@ -43,11 +45,12 @@ void mac_dl_processor::add_cell(const mac_cell_creation_request& cell_cfg_req)
   // Create MAC cell and add it to list.
   cells[cell_cfg_req.cell_index] =
       std::make_unique<mac_cell_processor>(cell_cfg_req,
-                                           sched_obj,
+                                           sched,
                                            ue_mng,
                                            cfg.phy_notifier.get_cell(cell_cfg_req.cell_index),
                                            cfg.cell_exec_mapper.executor(cell_cfg_req.cell_index),
                                            cfg.cell_exec_mapper.slot_ind_executor(cell_cfg_req.cell_index),
+                                           cfg.cell_exec_mapper.error_ind_executor(cell_cfg_req.cell_index),
                                            cfg.ctrl_exec,
                                            cfg.pcap);
 }
@@ -60,24 +63,20 @@ void mac_dl_processor::remove_cell(du_cell_index_t cell_index)
   cells[cell_index].reset();
 }
 
-async_task<bool> mac_dl_processor::add_ue(const mac_ue_create_request_message& request)
+async_task<bool> mac_dl_processor::add_ue(const mac_ue_create_request& request)
 {
   // > Allocate UE DL HARQ buffers.
   // Note: This is a large allocation, and therefore, should be done outside of the cell thread to avoid causing lates.
-  std::vector<std::vector<uint8_t>> harq_buffers;
-  harq_buffers.resize(MAX_NOF_HARQS);
-  for (auto& h : harq_buffers) {
-    h.resize(MAX_DL_PDU_LENGTH);
-  }
+  mac_dl_ue_context ue_inst(request);
 
-  return launch_async([this, request, harq_buffers = std::move(harq_buffers)](coro_context<async_task<bool>>& ctx) {
+  return launch_async([this, request, ue_inst = std::move(ue_inst)](coro_context<async_task<bool>>& ctx) mutable {
     CORO_BEGIN(ctx);
 
     // > Change to respective DL executor
     CORO_AWAIT(execute_on(cfg.cell_exec_mapper.executor(request.cell_index)));
 
     // > Insert UE and DL bearers
-    ue_mng.add_ue(request, std::move(harq_buffers));
+    ue_mng.add_ue(std::move(ue_inst));
 
     // > Change back to CTRL executor before returning
     CORO_AWAIT(execute_on(cfg.ctrl_exec));
@@ -86,7 +85,7 @@ async_task<bool> mac_dl_processor::add_ue(const mac_ue_create_request_message& r
   });
 }
 
-async_task<void> mac_dl_processor::remove_ue(const mac_ue_delete_request_message& request)
+async_task<void> mac_dl_processor::remove_ue(const mac_ue_delete_request& request)
 {
   return launch_async([this, request](coro_context<async_task<void>>& ctx) {
     CORO_BEGIN(ctx);
@@ -104,23 +103,22 @@ async_task<void> mac_dl_processor::remove_ue(const mac_ue_delete_request_message
   });
 }
 
-async_task<bool> mac_dl_processor::reconfigure_ue(const mac_ue_reconfiguration_request_message& request)
+async_task<bool> mac_dl_processor::addmod_bearers(du_ue_index_t                                  ue_index,
+                                                  du_cell_index_t                                pcell_index,
+                                                  const std::vector<mac_logical_channel_config>& logical_channels)
 {
-  return launch_async([this, request](coro_context<async_task<bool>>& ctx) {
-    CORO_BEGIN(ctx);
+  return dispatch_and_resume_on(
+      cfg.cell_exec_mapper.executor(pcell_index), cfg.ctrl_exec, [this, ue_index, logical_channels]() {
+        return ue_mng.addmod_bearers(ue_index, logical_channels);
+      });
+}
 
-    // 1. Change to respective DL executor
-    CORO_AWAIT(execute_on(cfg.cell_exec_mapper.executor(request.pcell_index)));
-
-    // 2. Remove UE DL bearers
-    ue_mng.remove_bearers(request.ue_index, request.bearers_to_rem);
-
-    // 3. AddMod UE DL bearers
-    ue_mng.addmod_bearers(request.ue_index, request.bearers_to_addmod);
-
-    // 3. Change back to CTRL executor before returning
-    CORO_AWAIT(execute_on(cfg.ctrl_exec));
-
-    CORO_RETURN(true);
-  });
+async_task<bool>
+mac_dl_processor::remove_bearers(du_ue_index_t ue_index, du_cell_index_t pcell_index, span<const lcid_t> lcids_to_rem)
+{
+  std::vector<lcid_t> lcids(lcids_to_rem.begin(), lcids_to_rem.end());
+  return dispatch_and_resume_on(
+      cfg.cell_exec_mapper.executor(pcell_index), cfg.ctrl_exec, [this, ue_index, lcids = std::move(lcids)]() {
+        return ue_mng.remove_bearers(ue_index, lcids);
+      });
 }

@@ -19,17 +19,21 @@
 #
 
 set(SOURCES
+        accumulate.cpp
         add.cpp
         aligned_vec.cpp
         bit.cpp
         clip.cpp
         compare.cpp
         conversion.cpp
+        convolution.cpp
+        division.cpp
         dot_prod.cpp
+        modulus_square.cpp
         prod.cpp
         sc_prod.cpp
         subtract.cpp
-        )
+)
 
 add_library(srsvec STATIC ${SOURCES})
 target_link_libraries(srsvec srslog)

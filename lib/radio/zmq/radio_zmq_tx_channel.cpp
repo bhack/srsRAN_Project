@@ -36,12 +36,12 @@ radio_zmq_tx_channel::radio_zmq_tx_channel(void*                       zmq_conte
   socket_type(config.socket_type),
   logger(srslog::fetch_basic_logger(config.channel_id_str, false)),
   circular_buffer(config.buffer_size),
-  buffer(config.buffer_size * sizeof(radio_sample_type)),
+  buffer(config.buffer_size * sizeof(cf_t)),
   notification_handler(notification_handler_),
   async_executor(async_executor_)
 {
   // Set log level.
-  logger.set_level(srslog::str_to_basic_level(config.log_level));
+  logger.set_level(config.log_level);
 
   // Validate the socket type.
   if (VALID_SOCKET_TYPES.count(config.socket_type) == 0) {
@@ -113,9 +113,6 @@ radio_zmq_tx_channel::radio_zmq_tx_channel(void*                       zmq_conte
 
   // Indicate the initialization was successful.
   state_fsm.init_successful();
-
-  // Start processing.
-  async_executor.defer([this]() { run_async(); });
 }
 
 radio_zmq_tx_channel::~radio_zmq_tx_channel()
@@ -164,14 +161,9 @@ void radio_zmq_tx_channel::receive_request()
 void radio_zmq_tx_channel::send_response()
 {
   // Try popping samples until the circular buffer is empty.
-  unsigned popped = circular_buffer.try_pop(buffer.begin(), buffer.end());
-  unsigned count  = popped;
-  while (state_fsm.is_running() && popped != 0 && count < buffer.size()) {
-    popped = circular_buffer.try_pop(buffer.begin() + count, buffer.end());
-    count += popped;
-  }
+  unsigned count = circular_buffer.try_pop(buffer.begin(), buffer.end());
 
-  // If stop was called return without transitioning.
+  // Check if it is still running.
   if (!state_fsm.is_running()) {
     return;
   }
@@ -182,7 +174,7 @@ void radio_zmq_tx_channel::send_response()
   }
 
   // Otherwise, send samples over socket.
-  int nbytes = count * sizeof(radio_sample_type);
+  int nbytes = count * sizeof(cf_t);
   int n      = zmq_send(sock, (void*)buffer.data(), nbytes, 0);
 
   // Check if an error occurred.
@@ -214,21 +206,31 @@ void radio_zmq_tx_channel::run_async()
     send_response();
   }
 
+  // Check if the state timer expired.
+  if (state_fsm.has_wait_expired()) {
+    logger.info("Waiting for {}.", state_fsm.has_pending_request() ? "data" : "request");
+  }
+
   // Feedback task if not stopped.
   if (state_fsm.is_running()) {
-    async_executor.defer([this]() { run_async(); });
+    if (not async_executor.defer([this]() { run_async(); })) {
+      logger.error("Unable to initiate async task");
+    }
   } else {
     logger.debug("Stopped asynchronous task.");
     state_fsm.async_task_stopped();
   }
 }
 
-void radio_zmq_tx_channel::transmit_samples(span<radio_sample_type> data)
+void radio_zmq_tx_channel::transmit_samples(span<const cf_t> data)
 {
   unsigned count = 0;
-  while (count < data.size() && state_fsm.is_running()) {
+  while (state_fsm.is_running() && (count != data.size())) {
+    // Try to write data into the circular buffer.
     unsigned pushed = circular_buffer.try_push(data.begin() + count, data.end());
-    while (state_fsm.is_running() && !pushed) {
+
+    // Check if the push was successful.
+    if (pushed == 0) {
       // Notify buffer overflow.
       radio_notification_handler::event_description event;
       event.stream_id  = stream_id;
@@ -238,17 +240,18 @@ void radio_zmq_tx_channel::transmit_samples(span<radio_sample_type> data)
       notification_handler.on_radio_rt_event(event);
 
       // Wait some time before trying again.
-      unsigned sleep_for_ms = CIRC_BUFFER_TRY_PUSH_SLEEP_FOR_MS;
-      std::this_thread::sleep_for(std::chrono::milliseconds(sleep_for_ms));
-      pushed = circular_buffer.try_push(data.begin() + count, data.end());
+      std::this_thread::sleep_for(circ_buffer_try_push_sleep);
     }
+
+    // Increment sample count.
     count += pushed;
   }
-  // Increment sample count.
+
+  // Increment timestamp count.
   sample_count += count;
 }
 
-bool radio_zmq_tx_channel::align(uint64_t timestamp)
+bool radio_zmq_tx_channel::align(uint64_t timestamp, std::chrono::milliseconds timeout)
 {
   unsigned count = 0;
 
@@ -260,6 +263,18 @@ bool radio_zmq_tx_channel::align(uint64_t timestamp)
 
   // Protect concurrent alignment and transmit.
   std::unique_lock<std::mutex> lock(transmit_alignment_mutex);
+
+  // If the channel has never transmitted, skip wait.
+  if (is_tx_enabled && (timeout.count() != 0)) {
+    // Otherwise, wait for the transmitter to transmit.
+    bool is_not_timeout =
+        transmit_alignment_cvar.wait_for(lock, timeout, [this, timestamp]() { return sample_count >= timestamp; });
+    if (is_not_timeout) {
+      return sample_count > timestamp;
+    }
+    logger.debug("Transmit timed out. Enabling transmit zeros.");
+    is_tx_enabled = false;
+  }
 
   std::array<cf_t, 1024> zero_buffer = {};
   // Transmit zeros until the sample count reaches the timestamp.
@@ -276,14 +291,32 @@ bool radio_zmq_tx_channel::align(uint64_t timestamp)
   return false;
 }
 
-void radio_zmq_tx_channel::transmit(span<radio_sample_type> data)
+void radio_zmq_tx_channel::transmit(span<const cf_t> data)
 {
   logger.debug("Requested to transmit {} samples.", data.size());
 
   // Protect concurrent alignment and transmit.
   std::unique_lock<std::mutex> lock(transmit_alignment_mutex);
 
+  // Actual baseband transmission.
   transmit_samples(data);
+
+  // Indicate that transmit is enabled.
+  is_tx_enabled = true;
+
+  // Notify transmission.
+  transmit_alignment_cvar.notify_all();
+}
+
+void radio_zmq_tx_channel::start(uint64_t init_time)
+{
+  sample_count = init_time;
+
+  // Start processing.
+  state_fsm.on_start();
+  if (not async_executor.defer([this]() { run_async(); })) {
+    logger.error("Unable to initiate radio zmq tx async task");
+  }
 }
 
 void radio_zmq_tx_channel::stop()

@@ -55,6 +55,15 @@ public:
     delimiter_buffer.append(DEFAULT_DELIMITER.begin(), DEFAULT_DELIMITER.end());
   }
 
+  /// Constructor that sets the default delimiter according to the string \c default_delimiter.
+  explicit delimited_formatter(const std::string& default_delimiter)
+  {
+    static const fmt::string_view DEFAULT_FORMAT    = "{}";
+    static const fmt::string_view DEFAULT_DELIMITER = default_delimiter;
+    format_buffer.append(DEFAULT_FORMAT.begin(), DEFAULT_FORMAT.end());
+    delimiter_buffer.append(DEFAULT_DELIMITER.begin(), DEFAULT_DELIMITER.end());
+  }
+
   /// \brief Parsing helper for format specifiers.
   ///
   /// This helper detects the \c s and \c n short mode and new line delimiter specifiers. It also generates a format
@@ -180,6 +189,9 @@ public:
       this->format_to(context, std::forward<Args>(args)...);
     }
   }
+  /// \brief Returns \c true if the verbose representation is selected, \c false otherwise.
+  /// \remark it must be called after \ref parse.
+  bool is_verbose() { return verbose; }
 
 private:
   /// Internal method used to format with any formatting options.

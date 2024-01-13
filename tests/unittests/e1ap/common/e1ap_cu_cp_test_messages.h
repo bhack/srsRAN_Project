@@ -27,30 +27,10 @@
 namespace srsran {
 namespace srs_cu_cp {
 
-/// \brief Generate a dummy CU-CP E1 Setup Request.
-cu_cp_e1_setup_request generate_cu_cp_e1_setup_request();
-
 /// \brief Generate dummy Supported PLMNs Item.
 /// \param[in] nrcell_id The NR Cell Id to use.
 /// \return The dummy Supported PLMNs Item.
 asn1::e1ap::supported_plmns_item_s generate_supported_plmns_item(unsigned nrcell_id);
-
-/// \brief Generate a dummy CU-CP E1 Setup Response.
-/// \param[in] transaction_id The transaction ID of the Response.
-/// \return The CU-CP E1 Setup Response.
-e1ap_message generate_cu_cp_e1_setup_respose(unsigned transaction_id);
-
-/// \brief Generate a dummy CU-CP E1 Setup Failure.
-/// \param[in] transaction_id The transaction ID of the Failure.
-/// \return The CU-CP E1 Setup Failure.
-e1ap_message generate_cu_cp_e1_setup_failure(unsigned transaction_id);
-
-/// \brief  Generate a dummy CU-CP E1 Setup Failure with time to wait.
-/// \param[in] transaction_id The transaction ID of the Failure.
-/// \param[in] time_to_wait The time to wait for a retransmission.
-/// \return The CU-CP E1 Setup Failure.
-e1ap_message generate_cu_cp_e1_setup_failure_with_time_to_wait(unsigned                   transaction_id,
-                                                               asn1::e1ap::time_to_wait_e time_to_wait);
 
 /// \brief Generate a dummy CU-CP E1 Setup Request base to extend.
 /// \return The CU-CP E1 Setup Request base.
@@ -110,6 +90,20 @@ e1ap_bearer_context_release_command generate_bearer_context_release_command(ue_i
 /// \return The Bearer Context Release Complete.
 e1ap_message generate_bearer_context_release_complete(gnb_cu_cp_ue_e1ap_id_t cu_cp_ue_e1ap_id,
                                                       gnb_cu_up_ue_e1ap_id_t cu_up_ue_e1ap_id);
+
+/// \brief Generate a dummy Bearer Context Inactivity Notification with UE activity level.
+/// \param[in] cu_cp_ue_e1ap_id The CU-CP UE E1AP ID.
+/// \param[in] cu_up_ue_e1ap_id The CU-UP UE E1AP ID.
+/// \return The Bearer Context Inactivity Notification.
+e1ap_message generate_bearer_context_inactivity_notification_with_ue_level(gnb_cu_cp_ue_e1ap_id_t cu_cp_ue_e1ap_id,
+                                                                           gnb_cu_up_ue_e1ap_id_t cu_up_ue_e1ap_id);
+
+/// \brief Generate an invalid dummy Bearer Context Inactivity Notification with UE activity level.
+/// \param[in] cu_cp_ue_e1ap_id The CU-CP UE E1AP ID.
+/// \param[in] cu_up_ue_e1ap_id The CU-UP UE E1AP ID.
+/// \return The invalid Bearer Context Inactivity Notification.
+e1ap_message generate_invalid_bearer_context_inactivity_notification(gnb_cu_cp_ue_e1ap_id_t cu_cp_ue_e1ap_id,
+                                                                     gnb_cu_up_ue_e1ap_id_t cu_up_ue_e1ap_id);
 
 } // namespace srs_cu_cp
 } // namespace srsran

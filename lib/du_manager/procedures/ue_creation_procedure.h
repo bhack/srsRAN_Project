@@ -22,19 +22,23 @@
 
 #pragma once
 
-#include "../../ran/gnb_format.h"
-#include "../converters/mac_config_helpers.h"
 #include "../du_ue/du_ue.h"
-#include "../du_ue/ue_manager_ctrl_configurator.h"
+#include "../du_ue/du_ue_manager_repository.h"
+#include "procedure_logger.h"
 #include "srsran/du_manager/du_manager_params.h"
+#include "srsran/mac/config/mac_config_helpers.h"
 #include "srsran/mac/mac.h"
-#include "srsran/rlc/rlc_factory.h"
-#include "srsran/rlc/rlc_rx.h"
-#include "srsran/rlc/rlc_tx.h"
 #include "srsran/support/async/async_task.h"
 
 namespace srsran {
 namespace srs_du {
+
+struct du_ue_creation_request {
+  du_ue_index_t   ue_index;
+  du_cell_index_t pcell_index;
+  rnti_t          tc_rnti;
+  byte_buffer     ul_ccch_msg;
+};
 
 /// \brief Handles the creation of a UE and respective bearers in the DU UE manager, MAC, F1.
 ///  \startuml
@@ -57,48 +61,44 @@ namespace srs_du {
 class ue_creation_procedure
 {
 public:
-  ue_creation_procedure(du_ue_index_t                                ue_index,
-                        const ul_ccch_indication_message&            ccch_ind_msg,
-                        ue_manager_ctrl_configurator&                ue_mng_,
-                        const du_manager_params::service_params&     du_services_,
-                        const du_manager_params::mac_config_params&  mac_mng_,
-                        const du_manager_params::rlc_config_params&  rlc_params_,
-                        const du_manager_params::f1ap_config_params& f1ap_mng_,
-                        du_ran_resource_manager&                     cell_res_alloc_);
+  ue_creation_procedure(const du_ue_creation_request& req_,
+                        du_ue_manager_repository&     ue_mng_,
+                        const du_manager_params&      du_params_,
+                        du_ran_resource_manager&      cell_res_alloc_);
 
   void operator()(coro_context<async_task<void>>& ctx);
 
   static const char* name() { return "UE Create"; }
 
 private:
+  /// Creates a UE object in the DU UE manager.
+  du_ue* create_du_ue_context();
+
   /// Remove UE from DU Manager UE repository.
-  void clear_ue();
+  async_task<void> clear_ue();
 
   /// Setups DU manager resources used by DU UE being created.
   bool setup_du_ue_resources();
 
   /// Creates UE object in F1.
-  void create_f1ap_ue();
+  f1ap_ue_creation_response create_f1ap_ue();
 
   /// Creates SRB0 and SRB1 in RLC.
   void create_rlc_srbs();
 
-  async_task<mac_ue_create_response_message> make_mac_ue_create_req();
+  async_task<mac_ue_create_response> create_mac_ue();
 
   void connect_layer_bearers();
 
-  ul_ccch_indication_message                   msg;
-  ue_manager_ctrl_configurator&                ue_mng;
-  const du_manager_params::service_params&     services;
-  const du_manager_params::mac_config_params&  mac_mng;
-  const du_manager_params::rlc_config_params&  rlc_cfg;
-  const du_manager_params::f1ap_config_params& f1ap_mng;
-  du_ran_resource_manager&                     du_res_alloc;
-  srslog::basic_logger&                        logger;
+  const du_ue_creation_request req;
+  du_ue_manager_repository&    ue_mng;
+  const du_manager_params&     du_params;
+  du_ran_resource_manager&     du_res_alloc;
+  ue_procedure_logger          proc_logger;
 
-  du_ue*                         ue_ctx = nullptr;
-  mac_ue_create_response_message mac_resp{};
-  f1ap_ue_creation_response      f1ap_resp{};
+  du_ue*                    ue_ctx = nullptr;
+  mac_ue_create_response    mac_resp{};
+  f1ap_ue_creation_response f1ap_resp{};
 };
 
 } // namespace srs_du

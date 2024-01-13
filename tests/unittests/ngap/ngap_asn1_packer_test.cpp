@@ -20,6 +20,7 @@
  *
  */
 
+#include "lib/ngap/ngap_asn1_helpers.h"
 #include "lib/ngap/ngap_asn1_packer.h"
 #include "lib/ngap/ngap_asn1_utils.h"
 #include "ngap_test_messages.h"
@@ -30,10 +31,10 @@
 using namespace srsran;
 using namespace srs_cu_cp;
 
-security::sec_as_key make_sec_as_key(std::string hex_str)
+security::sec_key make_sec_key(std::string hex_str)
 {
-  byte_buffer          key_buf = make_byte_buffer(hex_str);
-  security::sec_as_key key     = {};
+  byte_buffer       key_buf = make_byte_buffer(hex_str);
+  security::sec_key key     = {};
   std::copy(key_buf.begin(), key_buf.end(), key.begin());
   return key;
 }
@@ -65,7 +66,7 @@ protected:
   std::unique_ptr<dummy_ngap_message_handler>         ngap;
   std::unique_ptr<srsran::ngap_asn1_packer>           packer;
   srslog::basic_logger&                               test_logger = srslog::fetch_basic_logger("TEST");
-  dummy_ngap_pcap                                     pcap;
+  null_dlt_pcap                                       pcap;
 };
 
 /// Test successful packing and compare with captured test vector
@@ -75,7 +76,7 @@ TEST_F(ngap_asn1_packer_test, when_packing_successful_then_pdu_matches_tv)
   ngap_message ngap_msg = {};
   ngap_msg.pdu.set_init_msg();
   ngap_msg.pdu.init_msg().load_info_obj(ASN1_NGAP_ID_NG_SETUP);
-  ngap_msg.pdu.init_msg().value.ng_setup_request() = generate_ng_setup_request().msg;
+  fill_asn1_ng_setup_request(ngap_msg.pdu.init_msg().value.ng_setup_request(), generate_ng_setup_request());
 
   // Pack message and forward to gateway
   packer->handle_message(ngap_msg);
@@ -120,7 +121,7 @@ TEST_F(ngap_asn1_packer_test, when_packing_unsuccessful_then_message_not_forward
   ngap_msg.pdu.set_successful_outcome();
   ngap_msg.pdu.successful_outcome().load_info_obj(ASN1_NGAP_ID_NG_SETUP);
   auto& setup_res = ngap_msg.pdu.successful_outcome().value.ng_setup_resp();
-  setup_res->amf_name.value.from_string("open5gs-amf0");
+  setup_res->amf_name.from_string("open5gs-amf0");
 
   // Action 3: Pack message and forward to gateway
   packer->handle_message(ngap_msg);
@@ -139,8 +140,8 @@ TEST_F(ngap_asn1_packer_test, when_unpack_init_ctx_extract_sec_params_correctly)
       "42010177000bf200f110020040dd00b06454072000f11000000715020101210201005e0129";
 
   // get expected security key
-  const char*          security_key_cstr = "50636e38151d62356d9a1a0c9f2391885177307ad494be15281dfe5fdac06302";
-  security::sec_as_key security_key      = make_sec_as_key(security_key_cstr);
+  const char*       security_key_cstr = "50636e38151d62356d9a1a0c9f2391885177307ad494be15281dfe5fdac06302";
+  security::sec_key security_key      = make_sec_key(security_key_cstr);
 
   byte_buffer buf = make_byte_buffer(ngap_init_ctx_req);
 
@@ -151,12 +152,12 @@ TEST_F(ngap_asn1_packer_test, when_unpack_init_ctx_extract_sec_params_correctly)
   const asn1::ngap::ngap_pdu_c&                   pdu     = msg.pdu;
   const asn1::ngap::init_context_setup_request_s& request = pdu.init_msg().value.init_context_setup_request();
 
-  security::sec_as_key           security_key_o;
+  security::sec_key              security_key_o;
   security::supported_algorithms inte_algos;
   security::supported_algorithms ciph_algos;
-  copy_asn1_key(security_key_o, *request->security_key);
-  fill_supported_algorithms(inte_algos, request->ue_security_cap->nr_integrity_protection_algorithms);
-  fill_supported_algorithms(ciph_algos, request->ue_security_cap->nr_encryption_algorithms);
+  copy_asn1_key(security_key_o, request->security_key);
+  fill_supported_algorithms(inte_algos, request->ue_security_cap.nr_integrity_protection_algorithms);
+  fill_supported_algorithms(ciph_algos, request->ue_security_cap.nr_encryption_algorithms);
   test_logger.debug("{}", inte_algos);
   test_logger.debug("{}", ciph_algos);
 
@@ -167,4 +168,48 @@ TEST_F(ngap_asn1_packer_test, when_unpack_init_ctx_extract_sec_params_correctly)
   ASSERT_EQ(false, inte_algos[2]);         // NIA3 not supported
   ASSERT_EQ(false, inte_algos[2]);         // NEA3 not supported
   ASSERT_EQ(security_key, security_key_o); // Key was correctly copied
+}
+
+/// Test unpacking packing and unpacking of DL NAS messages
+TEST_F(ngap_asn1_packer_test, when_dl_nas_message_packing_successful_then_unpacking_successful)
+{
+  // Action 1: Create valid ngap message
+  amf_ue_id_t  amf_ue_id        = amf_ue_id_t::max;
+  ran_ue_id_t  ran_ue_id        = ran_ue_id_t::max;
+  ngap_message dl_nas_transport = generate_downlink_nas_transport_message(amf_ue_id, ran_ue_id);
+
+  // Action 2: Pack message and forward to gateway
+  packer->handle_message(dl_nas_transport);
+
+  // Action 3: Unpack message and forward to ngap
+  packer->handle_packed_pdu(std::move(gw->last_pdu));
+
+  // Assert that the originally created message is equal to the unpacked message
+  ASSERT_EQ(ngap->last_msg.pdu.type(), dl_nas_transport.pdu.type());
+
+  // Assert that the AMF UE ID of the originally created message is equal to the one of the unpacked message
+  ASSERT_EQ(ngap->last_msg.pdu.init_msg().value.dl_nas_transport()->amf_ue_ngap_id,
+            amf_ue_id_to_uint(amf_ue_id_t::max));
+}
+
+/// Test unpacking packing and unpacking of UL NAS messages
+TEST_F(ngap_asn1_packer_test, when_ul_nas_message_packing_successful_then_unpacking_successful)
+{
+  // Action 1: Create valid ngap message
+  amf_ue_id_t  amf_ue_id        = amf_ue_id_t::max;
+  ran_ue_id_t  ran_ue_id        = ran_ue_id_t::max;
+  ngap_message ul_nas_transport = generate_uplink_nas_transport_message(amf_ue_id, ran_ue_id);
+
+  // Action 2: Pack message and forward to gateway
+  packer->handle_message(ul_nas_transport);
+
+  // Action 3: Unpack message and forward to ngap
+  packer->handle_packed_pdu(std::move(gw->last_pdu));
+
+  // Assert that the originally created message is equal to the unpacked message
+  ASSERT_EQ(ngap->last_msg.pdu.type(), ul_nas_transport.pdu.type());
+
+  // Assert that the AMF UE ID of the originally created message is equal to the one of the unpacked message
+  ASSERT_EQ(ngap->last_msg.pdu.init_msg().value.ul_nas_transport()->amf_ue_ngap_id,
+            amf_ue_id_to_uint(amf_ue_id_t::max));
 }

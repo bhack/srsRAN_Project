@@ -22,6 +22,7 @@
 
 #pragma once
 
+#include "async_no_op_task.h"
 #include "async_task.h"
 #include "eager_async_task.h"
 #include "manual_event.h"

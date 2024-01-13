@@ -37,6 +37,49 @@ namespace fapi {
 
 // :TODO: Review the builders documentation so it matches the UCI builder.
 
+/// Helper class to fill the transmission precoding and beamforming parameters specified in SCF-222 v4.0
+/// section 3.4.2.5.
+class tx_precoding_and_beamforming_pdu_builder
+{
+  tx_precoding_and_beamforming_pdu& pdu;
+
+public:
+  explicit tx_precoding_and_beamforming_pdu_builder(tx_precoding_and_beamforming_pdu& pdu_) : pdu(pdu_)
+  {
+    // Mark the tx precoding and beamforming pdu as used when this builder is called.
+    pdu.trp_scheme = 0U;
+    // Initialize number of digital beamforming interfaces.
+    pdu.dig_bf_interfaces = 0U;
+  }
+
+  /// Sets the basic parameters for the fields of the tranmission precoding and beamforming PDU.
+  /// \note These parameters are specified in SCF-222 v4.0 section 3.4.2.5, in table Tx precoding and beamforming PDU.
+  tx_precoding_and_beamforming_pdu_builder& set_basic_parameters(unsigned prg_size, unsigned dig_bf_interfaces)
+  {
+    pdu.prg_size          = prg_size;
+    pdu.dig_bf_interfaces = dig_bf_interfaces;
+
+    return *this;
+  }
+
+  /// Adds a PRG to the transmission precoding and beamforming PDU.
+  /// \note These parameters are specified in SCF-222 v4.0 section 3.4.2.5, in table Tx precoding and beamforming PDU.
+  tx_precoding_and_beamforming_pdu_builder& add_prg(unsigned pm_index, span<const uint16_t> beam_index)
+  {
+    tx_precoding_and_beamforming_pdu::prgs_info& prg = pdu.prgs.emplace_back();
+
+    srsran_assert(pdu.dig_bf_interfaces == beam_index.size(),
+                  "Error number of beam indexes={} does not match the expected={}",
+                  beam_index.size(),
+                  pdu.dig_bf_interfaces);
+
+    prg.pm_index = pm_index;
+    prg.beam_index.assign(beam_index.begin(), beam_index.end());
+
+    return *this;
+  }
+};
+
 /// Helper class to fill in the DL SSB PDU parameters specified in SCF-222 v4.0 section 3.4.2.4.
 class dl_ssb_pdu_builder
 {
@@ -158,6 +201,14 @@ public:
     v3.beta_pss_profile_sss = static_cast<decltype(v3.beta_pss_profile_sss)>(beta_pss);
 
     return *this;
+  }
+
+  /// Returns a transmission precoding and beamforming PDU builder of this SSB PDU.
+  tx_precoding_and_beamforming_pdu_builder get_tx_precoding_and_beamforming_pdu_builder()
+  {
+    tx_precoding_and_beamforming_pdu_builder builder(pdu.precoding_and_beamforming);
+
+    return builder;
   }
 
 private:
@@ -290,6 +341,14 @@ public:
   {
     pdu.context = pdcch_context(ss_id, dci_format, harq_feedback_timing);
     return *this;
+  }
+
+  /// Returns a transmission precoding and beamforming PDU builder of this DL DCI PDU.
+  tx_precoding_and_beamforming_pdu_builder get_tx_precoding_and_beamforming_pdu_builder()
+  {
+    tx_precoding_and_beamforming_pdu_builder builder(pdu.precoding_and_beamforming);
+
+    return builder;
   }
 
 private:
@@ -625,6 +684,15 @@ public:
     return *this;
   }
 
+  /// Sets the maintenance v3 CSI-RS rate matching references parameters for the fields of the PDSCH PDU.
+  /// \note These parameters are specified in SCF-222 v4.0 section 3.4.2.2, in table PDSCH maintenance parameters v3.
+  dl_pdsch_pdu_builder& set_maintenance_v3_csi_rm_references(span<const uint16_t> csi_rs_for_rm)
+  {
+    pdu.pdsch_maintenance_v3.csi_for_rm.assign(csi_rs_for_rm.begin(), csi_rs_for_rm.end());
+
+    return *this;
+  }
+
   /// Sets the maintenance v3 rate matching references parameters for the fields of the PDSCH PDU.
   /// \note These parameters are specified in SCF-222 v4.0 section 3.4.2.2, in table PDSCH maintenance parameters v3.
   dl_pdsch_pdu_builder&
@@ -635,8 +703,7 @@ public:
                                               uint16_t             pdcch_pdu_index,
                                               uint16_t             dci_index,
                                               uint8_t              lte_crs_rm_pattern_bitmap_size,
-                                              span<const uint8_t>  lte_crs_rm_pattern,
-                                              span<const uint16_t> csi_rs_for_rm)
+                                              span<const uint8_t>  lte_crs_rm_pattern)
   {
     srsran_assert(ssb_pdus_for_rm.size() <= dl_pdsch_maintenance_parameters_v3::MAX_SIZE_SSB_PDU_FOR_RM,
                   "[PDSCH Builder] - Incoming SSB PDUs for RM matching size ({}) doesn't fit the field ({})",
@@ -659,7 +726,6 @@ public:
 
     pdu.pdsch_maintenance_v3.lte_crs_rm_pattern_bitmap_size = lte_crs_rm_pattern_bitmap_size;
     pdu.pdsch_maintenance_v3.lte_crs_rm_pattern.assign(lte_crs_rm_pattern.begin(), lte_crs_rm_pattern.end());
-    pdu.pdsch_maintenance_v3.csi_for_rm.assign(csi_rs_for_rm.begin(), csi_rs_for_rm.end());
 
     return *this;
   }
@@ -755,10 +821,18 @@ public:
   }
 
   /// Sets the PDSCH context as vendor specific.
-  dl_pdsch_pdu_builder& set_context_vendor_specific(harq_id_t harq_id, unsigned k1)
+  dl_pdsch_pdu_builder& set_context_vendor_specific(harq_id_t harq_id, unsigned k1, unsigned nof_retxs)
   {
-    pdu.context = pdsch_context(harq_id, k1);
+    pdu.context = pdsch_context(harq_id, k1, nof_retxs);
     return *this;
+  }
+
+  /// Returns a transmission precoding and beamforming PDU builder of this PDSCH PDU.
+  tx_precoding_and_beamforming_pdu_builder get_tx_precoding_and_beamforming_pdu_builder()
+  {
+    tx_precoding_and_beamforming_pdu_builder builder(pdu.precoding_and_beamforming);
+
+    return builder;
   }
 
   // :TODO: FAPIv4 MU-MIMO.
@@ -777,16 +851,16 @@ public:
 
   /// Sets the CSI-RS PDU basic parameters and returns a reference to the builder.
   /// \note These parameters are specified in SCF-222 v4.0 section 3.4.2.3 in table CSI-RS PDU.
-  dl_csi_rs_pdu_builder& set_basic_parameters(uint16_t                        start_rb,
-                                              uint16_t                        nof_rbs,
-                                              csi_rs_type                     type,
-                                              uint8_t                         row,
-                                              const bounded_bitset<12, true>& freq_domain,
-                                              uint8_t                         symb_l0,
-                                              uint8_t                         symb_l1,
-                                              csi_rs_cdm_type                 cdm_type,
-                                              csi_rs_freq_density_type        freq_density,
-                                              uint16_t                        scrambling_id)
+  dl_csi_rs_pdu_builder& set_basic_parameters(uint16_t                         start_rb,
+                                              uint16_t                         nof_rbs,
+                                              csi_rs_type                      type,
+                                              uint8_t                          row,
+                                              const bounded_bitset<12, false>& freq_domain,
+                                              uint8_t                          symb_l0,
+                                              uint8_t                          symb_l1,
+                                              csi_rs_cdm_type                  cdm_type,
+                                              csi_rs_freq_density_type         freq_density,
+                                              uint16_t                         scrambling_id)
   {
     pdu.start_rb     = start_rb;
     pdu.num_rbs      = nof_rbs;
@@ -854,6 +928,14 @@ public:
 
     return *this;
   }
+
+  /// Returns a transmission precoding and beamforming PDU builder of this CSI-RS PDU.
+  tx_precoding_and_beamforming_pdu_builder get_tx_precoding_and_beamforming_pdu_builder()
+  {
+    tx_precoding_and_beamforming_pdu_builder builder(pdu.precoding_and_beamforming);
+
+    return builder;
+  }
 };
 
 /// DL_TTI.request message builder that helps to fill in the parameters specified in SCF-222 v4.0 section 3.4.2.
@@ -861,7 +943,10 @@ class dl_tti_request_message_builder
 {
 public:
   /// Constructs a builder that will help to fill the given DL TTI request message.
-  explicit dl_tti_request_message_builder(dl_tti_request_message& msg_) : msg(msg_) {}
+  explicit dl_tti_request_message_builder(dl_tti_request_message& msg_) : msg(msg_)
+  {
+    msg.is_last_message_in_slot = false;
+  }
 
   /// Sets the DL_TTI.request basic parameters and returns a reference to the builder.
   /// \note nPDUs and nPDUsOfEachType properties are filled by the add_*_pdu() functions.
@@ -931,16 +1016,16 @@ public:
   }
 
   /// Adds a CSI-RS PDU to the message and returns a CSI-RS PDU builder.
-  dl_csi_rs_pdu_builder add_csi_rs_pdu(uint16_t                        start_rb,
-                                       uint16_t                        nof_rbs,
-                                       csi_rs_type                     type,
-                                       uint8_t                         row,
-                                       const bounded_bitset<12, true>& freq_domain,
-                                       uint8_t                         symb_l0,
-                                       uint8_t                         symb_l1,
-                                       csi_rs_cdm_type                 cdm_type,
-                                       csi_rs_freq_density_type        freq_density,
-                                       uint16_t                        scrambling_id)
+  dl_csi_rs_pdu_builder add_csi_rs_pdu(uint16_t                         start_rb,
+                                       uint16_t                         nof_rbs,
+                                       csi_rs_type                      type,
+                                       uint8_t                          row,
+                                       const bounded_bitset<12, false>& freq_domain,
+                                       uint8_t                          symb_l0,
+                                       uint8_t                          symb_l1,
+                                       csi_rs_cdm_type                  cdm_type,
+                                       csi_rs_freq_density_type         freq_density,
+                                       uint16_t                         scrambling_id)
   {
     // Add a new PDU.
     dl_tti_request_pdu& pdu = msg.pdus.emplace_back();
@@ -999,6 +1084,13 @@ public:
     return builder;
   }
 
+  /// Sets the flag of the last message in slot.
+  dl_tti_request_message_builder& set_last_message_in_slot_flag()
+  {
+    msg.is_last_message_in_slot = true;
+    return *this;
+  }
+
   //: TODO: PDU groups array
   //: TODO: top level rate match patterns
 
@@ -1015,6 +1107,7 @@ public:
   explicit ul_dci_request_message_builder(ul_dci_request_message& msg_) : msg(msg_)
   {
     msg.num_pdus_of_each_type.fill(0);
+    msg.is_last_message_in_slot = false;
   }
 
   /// Sets the UL_DCI.request basic parameters and returns a reference to the builder.
@@ -1047,6 +1140,13 @@ public:
     dl_pdcch_pdu_builder builder(pdu.pdu);
 
     return builder;
+  }
+
+  /// Sets the flag of the last message in slot.
+  ul_dci_request_message_builder& set_last_message_in_slot_flag()
+  {
+    msg.is_last_message_in_slot = true;
+    return *this;
   }
 };
 
@@ -1314,7 +1414,7 @@ public:
   uci_pusch_pdu_builder& set_basic_parameters(uint32_t handle, rnti_t rnti)
   {
     pdu.handle = handle;
-    pdu.rnti   = rnti;
+    pdu.rnti   = to_value(rnti);
 
     return *this;
   }
@@ -1440,7 +1540,7 @@ public:
   uci_pucch_pdu_format_0_1_builder& set_basic_parameters(uint32_t handle, rnti_t rnti, pucch_format type)
   {
     pdu.handle = handle;
-    pdu.rnti   = rnti;
+    pdu.rnti   = to_value(rnti);
     switch (type) {
       case pucch_format::FORMAT_0:
         pdu.pucch_format = uci_pucch_pdu_format_0_1::format_type::format_0;
@@ -1557,7 +1657,7 @@ public:
   uci_pucch_pdu_format_2_3_4_builder& set_basic_parameters(uint32_t handle, rnti_t rnti, pucch_format type)
   {
     pdu.handle = handle;
-    pdu.rnti   = rnti;
+    pdu.rnti   = to_value(rnti);
     switch (type) {
       case pucch_format::FORMAT_2:
         pdu.pucch_format = uci_pucch_pdu_format_2_3_4::format_type::format_2;
@@ -1786,13 +1886,13 @@ build_error_indication(uint16_t sfn, uint16_t slot, message_type_id msg_id, erro
 
   error_indication_message msg;
 
-  msg.message_type  = msg_id;
+  msg.message_type  = message_type_id::error_indication;
   msg.sfn           = sfn;
   msg.slot          = slot;
   msg.message_id    = msg_id;
   msg.error_code    = error_id;
-  msg.expected_sfn  = std::numeric_limits<uint16_t>::max();
-  msg.expected_slot = std::numeric_limits<uint16_t>::max();
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
 
   return msg;
 }
@@ -1808,13 +1908,89 @@ inline error_indication_message build_out_of_sync_error_indication(uint16_t     
 {
   error_indication_message msg;
 
-  msg.message_type  = msg_id;
+  msg.message_type  = message_type_id::error_indication;
   msg.sfn           = sfn;
   msg.slot          = slot;
   msg.message_id    = msg_id;
   msg.error_code    = error_code_id::out_of_sync;
   msg.expected_sfn  = expected_sfn;
   msg.expected_slot = expected_slot;
+
+  return msg;
+}
+
+/// \brief Builds and returns an ERROR.indication message with the given parameters, as per SCF-222 v4.0 section 3.3.6.1
+/// in table ERROR.indication message body
+/// \note This builder is used to build only an MSG_INVALID_SFN error code.
+inline error_indication_message build_invalid_sfn_error_indication(uint16_t        sfn,
+                                                                   uint16_t        slot,
+                                                                   message_type_id msg_id,
+                                                                   uint16_t        expected_sfn,
+                                                                   uint16_t        expected_slot)
+{
+  error_indication_message msg;
+
+  msg.message_type  = message_type_id::error_indication;
+  msg.sfn           = sfn;
+  msg.slot          = slot;
+  msg.message_id    = msg_id;
+  msg.error_code    = error_code_id::msg_invalid_sfn;
+  msg.expected_sfn  = expected_sfn;
+  msg.expected_slot = expected_slot;
+
+  return msg;
+}
+
+/// \brief Builds and returns an ERROR.indication message with the given parameters, as per SCF-222 v4.0 section 3.3.6.1
+/// in table ERROR.indication message body
+/// \note This builder is used to build only a MSG_SLOT_ERR error code.
+inline error_indication_message build_msg_slot_error_indication(uint16_t sfn, uint16_t slot, message_type_id msg_id)
+{
+  error_indication_message msg;
+
+  msg.message_type  = message_type_id::error_indication;
+  msg.sfn           = sfn;
+  msg.slot          = slot;
+  msg.message_id    = msg_id;
+  msg.error_code    = error_code_id::msg_slot_err;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
+
+  return msg;
+}
+
+/// \brief Builds and returns an ERROR.indication message with the given parameters, as per SCF-222 v4.0 section 3.3.6.1
+/// in table ERROR.indication message body
+/// \note This builder is used to build only a MSG_TX_ERR error code.
+inline error_indication_message build_msg_tx_error_indication(uint16_t sfn, uint16_t slot)
+{
+  error_indication_message msg;
+
+  msg.message_type  = message_type_id::error_indication;
+  msg.sfn           = sfn;
+  msg.slot          = slot;
+  msg.message_id    = message_type_id::tx_data_request;
+  msg.error_code    = error_code_id::msg_tx_err;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
+
+  return msg;
+}
+
+/// \brief Builds and returns an ERROR.indication message with the given parameters, as per SCF-222 v4.0 section 3.3.6.1
+/// in table ERROR.indication message body
+/// \note This builder is used to build only a MSG_UL_DCI_ERR error code.
+inline error_indication_message build_msg_ul_dci_error_indication(uint16_t sfn, uint16_t slot)
+{
+  error_indication_message msg;
+
+  msg.message_type  = message_type_id::error_indication;
+  msg.sfn           = sfn;
+  msg.slot          = slot;
+  msg.message_id    = message_type_id::ul_dci_request;
+  msg.error_code    = error_code_id::msg_ul_dci_err;
+  msg.expected_sfn  = std::numeric_limits<decltype(error_indication_message::expected_sfn)>::max();
+  msg.expected_slot = std::numeric_limits<decltype(error_indication_message::expected_slot)>::max();
 
   return msg;
 }
@@ -2123,6 +2299,14 @@ public:
   {
     pdu.ul_dmrs_symb_pos = 0U;
     pdu.rb_bitmap.fill(0);
+
+    ul_pusch_uci& uci        = pdu.pusch_uci;
+    uci.harq_ack_bit_length  = 0U;
+    uci.beta_offset_harq_ack = 0U;
+    uci.csi_part1_bit_length = 0U;
+    uci.beta_offset_csi1     = 0U;
+    uci.flags_csi_part2      = 0U;
+    uci.beta_offset_csi2     = 0U;
   }
 
   /// Sets the PUSCH PDU basic parameters and returns a reference to the builder.
@@ -2342,27 +2526,54 @@ public:
     return *this;
   }
 
-  /// Adds optional PUSCH UCI information to the PUSCH PDU and returns a reference to the builder.
+  /// Adds optional PUSCH UCI alpha information to the PUSCH PDU and returns a reference to the builder.
   /// \note These parameters are specified in SCF-222 v4.0 section 3.4.3.2 in table optional PUSCH UCI information.
-  ul_pusch_pdu_builder& add_optional_pusch_uci(uint16_t          harq_ack_bit_len,
-                                               uint16_t          csi_part1_bit_len,
-                                               uint16_t          flag_csi_part2_bit_len,
-                                               alpha_scaling_opt alpha_scaling,
-                                               uint8_t           beta_offset_harq_ack,
-                                               uint8_t           beta_offset_csi_1,
-                                               uint8_t           beta_offset_csi_2)
+  ul_pusch_pdu_builder& add_optional_pusch_uci_alpha(alpha_scaling_opt alpha_scaling)
+  {
+    pdu.pdu_bitmap.set(ul_pusch_pdu::PUSCH_UCI_BIT);
+
+    auto& uci         = pdu.pusch_uci;
+    uci.alpha_scaling = alpha_scaling;
+
+    return *this;
+  }
+
+  /// Adds optional PUSCH UCI HARQ information to the PUSCH PDU and returns a reference to the builder.
+  /// \note These parameters are specified in SCF-222 v4.0 section 3.4.3.2 in table optional PUSCH UCI information.
+  ul_pusch_pdu_builder& add_optional_pusch_uci_harq(uint16_t harq_ack_bit_len, uint8_t beta_offset_harq_ack)
   {
     pdu.pdu_bitmap.set(ul_pusch_pdu::PUSCH_UCI_BIT);
 
     auto& uci = pdu.pusch_uci;
 
     uci.harq_ack_bit_length  = harq_ack_bit_len;
-    uci.csi_part1_bit_length = csi_part1_bit_len;
-    uci.flags_csi_part2      = flag_csi_part2_bit_len;
-    uci.alpha_scaling        = alpha_scaling;
     uci.beta_offset_harq_ack = beta_offset_harq_ack;
+
+    return *this;
+  }
+
+  /// Adds optional PUSCH UCI CSI1 information to the PUSCH PDU and returns a reference to the builder.
+  /// \note These parameters are specified in SCF-222 v4.0 section 3.4.3.2 in table optional PUSCH UCI information.
+  ul_pusch_pdu_builder& add_optional_pusch_uci_csi1(uint16_t csi_part1_bit_len, uint8_t beta_offset_csi_1)
+  {
+    pdu.pdu_bitmap.set(ul_pusch_pdu::PUSCH_UCI_BIT);
+
+    auto& uci = pdu.pusch_uci;
+
+    uci.csi_part1_bit_length = csi_part1_bit_len;
     uci.beta_offset_csi1     = beta_offset_csi_1;
-    uci.beta_offset_csi2     = beta_offset_csi_2;
+
+    return *this;
+  }
+
+  /// Adds optional PUSCH UCI CSI2 information to the PUSCH PDU and returns a reference to the builder.
+  /// \note These parameters are specified in SCF-222 v4.0 section 3.4.3.2 in table optional PUSCH UCI information.
+  ul_pusch_pdu_builder& add_optional_pusch_uci_csi2(uint8_t beta_offset_csi_2)
+  {
+    auto& uci = pdu.pusch_uci;
+
+    uci.flags_csi_part2  = std::numeric_limits<decltype(fapi::ul_pusch_uci::flags_csi_part2)>::max();
+    uci.beta_offset_csi2 = beta_offset_csi_2;
 
     return *this;
   }

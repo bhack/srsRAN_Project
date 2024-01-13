@@ -54,7 +54,8 @@ public:
   /// - pack(0b01100, 5): [...][11101101][100_____]
   /// \param val bitmap to be packed.
   /// \param n_bits number of bits to pack.
-  void pack(uint64_t val, uint32_t n_bits);
+  /// \return success or failure.
+  bool pack(uint64_t val, uint32_t n_bits);
 
   /// Append range of bytes into byte_buffer held by bit_encoder.
   /// \param bytes span of bytes.
@@ -103,10 +104,17 @@ public:
   template <class T>
   bool unpack(T& val, uint32_t n_bits);
 
-  /// Read bytes from underlying byte_buffer.
+  /// Read unaligned bytes from underlying byte_buffer.
   /// \param bytes span of bytes where the result is stored. The span size defines the number of bytes to be read.
-  /// \return true if successful. False if the number of bytes to be read exceeds size of the byte_buffer.
+  /// \return true if successful. False if the number of bytes to be read exceeds the end of the byte_buffer.
   bool unpack_bytes(srsran::span<uint8_t> bytes);
+
+  /// Create a view across \c n_bytes bytes of the underlying byte_buffer, starting at the first full byte from the
+  /// current location. For this purpose, the decoder is first automatically aligned via \c align_bytes.
+  /// \param n_bytes Number of bytes to read.
+  /// \return byte_buffer_view across \c n_bytes bytes of the underlying byte_buffer.
+  /// An empty view is returned if the number of bytes to be read exceeds the end of the byte_buffer.
+  byte_buffer_view unpack_aligned_bytes(size_t n_bytes);
 
   /// Skip bits until the beginning of the next byte.
   void align_bytes();

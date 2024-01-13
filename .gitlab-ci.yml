@@ -24,24 +24,74 @@
 # Ex: "Test Weekly", "Nighlty add feature"
 
 include:
-  - project: softwareradiosystems/testing-tools
-    ref: "45"
+  - project: softwareradiosystems/ci/tools
+    ref: "14"
     file: .gitlab/ci-shared/setup/all.yml
-  - project: softwareradiosystems/testing-tools
-    ref: "45"
+  - project: softwareradiosystems/ci/tools
+    ref: "14"
     file: .gitlab/ci-shared/features/all.yml
-  - project: softwareradiosystems/testing-tools
-    ref: "45"
+  - project: softwareradiosystems/ci/tools
+    ref: "14"
+    file: .gitlab/ci-shared/tools/python.yml
+  - project: softwareradiosystems/ci/tools
+    ref: "14"
     file: .gitlab/ci-shared/tools/test_reporter.yml
+  - project: softwareradiosystems/ci/tools
+    ref: "14"
+    file: .gitlab/ci-shared/tools/tagger.yml
+  - local: .gitlab/ci/builders/version.yml
   - local: .gitlab/ci/build.yml
+  - local: .gitlab/ci/trx.yml
   - local: .gitlab/ci/e2e.yml
+  - local: .gitlab/ci/release.yml
 
 stages:
   - ci
   - static
   - build and unit tests
   - e2e
+  - manual
   - documentation
+  - private
+  - public
+  - release
+
+variables:
+  SLACK_CHANNEL_OK: "#ci_gnb"
+  SLACK_CHANNEL_FAIL: "#ci_gnb"
+  SLACK_CHANNEL_INFO_MSG: "#ci_gnb_verbose"
+  AUTOREBASER_MODE: minimal
+
+################################################################################
+## CI
+################################################################################
+trigger builder:
+  stage: ci
+  rules:
+    - if: $ON_MR
+      changes:
+        paths:
+          - .gitlab/ci/src_cache.yml
+          - .gitlab/ci/builders.yml
+          - .gitlab/ci/builders/**/*
+  trigger:
+    include: .gitlab/ci/builders.yml
+    strategy: depend
+
+trigger docker:
+  stage: ci
+  rules:
+    - if: $ON_MR
+      changes:
+        paths:
+          - .gitlab/ci/docker.yml
+          - docker/**/*.{yml,env,json,toml,py,sh,csv}
+          - docker/**/Dockerfile
+  trigger:
+    include: .gitlab/ci/docker.yml
+    strategy: depend
+  variables:
+    PY_DIR: docker/metrics_server
 
 ################################################################################
 ## Static
@@ -55,21 +105,32 @@ include-guards:
       - INPUT_PATH: "."
         INPUT_IGNORE: "^\\(include\\|docs\\|external\\)/.*"
 
+full-code-format:
+  extends: .full-code-format
+  rules:
+    - if: $ON_MR
+      changes:
+        - .clang-format
+    - if: $CI_DESCRIPTION =~ /Nightly/
+
 .codechecker:
-  image: $CR_REGISTRY_URI/testing-tools/codechecker-gnb:1.0.3
+  image: ${CR_REGISTRY_URI}/srsgnb/codechecker:${DOCKER_BUILDER_VERSION}
   stage: static
-  needs: []
   tags:
-    - ${SRS_INFRASTRUCTURE_TAG}-amd64
+    - ${AMD64_TAG}
+  needs:
+    - job: builder version
+      optional: false
+      artifacts: true
+    - job: trigger builder
+      optional: true
+      artifacts: false
   variables:
     ANALYZER: ""
     ANALYZER_ARGS: ""
     ARTIFACT_EXTRA_PATH: ""
-  rules:
-    - if: $ON_MR
-      variables:
-        ARTIFACT_EXTRA_PATH: "/index.html"
-    - if: $CI_DESCRIPTION =~ /Nightly/
+    KUBERNETES_MEMORY_REQUEST: 6Gi
+    KUBERNETES_CPU_REQUEST: "3.5"
   before_script:
     - |
       echo "
@@ -94,7 +155,7 @@ include-guards:
     - static-analyzer.sh -i /tmp/codechecker_skip --analyzers ${ANALYZER} ${ANALYZER_ARGS} $CI_PROJECT_DIR
   after_script:
     - mv codechecker_html codechecker-${ANALYZER}-html
-  artifacts:
+  artifacts: &codechecker_artifacts
     reports:
       codequality: code-quality-report.json
     paths:
@@ -105,39 +166,44 @@ include-guards:
 
 clang-tidy:
   extends: .codechecker
+  stage: manual
+  rules:
+    - if: $ON_MR == "true" && $CI_MERGE_REQUEST_APPROVED == "true"
+    - if: $ON_MR
+      when: manual
+      allow_failure: false
   variables:
     ANALYZER: clang-tidy
-    ANALYZER_ARGS: --tidy-config .clang-tidy
+    ANALYZER_ARGS: --analyzer-config clang-tidy:take-config-from-directory=true --tidy-config .clang-tidy
+    ARTIFACT_EXTRA_PATH: "/index.html"
 
 cppcheck:
   extends: .codechecker
   rules:
-    - if: $ON_MR
-      when: manual
-      allow_failure: true
-      variables:
-        ARTIFACT_EXTRA_PATH: "/index.html"
     - if: $CI_DESCRIPTION =~ /Nightly/
+  interruptible: false
   variables:
     ANALYZER: cppcheck
     ANALYZER_ARGS: --cppcheck-max-template-recursion 10
+  artifacts:
+    <<: *codechecker_artifacts
+    expire_in: 1 day
 
 clangsa:
   extends: .codechecker
   rules:
-    - if: $ON_MR
-      when: manual
-      allow_failure: true
-      variables:
-        ARTIFACT_EXTRA_PATH: "/index.html"
     - if: $CI_DESCRIPTION =~ /Nightly/
       when: manual
       allow_failure: true
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: manual
+      allow_failure: true
+  interruptible: false
   variables:
     ANALYZER: clangsa
     ANALYZER_ARGS: --ctu
 
-coverity:
+.coverity_base:
   image: $CR_REGISTRY_URI/coverity_image/2022.6.0:1.0.0
   stage: static
   needs: []
@@ -145,24 +211,44 @@ coverity:
     KUBERNETES_CPU_REQUEST: 7
     KUBERNETES_MEMORY_REQUEST: 13Gi
   tags:
-    - ${SRS_INFRASTRUCTURE_TAG}-amd64
-  rules:
-    - if: $CI_DESCRIPTION =~ /Weekly/
+    - ${AMD64_TAG}
+  interruptible: false
   script:
     - |
       mkdir -p build
       cd build
       cmake ..
-      cov-build --dir cov-int make -j`nproc`
+      cov-build --dir cov-int make -j${KUBERNETES_CPU_REQUEST}
       tar czvf srsgnb.tgz cov-int
       ver=$(git rev-parse HEAD)
-
-      curl --form token=$COVERITY_TOKEN \
-        --form email=nils@srs.io \
+    - |
+      curl --form token=$COV_TOKEN \
+        --form email=${COVERITY_EMAIL} \
         --form file=@srsgnb.tgz \
         --form version=$ver \
-        --form description="srsGNB dev build" \
-        https://scan.coverity.com/builds?project=srsRAN_5G
+        --form description="${DESCRIPTION}" \
+        https://scan.coverity.com/builds?project=${PROJECT_NAME}
+
+coverity-dev:
+  extends: .coverity_base
+  rules:
+    - if: $CI_DESCRIPTION =~ /Weekly/
+  before_script:
+    - export PROJECT_NAME="srsRAN_5G"
+    - export DESCRIPTION="srsRAN Project dev build"
+    - export COV_TOKEN="${COVERITY_TOKEN_DEV}"
+
+e2e tests tox:
+  stage: static
+  rules:
+    - if: $ON_MR
+      changes:
+        - tests/e2e/**/*
+  variables:
+    PY_DIR: tests/e2e
+  before_script:
+    - apk add build-base
+  extends: .tox
 
 ################################################################################
 ## Build + Unit Tests + Integration tests
@@ -170,68 +256,18 @@ coverity:
 
 # In build.yml
 
-intermediate commits:
-  extends: .build_and_unit_big
-  rules:
-    - if: $ON_MR
-  variables:
-    OS: ubuntu-22.04
-    TEST_MODE: none
-    COMPILER: gcc
-    BUILD_TYPE: Release
-    ASSERT_LEVEL: PARANOID
-    ENABLE_EXPORT: "False"
-    ENABLE_GCOV: "True"
-  script:
-    - DEBIAN_FRONTEND=noninteractive apt-get update && apt-get install -y --no-install-recommends git git-lfs
-    - git lfs install
-    - git config advice.detachedHead false
-    - git fetch origin $CI_MERGE_REQUEST_TARGET_BRANCH_NAME $CI_MERGE_REQUEST_SOURCE_BRANCH_NAME --depth 20
-    - |
-      for rev in $(git rev-list --reverse origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME..origin/$CI_MERGE_REQUEST_SOURCE_BRANCH_NAME^1)
-      do
-        echo "##################################################"
-        echo "#### $rev ####"
-        echo "##################################################"
-        git checkout $rev
-        sed -i "s/-Wall -Werror/-Wall/" CMakeLists.txt
-        build_srsgnb
-        sed -i "s/-Wall/-Wall -Werror/" CMakeLists.txt
-      done
-  after_script:
-    - rm -Rf build
-
 ################################################################################
 # Doc generation
 ################################################################################
-.depends on unit test jobs:
-  # Here we handled how jobs in .gitlab-ci.yml depends on jobs inside build.yml
-  # If unit tests related jobs change in build.yml, we'll need to change this one too
-  needs:
-    - job: build cached
-      optional: true
-      artifacts: true
-    - job: build update cache
-      optional: true
-      artifacts: true
-    - job: build clean
-      optional: true
-      artifacts: true
-
 unit coverage:
   stage: documentation
-  extends: .depends on unit test jobs
   image:
-    name: $CR_REGISTRY_URI/testing-tools/report-generator:5.1.10
+    name: ${GITLAB_REGISTRY_URI}/${CI_TOOLS_REPO}/report-generator:5.1.26
     entrypoint: ["/bin/sh", "-c"]
   rules:
     - if: $ON_MR
       variables:
         coverage_report: summary
-      when: always # Even if previous stages/required jobs fail
-    - if: $CI_DESCRIPTION =~ /Nightly/
-      variables:
-        coverage_report: full
       when: always # Even if previous stages/required jobs fail
   before_script:
     - PACKAGE_URL=${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/coverage/${CI_COMMIT_BRANCH}${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}/coverage_history.tar.gz
@@ -268,54 +304,66 @@ unit coverage:
         -title:${CI_PROJECT_NAME} -tag:${CI_COMMIT_SHA} \
         -reporttypes:"${HTML_TYPE};TextSummary"
     - cat coverage_html/Summary.txt
+    - coverage_value=$(cat coverage_html/Summary.txt | sed -n 's/^\s*Line coverage:\s*\(.*\)\%/\1/p')
     - |
       if [[ $coverage_report = "full" ]]; then
         publish_to_registry
       fi
+    - |
+      export metric_prefix=""
+      if [[ $ON_MR == "true" ]]; then metric_prefix="_pr"; fi
+      echo "coverage${metric_prefix},pipeline=${CI_PIPELINE_ID},os=${OS} value=${coverage_value}" >> build_time_metrics.txt
+    - |
+      influx write --host $INFLUXDB_URL --token $INFLUXDB_TOKEN --org $INFLUXDB_ORG \
+        --bucket ci --file build_time_metrics.txt
   coverage: /^\s*Line coverage:\s*\d+.\d+\%/
-  artifacts:
+  artifacts: &unit_coverage_artifacts
     paths:
       - coverage_html
     expire_in: 10 minutes
+  retry: 2
+  needs:
+    - job: intermediate commits
+      optional: true
+      artifacts: true
+    - job: smoke release update cache
+      optional: true
+      artifacts: true
 
-unit tests web:
-  stage: documentation
-  extends: .depends on unit test jobs
+unit coverage dev:
+  extends: unit coverage
   rules:
     - if: $CI_DESCRIPTION =~ /Nightly/
+      variables:
+        coverage_report: full
       when: always # Even if previous stages/required jobs fail
-  image: python:3.9-alpine # sh entrypoint
-  variables:
-    GIT_STRATEGY: none
-  before_script:
-    - pip install junit2html
-  script:
-    - junit2html *xunit.xml --merge merged_xunit.xml
-    - junit2html merged_xunit.xml ./test_report.html
   artifacts:
-    paths:
-      - test_report.html
-    expire_in: 10 minutes
+    <<: *unit_coverage_artifacts
+    expire_in: 1 day
 
 pages:
   stage: documentation
   rules:
     - if: $CI_DESCRIPTION == "Nightly"
       when: always # Even if previous stages/required jobs fail
-  image: $CR_REGISTRY_URI/testing-tools/doxygen:1.5.0
+      allow_failure: true
+  image: ${GITLAB_REGISTRY_URI}/${CI_TOOLS_REPO}/doxygen:1.9.8-1.2023.7
   script:
-    - ls
-    - ls zmq
-    - cat ./zmq/job.env
     - mkdir public
     - mv coverage_html public/
     - mv codechecker*html public/
-    - mv test_report.html public/
     - mv docs/index.html public/index.html
-    - doxygen_generator.sh
-    - mv build/public/index.html build/public/index_doxygen.html
-    - find build/public/ -name '*.*' -exec mv {} public/ \;
-
+    - .gitlab/ci/builders/install_dependencies.sh
+    - apt-get update && apt-get install -y --no-install-recommends rsync
+    - |
+      rm -Rf build
+      mkdir build
+      cd build || exit
+      cmake ..
+      make -j $(nproc) doxygen
+      cd ..
+    - mkdir public/doxygen
+    - rsync -a build/docs/html/ public/doxygen/
   after_script:
     - |
       if [ $CI_JOB_STATUS = "failed" ]; then
@@ -324,27 +372,10 @@ pages:
       fi
     - mv docs/*.png public/
     - sed -i 's/commit_hash/'$CI_COMMIT_SHA'/' public/index.html
-    - sed -i 's/zmq_job_id/'$( cat ./zmq/job.env  )'/' public/index.html
-    - sed -i 's/zmq-tsan_job_id/'$( cat ./zmq-tsan/job.env  )'/' public/index.html
-    # - sed -i 's/zmq-asan_job_id/'$( cat ./zmq-asan/job.env  )'/' public/index.html
-    - sed -i 's/rf_job_id/'$( cat ./rf/job.env  )'/' public/index.html
-
   needs:
-    - job: unit coverage
-      artifacts: true
-    - job: unit tests web
-      artifacts: true
-    - job: clang-tidy
+    - job: unit coverage dev
       artifacts: true
     - job: cppcheck
-      artifacts: true
-    - job: zmq
-      artifacts: true
-    - job: zmq-tsan
-      artifacts: true
-    # - job: zmq-asan
-    #   artifacts: true
-    - job: rf
       artifacts: true
   artifacts:
     paths:
@@ -358,6 +389,7 @@ promote code:
   stage: .post
   rules:
     - if: $GRADUATION_BRANCH
+  interruptible: false
   variables:
     GIT_STRATEGY: none
   image: alpine:3.16.0 # sh entrypoint
@@ -370,3 +402,74 @@ promote code:
     - git checkout -t origin/$GRADUATION_BRANCH
     - git rebase ${CI_COMMIT_SHA}
     - git push
+  dependencies: []
+
+update agpl main dryrun:
+  extends: .update agpl main
+  stage: .post
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: always
+      allow_failure: true
+      variables:
+        MODE: "dryrun"
+  needs: []
+
+tag successful schedule:
+  extends: .create-tag
+  stage: .post
+  rules:
+    - if: $CI_DESCRIPTION =~ /Nightly/
+      when: manual
+      allow_failure: true
+    - if: $CI_DESCRIPTION =~ /Weekly/
+      when: manual
+      allow_failure: true
+  variables:
+    GIT_STRATEGY: none
+  interruptible: false
+  script:
+    - create_tag $(date +"%Y.%m.%d")
+  dependencies: []
+
+################################################################################
+# Enable / Disable pipelines
+################################################################################
+scheduler:
+  # Override default scheduler job
+  # Enabling branches on default_branch will also apply any change done
+  stage: ci
+  extends: .enable-schedule-by-branch
+  rules:
+    - if: $ON_DEFAULT_BRANCH
+  variables:
+    ENABLE: "true"
+    BRANCH: $CI_COMMIT_BRANCH
+  dependencies: []
+
+disable current schedule:
+  stage: .post
+  extends: .enable-schedule-by-description
+  rules:
+    - if: $GRADUATION_BRANCH
+      when: always
+  interruptible: false
+  variables:
+    ENABLE: "false"
+    BRANCH: $CI_COMMIT_REF_NAME
+    DESCRIPTION: $CI_DESCRIPTION
+  dependencies: []
+
+enable schedule on graduation branch:
+  stage: .post
+  extends: .enable-schedule-by-branch
+  rules:
+    - if: $GRADUATION_BRANCH
+  interruptible: false
+  variables:
+    ENABLE: "true"
+    BRANCH: $GRADUATION_BRANCH
+  needs:
+    - job: promote code
+      artifacts: false
+  dependencies: []

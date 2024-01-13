@@ -41,9 +41,13 @@ class scheduler_event_logger;
 /// \return Msg3 delay in number of slots.
 unsigned get_msg3_delay(const pusch_time_domain_resource_allocation& pusch_td_res_alloc, subcarrier_spacing pusch_scs);
 
-/// Get RA-RNTI based on PRACH parameters.
-/// \remark See 38.321, 5.1.3 - Random Access Preamble transmission
-uint16_t get_ra_rnti(slot_point sl_rx, unsigned symbol_index, unsigned frequency_index, bool is_sul = false);
+/// \brief Computes the RA-RNTI based on PRACH parameters, as per TS 38.321, Section 5.1.3.
+/// \param[in] slot_index Index of the first slot of the PRACH occasion in a system frame. Values {0,...,79}.
+/// \param[in] symbol_index Index of the first OFDM symbol of the first PRACH occasion. Values {0,...,13}.
+/// \param[in] frequency_index Index of the PRACH occation in the frequency domain. Values {0,...,7}.
+/// \param[in] is_sul true is this is SUL carrier, false otherwise.
+/// \return the RA-RNRI, as per , as per TS 38.321, Section 5.1.3.
+uint16_t get_ra_rnti(unsigned slot_index, unsigned symbol_index, unsigned frequency_index, bool is_sul = false);
 
 /// Scheduler for PRACH occasions, RAR PDSCHs and Msg3 PUSCH grants.
 class ra_scheduler
@@ -69,7 +73,7 @@ public:
 
 private:
   struct pending_rar_t {
-    rnti_t                                                  ra_rnti = INVALID_RNTI;
+    rnti_t                                                  ra_rnti = rnti_t::INVALID_RNTI;
     slot_point                                              prach_slot_rx;
     slot_interval                                           rar_window;
     static_vector<rnti_t, MAX_PREAMBLES_PER_PRACH_OCCASION> tc_rntis;
@@ -77,7 +81,7 @@ private:
   struct pending_msg3_t {
     /// Detected PRACH Preamble associated to this Msg3.
     rach_indication_message::preamble preamble{};
-    harq_logger msg3_harq_logger{srslog::fetch_basic_logger("SCHED"), INVALID_RNTI, to_du_cell_index(0), false};
+    harq_logger msg3_harq_logger{srslog::fetch_basic_logger("SCHED"), rnti_t::INVALID_RNTI, to_du_cell_index(0), false};
     /// UL Harq used to schedule Msg3.
     /// Note: [TS 38.321, 5.4.2.1] "For UL transmission with UL grant in RA Response, HARQ process identifier 0 is
     /// used".
@@ -114,10 +118,12 @@ private:
   /// \param res_alloc Cell Resource Allocator.
   /// \param rar pending RAR with an associated RA-RNTI that is going to be scheduled.
   /// \param rar_crbs CRBs of the RAR to be scheduled.
+  /// \param pdsch_time_res_index Index of PDSCH time domain resource.
   /// \param msg3_candidates List of Msg3s with respective resource information (e.g. RBs and symbols) to allocate.
   void fill_rar_grant(cell_resource_allocator&         res_alloc,
                       const pending_rar_t&             pending_rar,
                       crb_interval                     rar_crbs,
+                      unsigned                         pdsch_time_res_index,
                       span<const msg3_alloc_candidate> msg3_candidates);
 
   /// Schedule retransmission of Msg3.
@@ -134,8 +140,9 @@ private:
   // derived from args
   srslog::basic_logger& logger = srslog::fetch_basic_logger("SCHED");
   /// RA window size in number of slots.
-  const unsigned    ra_win_nof_slots;
-  bwp_configuration initial_active_dl_bwp;
+  const unsigned ra_win_nof_slots;
+  crb_interval   ra_crb_lims;
+  const bool     prach_format_is_long;
 
   /// Pre-cached information related to RAR for a given PDSCH time resource.
   struct rar_param_cached_data {

@@ -27,8 +27,11 @@
 #include "rlc_stress_test_mac.h"
 #include "rlc_stress_test_rrc.h"
 #include "rlc_stress_test_traffic.h"
-#include "srsran/pdcp/pdcp_factory.h"
-#include "srsran/rlc/rlc_factory.h"
+#include "tests/unittests/rlc/rlc_test_helpers.h"
+#include "srsran/pcap/rlc_pcap.h"
+#include "srsran/pdcp/pdcp_entity.h"
+#include "srsran/rlc/rlc_entity.h"
+#include "srsran/rlc/rlc_metrics.h"
 #include "srsran/support/executors/task_worker.h"
 #include <condition_variable>
 #include <mutex>
@@ -54,7 +57,7 @@ public:
 
   void run_upper_tti(uint32_t tti);
   void run_lower_tti(uint32_t tti);
-  void push_pdus(std::vector<byte_buffer_slice_chain> list_pdus);
+  void push_pdus(std::vector<byte_buffer_chain> list_pdus);
 
   void set_peer_stack(stress_stack* peer_stack_) { peer_stack = peer_stack_; }
 
@@ -115,5 +118,9 @@ private:
 
   // Logging
   srsran::rlc_bearer_logger logger;
+
+  // PCAP
+  null_rlc_pcap pcap;
 };
+
 } // namespace srsran

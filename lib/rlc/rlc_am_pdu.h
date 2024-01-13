@@ -131,8 +131,8 @@ private:
 
   void     refresh_packed_size();
   uint32_t nack_size(const rlc_am_status_nack& nack) const;
-  bool     pack_12bit(byte_buffer& pdu) const;
-  bool     pack_18bit(byte_buffer& pdu) const;
+  size_t   pack_12bit(span<uint8_t> buf) const;
+  size_t   pack_18bit(span<uint8_t> buf) const;
   bool     unpack_12bit(const byte_buffer_view& pdu);
   bool     unpack_18bit(const byte_buffer_view& pdu);
 
@@ -143,22 +143,39 @@ public:
   uint32_t ack_sn = INVALID_RLC_SN;
 
   rlc_am_status_pdu(rlc_am_sn_size sn_size_);
+  /// Explicit copy ctor to avoid implicit copies.
+  explicit rlc_am_status_pdu(const rlc_am_status_pdu& other) = default;
+  /// Default move ctor.
+  rlc_am_status_pdu(rlc_am_status_pdu&& other) = default;
+  /// Copy assignment is disabled. Use std::move, or explicit copy instead.
+  rlc_am_status_pdu& operator=(const rlc_am_status_pdu&) = delete;
+  /// Move assignment of byte_buffer.
+  rlc_am_status_pdu& operator=(rlc_am_status_pdu&& other) = default;
+
   void reset();
-  bool is_continuous_sequence(const rlc_am_status_nack& left, const rlc_am_status_nack& right) const;
+  /// \brief Checks whether the two NACKs can be merged into one NACK.
+  ///
+  /// This first checks whether both NACKs form as continuous sequence and then also validates
+  /// that the resulting range does not exceed the maximum length of a NACK range (which is 255).
+  ///
+  /// \param left The NACK on the left-hand side.
+  /// \param right The NACK on the right-hand side.
+  /// \return True if both NACKs can be merged into one. False if not.
+  bool can_be_merged(const rlc_am_status_nack& left, const rlc_am_status_nack& right) const;
   void push_nack(const rlc_am_status_nack& nack);
   const std::vector<rlc_am_status_nack>& get_nacks() const { return nacks; }
   uint32_t                               get_packed_size() const { return packed_size; }
   bool                                   trim(uint32_t max_packed_size);
 
-  /// \brief Write the RLC AM status PDU to a PDU buffer and eets the length of the generate PDU accordingly
-  /// \param[out] pdu A reference to a byte_buffer
-  /// \return true if PDU was written successfully, false otherwise
-  bool pack(byte_buffer& pdu) const;
+  /// \brief Write the RLC AM status PDU to a PDU buffer and meets the length of the generate PDU accordingly.
+  /// \param[out] buf Buffer where to encode the status PDU. The encoded PDU size cannot exceed the size of the buffer.
+  /// \return Number of bytes taken by the written status PDU.
+  size_t pack(span<uint8_t> buf) const;
 
   /// \brief Read a RLC AM status PDU from a PDU buffer view
   /// \param pdu A reference to a byte_buffer_view
   /// \return true if PDU was read successfully, false otherwise
-  bool unpack(const byte_buffer_view& pdu);
+  SRSRAN_NODISCARD bool unpack(const byte_buffer_view& pdu);
 
   /// \brief Checks if a PDU buffer view contains a control PDU
   /// \param pdu A reference to a byte_buffer_view
@@ -170,7 +187,7 @@ public:
  * Header pack/unpack helper functions
  * Ref: 3GPP TS 38.322 v15.3.0 Section 6.2.2.4
  ***************************************************************************/
-inline bool
+inline SRSRAN_NODISCARD bool
 rlc_am_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_am_sn_size sn_size, rlc_am_pdu_header* header)
 {
   byte_buffer_reader pdu_reader = pdu;
@@ -190,7 +207,10 @@ rlc_am_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_am_sn_size sn
   if (sn_size == rlc_am_sn_size::size12bits) {
     header->sn = (*pdu_reader & 0x0fU) << 8U; // first 4 bits SN
     ++pdu_reader;
-
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing lower byte of SN.");
+      return false;
+    }
     header->sn |= (*pdu_reader & 0xffU); // last 8 bits SN
     ++pdu_reader;
   } else if (sn_size == rlc_am_sn_size::size18bits) {
@@ -201,8 +221,16 @@ rlc_am_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_am_sn_size sn
     }
     header->sn = (*pdu_reader & 0x03U) << 16U; // first 4 bits SN
     ++pdu_reader;
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing center byte of SN.");
+      return false;
+    }
     header->sn |= (*pdu_reader & 0xffU) << 8U; // bit 2-10 of SN
     ++pdu_reader;
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing lower byte of SN.");
+      return false;
+    }
     header->sn |= (*pdu_reader & 0xffU); // last 8 bits SN
     ++pdu_reader;
   } else {
@@ -213,41 +241,55 @@ rlc_am_read_data_pdu_header(const byte_buffer_view& pdu, const rlc_am_sn_size sn
   // Read optional part
   if (header->si == rlc_si_field::last_segment || header->si == rlc_si_field::middle_segment) {
     // read SO
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing upper byte of SO.");
+      return false;
+    }
     header->so = (*pdu_reader & 0xffU) << 8U;
     ++pdu_reader;
+    if (pdu_reader.empty()) {
+      srslog::fetch_basic_logger("RLC").error("Malformed PDU, missing lower byte of SO.");
+      return false;
+    }
     header->so |= (*pdu_reader & 0xffU);
     ++pdu_reader;
   }
   return true;
 }
 
-inline void rlc_am_write_data_pdu_header(const rlc_am_pdu_header& header, byte_buffer& pdu)
+inline size_t rlc_am_write_data_pdu_header(span<uint8_t> buf, const rlc_am_pdu_header& header)
 {
-  byte_buffer        hdr_buf;
-  byte_buffer_writer hdr_writer = hdr_buf;
+  span<uint8_t>::iterator buf_it = buf.begin();
 
   // fixed header part
-  hdr_writer.append((to_number(header.dc) & 0x01U) << 7U);   // 1 bit D/C field
-  hdr_writer.back() |= (header.p & 0x01U) << 6U;             // 1 bit P flag
-  hdr_writer.back() |= (to_number(header.si) & 0x03U) << 4U; // 2 bits SI
+  *buf_it = (to_number(header.dc) & 0x01U) << 7U; // 1 bit D/C field
+
+  *buf_it |= (header.p & 0x01U) << 6U;             // 1 bit P flag
+  *buf_it |= (to_number(header.si) & 0x03U) << 4U; // 2 bits SI
 
   if (header.sn_size == rlc_am_sn_size::size12bits) {
-    // write first 4 bit of SN
-    hdr_writer.back() |= (header.sn >> 8U) & 0x0fU; // 4 bit SN
-    hdr_writer.append(header.sn & 0xffU);           // remaining 8 bit of SN
+    // 12-bit SN
+    *buf_it |= (header.sn >> 8U) & 0x0fU; // upper 4 bits of SN
+    ++buf_it;
+    *buf_it = header.sn & 0xffU; // remaining 8 bits of SN
   } else {
-    // 18bit SN
-    hdr_writer.back() |= (header.sn >> 16U) & 0x3U; // 2 bit SN
-    hdr_writer.append(header.sn >> 8U);             // bit 3 - 10 of SN
-    hdr_writer.append(header.sn & 0xffU);           // remaining 8 bit of SN
+    // 18-bit SN
+    *buf_it |= (header.sn >> 16U) & 0x3U; // upper 2 bits of SN
+    ++buf_it;
+    *buf_it = header.sn >> 8U; // center 8 bits of SN
+    ++buf_it;
+    *buf_it = header.sn & 0xffU; // lower 8 bits of SN
   }
+  ++buf_it;
 
   if (header.so != 0) {
     // write SO
-    hdr_writer.append(header.so >> 8U);   // first part of SO
-    hdr_writer.append(header.so & 0xffU); // second part of SO
+    *buf_it = header.so >> 8U; // upper part of SO
+    ++buf_it;
+    *buf_it = header.so & 0xffU; // lower part of SO
+    ++buf_it;
   }
-  pdu.chain_before(std::move(hdr_buf));
+  return std::distance(buf.begin(), buf_it);
 }
 
 } // namespace srsran
@@ -264,6 +306,10 @@ struct formatter<srsran::rlc_am_pdu_header> {
   template <typename FormatContext>
   auto format(const srsran::rlc_am_pdu_header& hdr, FormatContext& ctx) -> decltype(std::declval<FormatContext>().out())
   {
+    if (hdr.si == srsran::rlc_si_field::full_sdu || hdr.si == srsran::rlc_si_field::first_segment) {
+      // Header of full SDU or first SDU segment has no SO.
+      return format_to(ctx.out(), "dc={} p={} si={} sn={}", hdr.dc, hdr.p, hdr.si, hdr.sn);
+    }
     return format_to(ctx.out(), "dc={} p={} si={} sn={} so={}", hdr.dc, hdr.p, hdr.si, hdr.sn, hdr.so);
   }
 };
@@ -283,16 +329,13 @@ struct formatter<srsran::rlc_am_status_nack> {
     if (nack.has_nack_range) {
       if (nack.has_so) {
         return format_to(ctx.out(), "[{} {}:{} r{}]", nack.nack_sn, nack.so_start, nack.so_end, nack.nack_range);
-      } else {
-        return format_to(ctx.out(), "[{} r{}]", nack.nack_sn, nack.nack_range);
       }
-    } else {
-      if (nack.has_so) {
-        return format_to(ctx.out(), "[{} {}:{}]", nack.nack_sn, nack.so_start, nack.so_end);
-      } else {
-        return format_to(ctx.out(), "[{}]", nack.nack_sn);
-      }
+      return format_to(ctx.out(), "[{} r{}]", nack.nack_sn, nack.nack_range);
     }
+    if (nack.has_so) {
+      return format_to(ctx.out(), "[{} {}:{}]", nack.nack_sn, nack.so_start, nack.so_end);
+    }
+    return format_to(ctx.out(), "[{}]", nack.nack_sn);
   }
 };
 
@@ -310,7 +353,7 @@ struct formatter<srsran::rlc_am_status_pdu> {
   {
     memory_buffer buffer;
     format_to(buffer, "ack_sn={} n_nack={}", status.ack_sn, status.get_nacks().size());
-    if (status.get_nacks().size() > 0) {
+    if (!status.get_nacks().empty()) {
       format_to(buffer, " nack=");
       for (auto nack : status.get_nacks()) {
         format_to(buffer, "{}", nack);

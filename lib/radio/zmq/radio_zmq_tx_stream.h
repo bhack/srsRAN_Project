@@ -22,14 +22,22 @@
 
 #pragma once
 
+#include "radio_zmq_tx_align_interface.h"
 #include "radio_zmq_tx_channel.h"
+#include "srsran/gateways/baseband/baseband_gateway_timestamp.h"
+#include "srsran/gateways/baseband/baseband_gateway_transmitter.h"
 #include <memory>
 
 namespace srsran {
 
-class radio_zmq_tx_stream
+/// Implements a gateway receiver based on ZMQ transmit socket.
+class radio_zmq_tx_stream : public baseband_gateway_transmitter, public radio_zmq_tx_align_interface
 {
 private:
+  /// Alignment timeout. Waits this time before padding zeros.
+  const std::chrono::milliseconds TRANSMIT_TS_ALIGN_TIMEOUT = std::chrono::milliseconds(0);
+  /// Radio notification handler interface.
+  radio_notification_handler& notification_handler;
   /// Indicates whether the class was initialized successfully.
   bool successful = false;
   /// Stores independent channels.
@@ -47,7 +55,7 @@ public:
     /// Stream identifier string.
     std::string stream_id_str;
     /// Logging level.
-    std::string log_level;
+    srslog::basic_levels log_level;
     /// Indicates the socket send and receive timeout in milliseconds. It is ignored if it is zero.
     unsigned trx_timeout_ms;
     /// Indicates the socket linger timeout in milliseconds. If is ignored if trx_timeout_ms is zero.
@@ -63,9 +71,13 @@ public:
 
   bool is_successful() const { return successful; }
 
-  bool align(uint64_t timestamp);
+  // See interface for documentation.
+  bool align(baseband_gateway_timestamp timestamp, std::chrono::milliseconds timeout) override;
 
-  void transmit(baseband_gateway_buffer& data);
+  // See interface for documentation.
+  void transmit(const baseband_gateway_buffer_reader& data, const baseband_gateway_transmitter_metadata& md) override;
+
+  void start(baseband_gateway_timestamp init_time);
 
   void stop();
 

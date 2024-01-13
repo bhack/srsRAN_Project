@@ -21,36 +21,66 @@
  */
 
 #include "srsran/fapi_adaptor/mac/messages/pusch.h"
+#include "srsran/fapi_adaptor/uci_part2_correspondence_mapper.h"
 #include "srsran/mac/mac_cell_result.h"
 #include "srsran/phy/upper/channel_coding/ldpc/ldpc.h"
 
 using namespace srsran;
 using namespace fapi_adaptor;
 
-void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu& fapi_pdu, const ul_sched_info& mac_pdu)
+void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu&              fapi_pdu,
+                                                     const ul_sched_info&             mac_pdu,
+                                                     uci_part2_correspondence_mapper& part2_mapper)
 {
   fapi::ul_pusch_pdu_builder builder(fapi_pdu);
 
-  convert_pusch_mac_to_fapi(builder, mac_pdu);
+  convert_pusch_mac_to_fapi(builder, mac_pdu, part2_mapper);
 }
 
 /// Fill the optional UCI parameters.
-static void fill_optional_uci_parameters(fapi::ul_pusch_pdu_builder& builder, const optional<uci_info>& uci)
+static void fill_optional_uci_parameters(fapi::ul_pusch_pdu_builder&      builder,
+                                         const optional<uci_info>&        uci,
+                                         uci_part2_correspondence_mapper& part2_mapper)
 {
   if (!uci) {
     return;
   }
+  builder.add_optional_pusch_uci_alpha(uci->alpha);
 
-  builder.add_optional_pusch_uci(uci->harq_ack_nof_bits,
-                                 uci->csi_part1_nof_bits,
-                                 uci->csi_part2_nof_bits,
-                                 uci->alpha,
-                                 uci->beta_offset_harq_ack,
-                                 uci->beta_offset_csi_1,
-                                 uci->beta_offset_csi_2);
+  if (uci->harq) {
+    const uci_info::harq_info& harq = *uci->harq;
+    builder.add_optional_pusch_uci_harq(harq.harq_ack_nof_bits, harq.beta_offset_harq_ack);
+  }
+
+  if (uci->csi) {
+    const uci_info::csi_info& csi = *uci->csi;
+    builder.add_optional_pusch_uci_csi1(csi.csi_part1_nof_bits, csi.beta_offset_csi_1);
+
+    // No CSI Part2 for a single antenna.
+    if (csi.beta_offset_csi_2 && csi.csi_rep_cfg.pmi_codebook != pmi_codebook_type::one) {
+      span<const uci_part2_correspondence_information> uci_correspondence = part2_mapper.map(csi.csi_rep_cfg);
+      if (!uci_correspondence.empty()) {
+        builder.add_optional_pusch_uci_csi2(*csi.beta_offset_csi_2);
+
+        // Build UCI Part2 correspondence.
+        for (const auto& part2 : uci_correspondence) {
+          builder.add_uci_part1_part2_corresnpondence_v3(
+              part2.priority,
+              part2.part1_param_offsets,
+              part2.part1_param_sizes,
+              part2.part2_map_index,
+              (part2.part2_map_scope == 1)
+                  ? fapi::uci_part1_to_part2_correspondence_v3::map_scope_type::phy_context
+                  : fapi::uci_part1_to_part2_correspondence_v3::map_scope_type::common_context);
+        }
+      }
+    }
+  }
 }
 
-void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu_builder& builder, const ul_sched_info& mac_pdu)
+void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu_builder&      builder,
+                                                     const ul_sched_info&             mac_pdu,
+                                                     uci_part2_correspondence_mapper& part2_mapper)
 {
   const pusch_information& pusch_pdu = mac_pdu.pusch_cfg;
   // :TODO: check this handle. It will be better to pass it from the translator, as the adaptor doesn't know how many
@@ -59,10 +89,7 @@ void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu_builder&
   builder.set_basic_parameters(pusch_pdu.rnti, handle);
 
   const bwp_configuration& bwp_cfg = *pusch_pdu.bwp_cfg;
-  builder.set_bwp_parameters(bwp_cfg.crbs.length(),
-                             bwp_cfg.crbs.start(),
-                             bwp_cfg.scs,
-                             (bwp_cfg.cp_extended) ? cyclic_prefix::EXTENDED : cyclic_prefix::NORMAL);
+  builder.set_bwp_parameters(bwp_cfg.crbs.length(), bwp_cfg.crbs.start(), bwp_cfg.scs, bwp_cfg.cp);
 
   builder.set_information_parameters(pusch_pdu.mcs_descr.target_code_rate,
                                      pusch_pdu.mcs_descr.modulation,
@@ -87,11 +114,11 @@ void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu_builder&
                               dmrs_cfg.num_dmrs_cdm_grps_no_data,
                               dmrs_cfg.dmrs_ports.to_uint64());
 
-  const prb_grant& prbs = pusch_pdu.prbs;
-  if (prbs.is_alloc_type0()) {
+  const vrb_alloc& rbs = pusch_pdu.rbs;
+  if (rbs.is_type0()) {
     static_vector<uint8_t, fapi::ul_pusch_pdu::RB_BITMAP_SIZE_IN_BYTES> rb_map;
     rb_map.resize(fapi::ul_pusch_pdu::RB_BITMAP_SIZE_IN_BYTES, 0U);
-    const rbg_bitmap& mac_rbg_map = prbs.rbgs();
+    const rbg_bitmap& mac_rbg_map = rbs.type0();
     for (unsigned i = 0, e = mac_rbg_map.size(); i != e; ++i) {
       rb_map[i / 8] |= uint8_t(mac_rbg_map.test(i) ? 1U : 0U) << i % 8;
     }
@@ -99,9 +126,9 @@ void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu_builder&
     builder.set_allocation_in_frequency_type_0_parameters(
         {rb_map}, pusch_pdu.tx_direct_current_location, pusch_pdu.ul_freq_shift_7p5khz);
   } else {
-    const prb_interval& prb_int = prbs.prbs();
-    builder.set_allocation_in_frequency_type_1_parameters(prb_int.start(),
-                                                          prb_int.length(),
+    const vrb_interval& vrb_int = rbs.type1();
+    builder.set_allocation_in_frequency_type_1_parameters(vrb_int.start(),
+                                                          vrb_int.length(),
                                                           pusch_pdu.intra_slot_freq_hopping,
                                                           pusch_pdu.tx_direct_current_location,
                                                           pusch_pdu.ul_freq_shift_7p5khz);
@@ -131,7 +158,7 @@ void srsran::fapi_adaptor::convert_pusch_mac_to_fapi(fapi::ul_pusch_pdu_builder&
   builder.set_maintenance_v3_dmrs_parameters(static_cast<unsigned>(pusch_pdu.dmrs_hopping_mode));
 
   // Fill the UCI parameters.
-  fill_optional_uci_parameters(builder, mac_pdu.uci);
+  fill_optional_uci_parameters(builder, mac_pdu.uci, part2_mapper);
 
   // Set PUSCH context for logging.
   builder.set_context_vendor_specific(pusch_pdu.rnti, static_cast<harq_id_t>(pusch_pdu.harq_id));

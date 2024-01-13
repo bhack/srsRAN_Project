@@ -24,6 +24,7 @@
 
 #include "lcid_ul_sch.h"
 #include "ul_bsr.h"
+#include "ul_phr.h"
 #include "srsran/adt/byte_buffer.h"
 #include "srsran/adt/expected.h"
 #include "srsran/adt/span.h"
@@ -36,10 +37,13 @@ namespace srsran {
 class mac_ul_sch_subpdu
 {
 public:
-  /// Returns buffer view with begin() pointing at the first byte after the decoded subPDU.
-  bool unpack(byte_buffer_reader& subpdu_reader);
-  bool unpack(const byte_buffer& subpdu);
+  /// \brief Unpacks a subPDU from a byte buffer reader.
+  error_type<std::string> unpack(byte_buffer_reader& subpdu_reader);
 
+  /// \brief Unpacks a subPDU from a byte buffer containing a subPDU.
+  error_type<std::string> unpack(const byte_buffer& subpdu);
+
+  /// Get LCID of the unpacked subPDU.
   lcid_ul_sch_t    lcid() const { return lcid_val; }
   uint32_t         total_length() const { return header_length + payload().length(); }
   byte_buffer_view payload() const { return payload_view; }
@@ -55,7 +59,7 @@ private:
 class mac_ul_sch_pdu
 {
   /// Implementation-defined limit for the number of subPDUs per PDU.
-  static constexpr size_t MAX_SUBPDUS_PER_PDU = 512;
+  static constexpr size_t MAX_SUBPDUS_PER_PDU = 4096;
 
   using subpdu_list = static_vector<mac_ul_sch_subpdu, MAX_SUBPDUS_PER_PDU>;
 
@@ -67,7 +71,7 @@ public:
 
   void clear();
 
-  bool unpack(const byte_buffer& payload);
+  error_type<std::string> unpack(const byte_buffer& payload);
 
   mac_ul_sch_subpdu&       subpdu(size_t i) { return subpdus[i]; }
   const mac_ul_sch_subpdu& subpdu(size_t i) const { return subpdus[i]; }
@@ -86,7 +90,7 @@ private:
 inline rnti_t decode_crnti_ce(byte_buffer_view payload)
 {
   if (payload.length() < 2) {
-    return INVALID_RNTI;
+    return rnti_t::INVALID_RNTI;
   }
 
   // Conversion between Little Endian to RNTI value. See TS 38.321, 6.1.3.2 - C-RNTI MAC CE.
@@ -121,7 +125,7 @@ struct formatter<srsran::mac_ul_sch_subpdu> {
         format_to(ctx.out(), "CCCH48: len={}", subpdu.sdu_length());
         break;
       case lcid_ul_sch_t::CRNTI:
-        format_to(ctx.out(), "C-RNTI: {:#04x}", decode_crnti_ce(subpdu.payload()));
+        format_to(ctx.out(), "C-RNTI: {:#x}", to_value(decode_crnti_ce(subpdu.payload())));
         break;
       case lcid_ul_sch_t::SHORT_TRUNC_BSR: {
         lcg_bsr_report sbsr = decode_sbsr(subpdu.payload());
@@ -137,16 +141,22 @@ struct formatter<srsran::mac_ul_sch_subpdu> {
         break;
       }
       case lcid_ul_sch_t::LONG_BSR: {
-        long_bsr_report lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
-        format_to(ctx.out(), "LBSR: bitmap={:#02x} ", lbsr.bitmap);
-        for (const auto& lcg : lbsr.list) {
-          format_to(ctx.out(), "lcg={} bs={} ", lcg.lcg_id, lcg.buffer_size);
+        expected<long_bsr_report> lbsr = decode_lbsr(bsr_format::LONG_BSR, subpdu.payload());
+        if (lbsr.has_value()) {
+          format_to(ctx.out(), "LBSR: ");
+          for (const auto& lcg : lbsr.value().list) {
+            format_to(ctx.out(), "lcg={} bs={} ", lcg.lcg_id, lcg.buffer_size);
+          }
+        } else {
+          format_to(ctx.out(), "LBSR: invalid");
         }
         break;
       }
-      case lcid_ul_sch_t::SE_PHR:
-        format_to(ctx.out(), "SE_PHR: total_len={}", subpdu.total_length());
+      case lcid_ul_sch_t::SE_PHR: {
+        const phr_report phr = decode_se_phr(subpdu.payload());
+        format_to(ctx.out(), "SE_PHR: ph={}dB p_cmax={}dBm", phr.get_se_phr().ph, phr.get_se_phr().p_cmax);
         break;
+      }
       case lcid_ul_sch_t::PADDING:
         format_to(ctx.out(), "PAD: len={}", subpdu.sdu_length());
         break;

@@ -24,6 +24,7 @@
 
 #include "srsran/phy/upper/channel_modulation/channel_modulation_factories.h"
 #include "srsran/phy/upper/upper_phy_rg_gateway.h"
+#include "srsran/phy/upper/upper_phy_rx_symbol_request_notifier.h"
 #include "srsran/phy/upper/upper_phy_timing_handler.h"
 #include "srsran/ran/cyclic_prefix.h"
 #include "srsran/ran/pci.h"
@@ -76,7 +77,7 @@ public:
     std::string log_level;
     /// Specifies the maximum number of PRBs.
     unsigned max_nof_prb;
-    /// Specifies the maximum number of transmit ports.
+    /// Specifies the maximum number of antenna ports.
     unsigned max_nof_ports;
     /// Specifies the resource grid pool size.
     unsigned rg_pool_size;
@@ -86,8 +87,14 @@ public:
     std::string ldpc_encoder_type;
     /// Resource grid gateway.
     upper_phy_rg_gateway* gateway;
+    /// Uplink request processor.
+    upper_phy_rx_symbol_request_notifier* rx_symb_req_notifier;
     /// Enable the generation and allocation of pseudo-random data within the resource grid.
     bool enable_random_data;
+    /// Enable uplink processing.
+    bool enable_ul_processing;
+    /// Enable PRACH processing.
+    bool enable_prach_processing;
     /// Modulation scheme used for the pseudo-random data.
     modulation_scheme data_modulation;
   };

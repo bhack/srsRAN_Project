@@ -23,6 +23,7 @@
 #pragma once
 
 #include "srsran/srslog/srslog.h"
+#include <csignal>
 
 namespace srsran {
 
@@ -33,6 +34,7 @@ template <typename... Args>
 [[gnu::noinline, noreturn]] inline bool srsran_terminate(const char* fmt, Args&&... args) noexcept
 {
   srslog::flush();
+  ::fflush(stdout);
   fmt::print(stderr, fmt, std::forward<Args>(args)...);
   std::abort();
 }
@@ -43,8 +45,10 @@ template <typename... Args>
 [[gnu::noinline, noreturn]] inline void report_error(const char* reason_fmt, Args&&... args) noexcept
 {
   srslog::flush();
-  fmt::print(stderr, "srsGNB ERROR: {}", fmt::format(reason_fmt, std::forward<Args>(args)...));
-  std::exit(1);
+  ::fflush(stdout);
+  fmt::print(stderr, "srsGNB ERROR: {}\n", fmt::format(reason_fmt, std::forward<Args>(args)...));
+
+  std::quick_exit(1);
 }
 
 /// \brief Reports a fatal error and handles the application shutdown. This function is intended to be used for
@@ -58,5 +62,8 @@ template <typename... Args>
 /// \brief Verifies if condition is true. If not, report a fatal error and close application.
 #define report_fatal_error_if_not(condition, fmtstr, ...)                                                              \
   (void)((condition) || (report_fatal_error(fmtstr, ##__VA_ARGS__), 0))
+
+/// \brief Verifies if condition is true. If not, report an error and close application.
+#define report_error_if_not(condition, fmtstr, ...) (void)((condition) || (report_error(fmtstr, ##__VA_ARGS__), 0))
 
 } // namespace srsran

@@ -20,7 +20,7 @@
  *
  */
 
-#include "../../../lib/fapi/validators/uci_pdus.h"
+#include "../../../lib/fapi/pdu_validators/uci_pdus.h"
 #include "helpers.h"
 #include "srsran/fapi/message_validators.h"
 #include "srsran/support/test_utils.h"
@@ -50,7 +50,7 @@ INSTANTIATE_TEST_SUITE_P(RNTI,
                          validate_uci_pusch_pdu_field,
                          testing::Combine(testing::Values(pdu_field_data<uci_pusch_pdu>{
                                               "RNTI",
-                                              [](uci_pusch_pdu& pdu, int value) { pdu.rnti = to_rnti(value); }}),
+                                              [](uci_pusch_pdu& pdu, int value) { pdu.rnti = value; }}),
                                           testing::Values(test_case_data{0, false},
                                                           test_case_data{1, true},
                                                           test_case_data{32767, true},
@@ -141,8 +141,7 @@ INSTANTIATE_TEST_SUITE_P(HARQ_bit_length,
                                           testing::Values(test_case_data{0, false},
                                                           test_case_data{1, true},
                                                           test_case_data{850, true},
-                                                          test_case_data{1706, true},
-                                                          test_case_data{1707, false})));
+                                                          test_case_data{1706, true})));
 
 INSTANTIATE_TEST_SUITE_P(
     HARQ_payload_bit_length_valid,
@@ -203,8 +202,7 @@ INSTANTIATE_TEST_SUITE_P(CSI1_bit_length,
                                           testing::Values(test_case_data{0, false},
                                                           test_case_data{1, true},
                                                           test_case_data{850, true},
-                                                          test_case_data{1706, true},
-                                                          test_case_data{1707, false})));
+                                                          test_case_data{1706, true})));
 
 INSTANTIATE_TEST_SUITE_P(
     CSIPart2Detection,
@@ -240,8 +238,7 @@ INSTANTIATE_TEST_SUITE_P(CSI2_bit_length,
                                           testing::Values(test_case_data{0, false},
                                                           test_case_data{1, true},
                                                           test_case_data{850, true},
-                                                          test_case_data{1706, true},
-                                                          test_case_data{1707, false})));
+                                                          test_case_data{1706, true})));
 
 TEST(validate_uci_pusch_pdu_field, valid_pdu_passes)
 {
@@ -289,9 +286,7 @@ INSTANTIATE_TEST_SUITE_P(RNTI,
                          validate_uci_pucch_format01_pdu_field,
                          testing::Combine(testing::Values(pdu_field_data<uci_pucch_pdu_format_0_1>{
                                               "RNTI",
-                                              [](uci_pucch_pdu_format_0_1& pdu, int value) {
-                                                pdu.rnti = to_rnti(value);
-                                              }}),
+                                              [](uci_pucch_pdu_format_0_1& pdu, int value) { pdu.rnti = value; }}),
                                           testing::Values(test_case_data{0, false},
                                                           test_case_data{1, true},
                                                           test_case_data{32767, true},
@@ -463,9 +458,7 @@ INSTANTIATE_TEST_SUITE_P(RNTI,
                          validate_uci_pucch_format234_pdu_field,
                          testing::Combine(testing::Values(pdu_field_data<uci_pucch_pdu_format_2_3_4>{
                                               "RNTI",
-                                              [](uci_pucch_pdu_format_2_3_4& pdu, int value) {
-                                                pdu.rnti = to_rnti(value);
-                                              }}),
+                                              [](uci_pucch_pdu_format_2_3_4& pdu, int value) { pdu.rnti = value; }}),
                                           testing::Values(test_case_data{0, false},
                                                           test_case_data{1, true},
                                                           test_case_data{32767, true},

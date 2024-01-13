@@ -37,8 +37,11 @@
 #include "srsran/phy/adapters/phy_error_adapter.h"
 #include "srsran/phy/adapters/phy_rg_gateway_adapter.h"
 #include "srsran/phy/adapters/phy_rx_symbol_adapter.h"
+#include "srsran/phy/adapters/phy_rx_symbol_request_adapter.h"
 #include "srsran/phy/adapters/phy_timing_adapter.h"
 #include "srsran/phy/lower/lower_phy.h"
+#include "srsran/phy/lower/lower_phy_controller.h"
+#include "srsran/phy/lower/lower_phy_rx_symbol_context.h"
 #include "srsran/radio/radio_factory.h"
 #include "srsran/support/executors/task_worker.h"
 #include "srsran/support/math_utils.h"
@@ -46,6 +49,8 @@
 #include <csignal>
 #include <getopt.h>
 #include <string>
+#include <unistd.h>
+#include <unordered_map>
 
 struct configuration_profile {
   std::string           name;
@@ -68,7 +73,6 @@ static std::string log_level = "warning";
 // Program parameters.
 static subcarrier_spacing                        scs                        = subcarrier_spacing::kHz15;
 static unsigned                                  max_processing_delay_slots = 4;
-static unsigned                                  ul_to_dl_subframe_offset   = 1;
 static cyclic_prefix                             cp                         = cyclic_prefix::NORMAL;
 static double                                    dl_center_freq             = 3489.42e6;
 static double                                    ssb_center_freq            = 3488.16e6;
@@ -83,12 +87,17 @@ static std::vector<std::string>                  tx_channel_args            = {}
 static std::vector<std::string>                  rx_channel_args            = {};
 static sampling_rate                             srate                      = sampling_rate::from_MHz(23.04);
 static unsigned                                  bw_rb                      = 52;
-static radio_configuration::over_the_wire_format otw_format         = radio_configuration::over_the_wire_format::SC16;
-static unsigned                                  duration_slots     = 60000;
-static bool                                      zmq_loopback       = true;
-static ssb_pattern_case                          ssb_pattern        = ssb_pattern_case::A;
-static bool                                      enable_random_data = false;
-static modulation_scheme                         data_mod_scheme    = modulation_scheme::QPSK;
+static radio_configuration::over_the_wire_format otw_format           = radio_configuration::over_the_wire_format::SC16;
+static unsigned                                  duration_slots       = 60000;
+static bool                                      zmq_loopback         = true;
+static ssb_pattern_case                          ssb_pattern          = ssb_pattern_case::A;
+static bool                                      enable_random_data   = false;
+static bool                                      enable_ul_processing = false;
+static bool                                      enable_prach_processing = false;
+static modulation_scheme                         data_mod_scheme         = modulation_scheme::QPSK;
+static std::string                               thread_profile_name     = "single";
+static std::string                               clock_source            = "internal";
+static std::string                               sync_source             = "internal";
 
 // Amplitude control args.
 static float baseband_backoff_dB    = 12.0F;
@@ -98,6 +107,13 @@ static float amplitude_ceiling_dBFS = -0.1F;
 
 /// Defines a set of configuration profiles.
 static const std::vector<configuration_profile> profiles = {
+    {"b200_10MHz",
+     "Single channel B200 USRP 10MHz bandwidth.",
+     []() {
+       device_arguments = "type=b200";
+       srate            = sampling_rate::from_MHz(11.52);
+       bw_rb            = 52;
+     }},
     {"b200_20MHz",
      "Single channel B200 USRP 20MHz bandwidth.",
      []() {
@@ -119,6 +135,38 @@ static const std::vector<configuration_profile> profiles = {
        tx_gain          = 10;
        rx_gain          = 10;
      }},
+    {"n310_50MHz",
+     "Single channel N310 USRP 50MHz bandwidth.",
+     []() {
+       device_arguments = "type=n3xx,ip_addr=192.168.20.2";
+       srate            = sampling_rate::from_MHz(61.44);
+       bw_rb            = 270;
+       tx_gain          = 5;
+       rx_gain          = 5;
+     }},
+    {"n310_100MHz",
+     "Single channel N310 USRP 50MHz bandwidth.",
+     []() {
+       device_arguments = "type=n3xx,ip_addr=192.168.20.2";
+       srate            = sampling_rate::from_MHz(122.88);
+       bw_rb            = 270;
+       tx_gain          = 5;
+       rx_gain          = 5;
+       scs              = subcarrier_spacing::kHz30;
+     }},
+    {"n320_n321_5MHz",
+     "Two N320/321 USRPs 5 MHz bandwidth.",
+     []() {
+       device_arguments = "type=n3xx,product=n320,addr0=192.168.10.2,addr1=192.168.20.2,master_clock_rate=245.76e6";
+       srate            = sampling_rate::from_MHz(7.68);
+       bw_rb            = 25;
+       tx_gain          = 30;
+       rx_gain          = 30;
+       scs              = subcarrier_spacing::kHz15;
+       dl_center_freq   = 1842.5e6;
+       ssb_center_freq  = 1842.5e6;
+       rx_freq          = 1747.5e6;
+     }},
     {"zmq_20MHz_n7",
      "Single 20MHz FDD in band n7 using ZMQ.",
      []() {
@@ -137,7 +185,7 @@ static const std::vector<configuration_profile> profiles = {
          // parallel execution.
          for (unsigned channel_id = 0; channel_id != nof_ports * nof_sectors; ++channel_id) {
            fmt::memory_buffer buffer;
-           fmt::format_to(buffer, "inproc://#{}", channel_id);
+           fmt::format_to(buffer, "inproc://{}#{}", getpid(), channel_id);
            tx_channel_args.emplace_back(to_string(buffer));
            rx_channel_args.emplace_back(to_string(buffer));
          }
@@ -170,7 +218,7 @@ static const std::vector<configuration_profile> profiles = {
          // parallel execution.
          for (unsigned channel_id = 0; channel_id != nof_ports * nof_sectors; ++channel_id) {
            fmt::memory_buffer buffer;
-           fmt::format_to(buffer, "inproc://#{}", channel_id);
+           fmt::format_to(buffer, "inproc://{}#{}", getpid(), channel_id);
            tx_channel_args.emplace_back(to_string(buffer));
            rx_channel_args.emplace_back(to_string(buffer));
          }
@@ -212,14 +260,6 @@ static void stop_execution()
   if (radio != nullptr) {
     radio->stop();
   }
-
-  // Stop the timing handler. It stops blocking notifier and allows the PHY to free run.
-  upper_phy->stop();
-
-  // Stop PHY.
-  if (lower_phy_instance != nullptr) {
-    lower_phy_instance->get_controller().stop();
-  }
 }
 
 static void signal_handler(int sig)
@@ -236,10 +276,16 @@ static void usage(std::string prog)
   }
   fmt::print("\t-D Duration in slots. [Default {}]\n", duration_slots);
   fmt::print("\t-L Set ZMQ loopback. Set to 0 to disable, otherwise true. [Default {}]\n", zmq_loopback);
+  fmt::print("\t-T Set thread profile (single, dual, quad). [Default {}]\n", thread_profile_name);
+  fmt::print("\t-C Set clock source (internal, external, gpsdo). [Default {}]\n", clock_source);
+  fmt::print("\t-S Set sync source (internal, external, gpsdo). [Default {}]\n", sync_source);
   fmt::print("\t-v Logging level. [Default {}]\n", log_level);
   fmt::print("\t-c Enable amplitude clipping. [Default {}]\n", enable_clipping);
   fmt::print("\t-b Baseband gain back-off prior to clipping (in dB). [Default {}]\n", baseband_backoff_dB);
   fmt::print("\t-d Fill the resource grid with random data [Default {}]\n", enable_random_data);
+  fmt::print("\t-u Enable uplink processing [Default {}]\n", enable_ul_processing);
+  fmt::print("\t-p Enable PRACH processing [Default {}]\n", enable_prach_processing);
+  fmt::print("\t-a Number of antenna ports [Default {}]\n", nof_ports);
   fmt::print(
       "\t-m Data modulation scheme ({}). [Default {}]\n", span<std::string>(modulations), to_string(data_mod_scheme));
   fmt::print("\t-h Print this message.\n");
@@ -250,11 +296,16 @@ static void parse_args(int argc, char** argv)
   std::string profile_name;
 
   int opt = 0;
-  while ((opt = getopt(argc, argv, "D:P:L:v:b:m:cdh")) != -1) {
+  while ((opt = getopt(argc, argv, "D:P:S:T:C:L:v:b:m:a:cduph")) != -1) {
     switch (opt) {
       case 'P':
         if (optarg != nullptr) {
           profile_name = std::string(optarg);
+        }
+        break;
+      case 'T':
+        if (optarg != nullptr) {
+          thread_profile_name = std::string(optarg);
         }
         break;
       case 'D':
@@ -267,11 +318,32 @@ static void parse_args(int argc, char** argv)
           zmq_loopback = (std::strtol(optarg, nullptr, 10) > 0);
         }
         break;
+      case 'C':
+        if (optarg != nullptr) {
+          clock_source = std::string(optarg);
+        }
+        break;
+      case 'S':
+        if (optarg != nullptr) {
+          sync_source = std::string(optarg);
+        }
+        break;
       case 'v':
         log_level = std::string(optarg);
         break;
       case 'd':
         enable_random_data = true;
+        break;
+      case 'u':
+        enable_ul_processing = true;
+        break;
+      case 'p':
+        enable_prach_processing = true;
+        break;
+      case 'a':
+        if (optarg != nullptr) {
+          nof_ports = std::strtol(optarg, nullptr, 10);
+        }
         break;
       case 'm':
         if (optarg != nullptr) {
@@ -314,10 +386,15 @@ static void parse_args(int argc, char** argv)
 static radio_configuration::radio create_radio_configuration()
 {
   radio_configuration::radio radio_config = {};
-  radio_config.sampling_rate_hz           = srate.to_Hz<double>();
-  radio_config.otw_format                 = otw_format;
-  radio_config.args                       = device_arguments;
-  radio_config.log_level                  = log_level;
+
+  radio_config.clock.clock      = radio_configuration::to_clock_source(clock_source);
+  radio_config.clock.sync       = radio_configuration::to_clock_source(sync_source);
+  radio_config.sampling_rate_hz = srate.to_Hz<double>();
+  radio_config.otw_format       = otw_format;
+  radio_config.discontinuous_tx = false;
+  radio_config.power_ramping_us = 0.0F;
+  radio_config.args             = device_arguments;
+  radio_config.log_level        = log_level;
   for (unsigned sector_id = 0; sector_id != nof_sectors; ++sector_id) {
     // For each channel in the streams...
     radio_configuration::stream tx_stream_config;
@@ -346,26 +423,36 @@ static radio_configuration::radio create_radio_configuration()
   return radio_config;
 }
 
-lower_phy_configuration create_lower_phy_configuration(float                         tx_scale,
+lower_phy_configuration create_lower_phy_configuration(task_executor*                rx_task_executor,
+                                                       task_executor*                tx_task_executor,
+                                                       task_executor*                ul_task_executor,
+                                                       task_executor*                dl_task_executor,
+                                                       task_executor*                prach_task_executor,
                                                        lower_phy_error_notifier*     error_notifier,
                                                        lower_phy_rx_symbol_notifier* rx_symbol_notifier,
-                                                       lower_phy_timing_notifier*    timing_notifier)
+                                                       lower_phy_timing_notifier*    timing_notifier,
+                                                       srslog::basic_logger*         logger)
 {
   lower_phy_configuration phy_config;
-  phy_config.srate                      = srate;
-  phy_config.scs                        = scs;
-  phy_config.max_processing_delay_slots = max_processing_delay_slots;
-  phy_config.ul_to_dl_subframe_offset   = ul_to_dl_subframe_offset;
-  phy_config.time_alignment_calibration = 0;
-  phy_config.ta_offset                  = lower_phy_ta_offset::n0;
-  phy_config.tx_scale                   = tx_scale;
-  phy_config.cp                         = cp;
-  phy_config.dft_window_offset          = 0.5F;
-  phy_config.bb_gateway                 = &radio->get_baseband_gateway();
-  phy_config.error_notifier             = error_notifier;
-  phy_config.rx_symbol_notifier         = rx_symbol_notifier;
-  phy_config.timing_notifier            = timing_notifier;
-  phy_config.prach_async_executor       = nullptr;
+  phy_config.srate                          = srate;
+  phy_config.scs                            = scs;
+  phy_config.max_processing_delay_slots     = max_processing_delay_slots;
+  phy_config.time_alignment_calibration     = 0;
+  phy_config.system_time_throttling         = 0.0F;
+  phy_config.ta_offset                      = n_ta_offset::n0;
+  phy_config.cp                             = cp;
+  phy_config.dft_window_offset              = 0.5F;
+  phy_config.bb_gateway                     = &radio->get_baseband_gateway(0);
+  phy_config.rx_symbol_notifier             = rx_symbol_notifier;
+  phy_config.timing_notifier                = timing_notifier;
+  phy_config.error_notifier                 = error_notifier;
+  phy_config.rx_task_executor               = rx_task_executor;
+  phy_config.tx_task_executor               = tx_task_executor;
+  phy_config.ul_task_executor               = ul_task_executor;
+  phy_config.dl_task_executor               = dl_task_executor;
+  phy_config.prach_async_executor           = prach_task_executor;
+  phy_config.baseband_rx_buffer_size_policy = lower_phy_baseband_buffer_size_policy::half_slot;
+  phy_config.baseband_tx_buffer_size_policy = lower_phy_baseband_buffer_size_policy::half_slot;
 
   // Amplitude controller configuration.
   phy_config.amplitude_config.full_scale_lin  = full_scale_amplitude;
@@ -381,16 +468,13 @@ lower_phy_configuration create_lower_phy_configuration(float                    
     sector_config.bandwidth_rb = bw_rb;
     sector_config.dl_freq_hz   = dl_center_freq;
     sector_config.ul_freq_hz   = rx_freq;
-    for (unsigned port_id = 0; port_id < nof_ports; ++port_id) {
-      lower_phy_sector_port_mapping port_mapping;
-      port_mapping.stream_id  = sector_id;
-      port_mapping.channel_id = port_id;
-      sector_config.port_mapping.push_back(port_mapping);
-    }
+    sector_config.nof_tx_ports = nof_ports;
+    sector_config.nof_rx_ports = nof_ports;
     phy_config.sectors.push_back(sector_config);
-    phy_config.nof_channels_per_stream.push_back(nof_ports);
   }
-  phy_config.log_level = log_level;
+
+  // Logger for amplitude control metrics.
+  phy_config.logger = logger;
 
   return phy_config;
 }
@@ -412,13 +496,77 @@ int main(int argc, char** argv)
                             to_numerology_value(scs),
                             srate);
 
-  // Radio asynchronous task executor.
-  task_worker                    async_task_worker("async_thread", nof_sectors + 1);
-  std::unique_ptr<task_executor> async_task_executor = make_task_executor(async_task_worker);
+  std::unordered_map<std::string, std::unique_ptr<task_worker>> workers;
+  std::unique_ptr<task_executor>                                async_task_executor;
+  std::unique_ptr<task_executor>                                rx_task_executor;
+  std::unique_ptr<task_executor>                                tx_task_executor;
+  std::unique_ptr<task_executor>                                ul_task_executor;
+  std::unique_ptr<task_executor>                                dl_task_executor;
+  std::unique_ptr<task_executor>                                prach_task_executor;
+  if (thread_profile_name == "single") {
+    workers.emplace(
+        std::make_pair("async_thread", std::make_unique<task_worker>("async_thread", 2 * nof_sectors * nof_ports)));
+    workers.emplace(std::make_pair("low_phy", std::make_unique<task_worker>("low_phy", 4)));
 
-  // Lower PHY RT task executor.
-  task_worker                    rt_task_worker("phy_rt_thread", 1, false, os_thread_realtime_priority::max());
-  std::unique_ptr<task_executor> rt_task_executor = make_task_executor(rt_task_worker);
+    async_task_executor = make_task_executor_ptr(*workers["async_thread"]);
+    rx_task_executor    = make_task_executor_ptr(*workers["low_phy"]);
+    tx_task_executor    = make_task_executor_ptr(*workers["low_phy"]);
+    ul_task_executor    = make_task_executor_ptr(*workers["low_phy"]);
+    dl_task_executor    = make_task_executor_ptr(*workers["low_phy"]);
+  } else if (thread_profile_name == "dual") {
+    os_thread_realtime_priority low_dl_priority = os_thread_realtime_priority::max();
+    os_thread_realtime_priority low_ul_priority = os_thread_realtime_priority::max() - 1;
+    os_sched_affinity_bitmask   low_ul_affinity;
+    os_sched_affinity_bitmask   low_dl_affinity;
+    low_ul_affinity.set(0);
+    low_dl_affinity.set(1);
+
+    workers.emplace(
+        std::make_pair("async_thread", std::make_unique<task_worker>("async_thread", 2 * nof_sectors * nof_ports)));
+    workers.emplace(std::make_pair("low_phy_ul",
+                                   std::make_unique<task_worker>("low_phy_ul", 128, low_ul_priority, low_ul_affinity)));
+    workers.emplace(std::make_pair("low_phy_dl",
+                                   std::make_unique<task_worker>("low_phy_dl", 128, low_dl_priority, low_dl_affinity)));
+
+    async_task_executor = make_task_executor_ptr(*workers["async_thread"]);
+    rx_task_executor    = make_task_executor_ptr(*workers["low_phy_ul"]);
+    tx_task_executor    = make_task_executor_ptr(*workers["low_phy_dl"]);
+    ul_task_executor    = make_task_executor_ptr(*workers["low_phy_ul"]);
+    dl_task_executor    = make_task_executor_ptr(*workers["low_phy_dl"]);
+  } else if (thread_profile_name == "quad") {
+    os_thread_realtime_priority low_rx_priority = os_thread_realtime_priority::max() - 2;
+    os_thread_realtime_priority low_tx_priority = os_thread_realtime_priority::max();
+    os_thread_realtime_priority low_dl_priority = os_thread_realtime_priority::max() - 1;
+    os_thread_realtime_priority low_ul_priority = os_thread_realtime_priority::max() - 3;
+    os_sched_affinity_bitmask   low_rx_affinity;
+    os_sched_affinity_bitmask   low_tx_affinity;
+    os_sched_affinity_bitmask   low_ul_affinity;
+    os_sched_affinity_bitmask   low_dl_affinity;
+    low_rx_affinity.set(0);
+    low_tx_affinity.set(1);
+    low_ul_affinity.set(2);
+    low_dl_affinity.set(3);
+    workers.emplace(
+        std::make_pair("async_thread", std::make_unique<task_worker>("async_thread", 2 * nof_sectors * nof_ports)));
+    workers.emplace(
+        std::make_pair("low_rx", std::make_unique<task_worker>("low_rx", 1, low_rx_priority, low_rx_affinity)));
+    workers.emplace(
+        std::make_pair("low_tx", std::make_unique<task_worker>("low_tx", 128, low_tx_priority, low_tx_affinity)));
+    workers.emplace(
+        std::make_pair("low_dl", std::make_unique<task_worker>("low_dl", 128, low_dl_priority, low_dl_affinity)));
+    workers.emplace(
+        std::make_pair("low_ul", std::make_unique<task_worker>("low_ul", 128, low_ul_priority, low_ul_affinity)));
+
+    async_task_executor = make_task_executor_ptr(*workers["async_thread"]);
+    rx_task_executor    = make_task_executor_ptr(*workers["low_rx"]);
+    tx_task_executor    = make_task_executor_ptr(*workers["low_tx"]);
+    ul_task_executor    = make_task_executor_ptr(*workers["low_ul"]);
+    dl_task_executor    = make_task_executor_ptr(*workers["low_dl"]);
+  } else {
+    report_error("Invalid thread profile '{}'.\n", thread_profile_name);
+  }
+  workers.emplace(std::make_pair("low_phy_prach", std::make_unique<task_worker>("low_phy_prach", 4)));
+  prach_task_executor = make_task_executor_ptr(*workers["low_phy_prach"]);
 
   // Create radio factory.
   std::unique_ptr<radio_factory> factory = create_radio_factory(driver_name);
@@ -437,19 +585,30 @@ int main(int argc, char** argv)
   // Create symbol handler.
   rx_symbol_handler_example rx_symbol_handler(log_level);
 
+  // Create lower PHY error adapter logger.
+  srslog::basic_logger& logger = srslog::fetch_basic_logger("Low-PHY");
+  logger.set_level(srslog::str_to_basic_level(log_level));
+
   // Create adapters.
-  phy_error_adapter      error_adapter(log_level);
-  phy_rx_symbol_adapter  rx_symbol_adapter;
-  phy_rg_gateway_adapter rg_gateway_adapter;
-  phy_timing_adapter     timing_adapter;
+  phy_error_adapter             error_adapter(logger);
+  phy_rx_symbol_adapter         rx_symbol_adapter;
+  phy_rg_gateway_adapter        rg_gateway_adapter;
+  phy_timing_adapter            timing_adapter;
+  phy_rx_symbol_request_adapter phy_rx_symbol_req_adapter;
 
   // Create lower physical layer.
   {
-    // DFT gain compensation is carried out in the amplitude controller.
-    float                   ofdm_tx_scale = 1.0F;
-    lower_phy_configuration phy_config =
-        create_lower_phy_configuration(ofdm_tx_scale, &error_adapter, &rx_symbol_adapter, &timing_adapter);
-    lower_phy_instance = create_lower_phy(phy_config);
+    // Prepare lower physical layer configuration.
+    lower_phy_configuration phy_config = create_lower_phy_configuration(rx_task_executor.get(),
+                                                                        tx_task_executor.get(),
+                                                                        ul_task_executor.get(),
+                                                                        dl_task_executor.get(),
+                                                                        prach_task_executor.get(),
+                                                                        &error_adapter,
+                                                                        &rx_symbol_adapter,
+                                                                        &timing_adapter,
+                                                                        &logger);
+    lower_phy_instance                 = create_lower_phy(phy_config);
     srsran_assert(lower_phy_instance, "Failed to create lower physical layer.");
   }
 
@@ -486,6 +645,7 @@ int main(int argc, char** argv)
   upper_phy_sample_config.rg_pool_size                 = 2 * max_processing_delay_slots;
   upper_phy_sample_config.ldpc_encoder_type            = "generic";
   upper_phy_sample_config.gateway                      = &rg_gateway_adapter;
+  upper_phy_sample_config.rx_symb_req_notifier         = &phy_rx_symbol_req_adapter;
   upper_phy_sample_config.ssb_config.phys_cell_id      = 500;
   upper_phy_sample_config.ssb_config.cp                = cyclic_prefix::NORMAL;
   upper_phy_sample_config.ssb_config.period_ms         = 5;
@@ -496,6 +656,8 @@ int main(int argc, char** argv)
   upper_phy_sample_config.ssb_config.offset_pointA     = ssb_offset_pointA_subc_rb;
   upper_phy_sample_config.ssb_config.pattern_case      = ssb_pattern;
   upper_phy_sample_config.enable_random_data           = enable_random_data;
+  upper_phy_sample_config.enable_ul_processing         = enable_ul_processing;
+  upper_phy_sample_config.enable_prach_processing      = enable_prach_processing;
   upper_phy_sample_config.data_modulation              = data_mod_scheme;
   upper_phy                                            = upper_phy_ssb_example::create(upper_phy_sample_config);
   srsran_assert(upper_phy, "Failed to create upper physical layer.");
@@ -504,6 +666,7 @@ int main(int argc, char** argv)
   rx_symbol_adapter.connect(&rx_symbol_handler);
   timing_adapter.connect(upper_phy.get());
   rg_gateway_adapter.connect(&lower_phy_instance->get_rg_handler());
+  phy_rx_symbol_req_adapter.connect(&lower_phy_instance->get_request_handler());
 
   // Set signal handler.
   signal(SIGINT, signal_handler);
@@ -512,8 +675,14 @@ int main(int argc, char** argv)
   signal(SIGQUIT, signal_handler);
   signal(SIGKILL, signal_handler);
 
+  // Calculate starting time.
+  double                     delay_s      = 0.1;
+  baseband_gateway_timestamp current_time = radio->read_current_time();
+  baseband_gateway_timestamp start_time = current_time + static_cast<uint64_t>(delay_s * radio_config.sampling_rate_hz);
+
   // Start processing.
-  lower_phy_instance->get_controller().start(*rt_task_executor);
+  radio->start(start_time);
+  lower_phy_instance->get_controller().start(start_time);
 
   // Receive and transmit per block basis.
   for (unsigned slot_count = 0; slot_count != duration_slots && !stop; ++slot_count) {
@@ -524,9 +693,18 @@ int main(int argc, char** argv)
   // Stop execution.
   stop_execution();
 
+  // Stop the timing handler. It stops blocking notifier and allows the PHY to free run.
+  upper_phy->stop();
+
+  // Stop lower PHY.
+  if (lower_phy_instance != nullptr) {
+    lower_phy_instance->get_controller().stop();
+  }
+
   // Stop workers.
-  async_task_worker.stop();
-  rt_task_worker.stop();
+  for (auto& worker : workers) {
+    worker.second->stop();
+  }
 
   // Prints radio notification summary (number of overflow, underflow and other events).
   notification_handler.print();

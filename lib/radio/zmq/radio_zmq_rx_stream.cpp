@@ -24,10 +24,12 @@
 
 using namespace srsran;
 
-radio_zmq_rx_stream::radio_zmq_rx_stream(void*                       zmq_context,
-                                         const stream_description&   config,
-                                         task_executor&              async_executor_,
-                                         radio_notification_handler& notification_handler)
+radio_zmq_rx_stream::radio_zmq_rx_stream(void*                         zmq_context,
+                                         const stream_description&     config,
+                                         task_executor&                async_executor_,
+                                         radio_zmq_tx_align_interface& tx_align_,
+                                         radio_notification_handler&   notification_handler) :
+  tx_align(tx_align_)
 {
   // For each channel...
   for (unsigned channel_id = 0; channel_id != config.address.size(); ++channel_id) {
@@ -63,6 +65,14 @@ void radio_zmq_rx_stream::stop()
   }
 }
 
+void radio_zmq_rx_stream::start(baseband_gateway_timestamp init_time)
+{
+  sample_count = init_time;
+  for (auto& channel : channels) {
+    channel->start();
+  }
+}
+
 void radio_zmq_rx_stream::wait_stop()
 {
   for (auto& channel : channels) {
@@ -70,13 +80,23 @@ void radio_zmq_rx_stream::wait_stop()
   }
 }
 
-void radio_zmq_rx_stream::receive(baseband_gateway_buffer& data)
+baseband_gateway_receiver::metadata radio_zmq_rx_stream::receive(baseband_gateway_buffer_writer& data)
 {
   // Make sure the number of data channels is coherent with the number of the stream channels.
   report_fatal_error_if_not(data.get_nof_channels() == channels.size(),
                             "Invalid number of channels ({}) expected {}.",
                             data.get_nof_channels(),
                             channels.size());
+
+  // Prepare return metadata.
+  baseband_gateway_receiver::metadata ret;
+  ret.ts = get_sample_count();
+
+  // Calculate transmit timestamp that has already expired.
+  uint64_t passed_timestamp = ret.ts + data.get_nof_samples();
+
+  // Align all transmit timestamps.
+  tx_align.align(passed_timestamp, RECEIVE_TS_ALIGN_TIMEOUT);
 
   // Receive samples for each channel.
   for (unsigned channel_id = 0; channel_id != channels.size(); ++channel_id) {
@@ -85,4 +105,6 @@ void radio_zmq_rx_stream::receive(baseband_gateway_buffer& data)
 
   // Increment the number of samples.
   sample_count += data.get_nof_samples();
+
+  return ret;
 }

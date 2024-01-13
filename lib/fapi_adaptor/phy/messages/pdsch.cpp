@@ -21,23 +21,41 @@
  */
 
 #include "srsran/fapi_adaptor/phy/messages/pdsch.h"
+#include "srsran/fapi_adaptor/precoding_matrix_repository.h"
+#include "srsran/ran/precoding/precoding_codebooks.h"
 #include "srsran/ran/sch_dmrs_power.h"
 
 using namespace srsran;
 using namespace fapi_adaptor;
 
-/// Fills the RE patterns parameter of the PDSCH PDU.
-static void fill_reserved_re_pattern(pdsch_processor::pdu_t& proc_pdu, const fapi::dl_pdsch_pdu& fapi_pdu)
+/// Fills the reserved RE pattern list field in a PDSCH PDU.
+static void fill_reserved_re_pattern(pdsch_processor::pdu_t&     proc_pdu,
+                                     const fapi::dl_pdsch_pdu&   fapi_pdu,
+                                     span<const re_pattern_list> csi_re_pattern_list)
 {
-  // :TODO: Implement me!
+  for (auto csi_index : fapi_pdu.pdsch_maintenance_v3.csi_for_rm) {
+    srsran_assert(csi_index < csi_re_pattern_list.size(),
+                  "CSI-RS PDU index={} value out of bounds CSI RE patterns={}",
+                  csi_index,
+                  csi_re_pattern_list.size());
+
+    proc_pdu.reserved.merge(csi_re_pattern_list[csi_index]);
+  }
 }
 
 /// Fills the codewords.
 static void fill_codewords(pdsch_processor::pdu_t& proc_pdu, const fapi::dl_pdsch_pdu& fapi_pdu)
 {
   for (const auto& cw : fapi_pdu.cws) {
-    proc_pdu.codewords.push_back(
-        pdsch_processor::codeword_description{static_cast<modulation_scheme>(cw.qam_mod_order), cw.rv_index});
+    pdsch_processor::codeword_description codeword_descr;
+    codeword_descr.modulation = static_cast<modulation_scheme>(cw.qam_mod_order);
+    codeword_descr.rv         = cw.rv_index;
+    if (fapi_pdu.context.has_value()) {
+      codeword_descr.new_data = fapi_pdu.context->is_new_data();
+    } else {
+      codeword_descr.new_data = true;
+    }
+    proc_pdu.codewords.push_back(codeword_descr);
   }
 }
 
@@ -67,7 +85,8 @@ static void fill_power_values(pdsch_processor::pdu_t& proc_pdu, const fapi::dl_p
   // Depending on the profile to use.
   if (use_profileNR) {
     // Load Data to SSS ratio from NR profile.
-    srsran_assert(fapi_pdu.power_control_offset_profile_nr != std::numeric_limits<uint8_t>::max(),
+    srsran_assert(fapi_pdu.power_control_offset_profile_nr !=
+                      std::numeric_limits<decltype(fapi_pdu.power_control_offset_profile_nr)>::max(),
                   "Expected SSS profile.");
 
     // Calculate the power offset between NZP-CSI-RS to PDSCH data.
@@ -79,19 +98,22 @@ static void fill_power_values(pdsch_processor::pdu_t& proc_pdu, const fapi::dl_p
     proc_pdu.ratio_pdsch_data_to_sss_dB = power_control_offset_dB + power_control_offset_ss_dB;
   } else {
     // Load Data to SSS ratio from SSS profile.
-    srsran_assert(fapi_pdu.power_control_offset_profile_nr == std::numeric_limits<uint8_t>::max(),
+    srsran_assert(fapi_pdu.power_control_offset_profile_nr ==
+                      std::numeric_limits<decltype(fapi_pdu.power_control_offset_profile_nr)>::max(),
                   "Expected SSS profile.");
     srsran_assert(fapi_pdu.power_control_offset_ss_profile_nr == fapi::nzp_csi_rs_epre_to_ssb::L1_use_profile_sss,
                   "Expected SSS profile.");
-    srsran_assert(fapi_pdu.pdsch_maintenance_v3.pdsch_data_power_offset_profile_sss !=
-                      std::numeric_limits<int16_t>::min(),
-                  "Expected SSS profile.");
+    srsran_assert(
+        fapi_pdu.pdsch_maintenance_v3.pdsch_data_power_offset_profile_sss !=
+            std::numeric_limits<decltype(fapi_pdu.pdsch_maintenance_v3.pdsch_data_power_offset_profile_sss)>::min(),
+        "Expected SSS profile.");
     proc_pdu.ratio_pdsch_data_to_sss_dB =
         static_cast<float>(fapi_pdu.pdsch_maintenance_v3.pdsch_data_power_offset_profile_sss) * 0.001F;
   }
 
   // Use direct value if SSS profile is used.
-  if (fapi_pdu.pdsch_maintenance_v3.pdsch_dmrs_power_offset_profile_sss != std::numeric_limits<int16_t>::min()) {
+  if (fapi_pdu.pdsch_maintenance_v3.pdsch_dmrs_power_offset_profile_sss !=
+      std::numeric_limits<decltype(fapi_pdu.pdsch_maintenance_v3.pdsch_dmrs_power_offset_profile_sss)>::min()) {
     proc_pdu.ratio_pdsch_dmrs_to_sss_dB =
         static_cast<float>(fapi_pdu.pdsch_maintenance_v3.pdsch_dmrs_power_offset_profile_sss) * 0.001F;
   } else {
@@ -169,13 +191,15 @@ static void fill_rb_allocation(pdsch_processor::pdu_t& proc_pdu, const fapi::dl_
   proc_pdu.freq_alloc = rb_allocation::make_type0(vrb_bitmap, mapper);
 }
 
-void srsran::fapi_adaptor::convert_pdsch_fapi_to_phy(pdsch_processor::pdu_t&   proc_pdu,
-                                                     const fapi::dl_pdsch_pdu& fapi_pdu,
-                                                     uint16_t                  sfn,
-                                                     uint16_t                  slot)
+void srsran::fapi_adaptor::convert_pdsch_fapi_to_phy(pdsch_processor::pdu_t&            proc_pdu,
+                                                     const fapi::dl_pdsch_pdu&          fapi_pdu,
+                                                     uint16_t                           sfn,
+                                                     uint16_t                           slot,
+                                                     span<const re_pattern_list>        csi_re_pattern_list,
+                                                     const precoding_matrix_repository& pm_repo)
 {
   proc_pdu.slot         = slot_point(fapi_pdu.scs, sfn, slot);
-  proc_pdu.rnti         = fapi_pdu.rnti;
+  proc_pdu.rnti         = to_value(fapi_pdu.rnti);
   proc_pdu.bwp_size_rb  = fapi_pdu.bwp_size;
   proc_pdu.bwp_start_rb = fapi_pdu.bwp_start;
   proc_pdu.cp           = fapi_pdu.cp;
@@ -211,10 +235,13 @@ void srsran::fapi_adaptor::convert_pdsch_fapi_to_phy(pdsch_processor::pdu_t&   p
   proc_pdu.ldpc_base_graph = fapi_pdu.pdsch_maintenance_v3.ldpc_base_graph;
   proc_pdu.tbs_lbrm_bytes  = fapi_pdu.pdsch_maintenance_v3.tb_size_lbrm_bytes.value();
 
-  fill_reserved_re_pattern(proc_pdu, fapi_pdu);
+  fill_reserved_re_pattern(proc_pdu, fapi_pdu, csi_re_pattern_list);
 
-  // :TODO: add the ports.
-  proc_pdu.ports = {0};
+  srsran_assert(fapi_pdu.precoding_and_beamforming.prgs.size() == 1U,
+                "Unsupported number of PRGs={}",
+                fapi_pdu.precoding_and_beamforming.prgs.size());
+  proc_pdu.precoding = precoding_configuration::make_wideband(
+      pm_repo.get_precoding_matrix(fapi_pdu.precoding_and_beamforming.prgs.front().pm_index));
 
   // Fill PDSCH context for logging.
   proc_pdu.context = fapi_pdu.context;

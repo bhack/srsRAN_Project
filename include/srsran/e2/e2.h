@@ -22,30 +22,20 @@
 
 #pragma once
 
+#include "e2_event_manager.h"
+#include "e2_messages.h"
 #include "srsran/adt/byte_buffer.h"
 #include "srsran/adt/expected.h"
 #include "srsran/asn1/e2ap/e2ap.h"
+#include "srsran/asn1/e2ap/e2sm_kpm.h"
+#include "srsran/asn1/e2ap/e2sm_rc.h"
 #include "srsran/ran/lcid.h"
+#include "srsran/rlc/rlc_metrics.h"
+#include "srsran/scheduler/scheduler_metrics.h"
 #include "srsran/support/async/async_task.h"
+#include "srsran/support/async/eager_async_task.h"
 
 namespace srsran {
-
-struct e2_message {
-  asn1::e2ap::e2_ap_pdu_c pdu;
-};
-
-/// \brief CU initiated E2 setup request.
-struct e2_setup_request_message {
-  asn1::e2ap::e2setup_request_s request;
-  unsigned                      max_setup_retries = 5;
-};
-
-/// \brief Response to CU initiated E2 setup request.
-struct e2_setup_response_message {
-  asn1::e2ap::e2setup_resp_s response;
-  asn1::e2ap::e2setup_fail_s failure;
-  bool                       success;
-};
 
 /// This interface is used to push E2 messages to the E2 interface.
 class e2_message_handler
@@ -80,18 +70,50 @@ class e2_connection_manager
 public:
   virtual ~e2_connection_manager() = default;
 
-  /// \brief Creates and transmits the E2 Setup outcome to the CU-UP.
-  /// \param[in] msg The cu_up_e1_setup_response_message to transmit.
-  /// \remark The CU transmits the E2SetupResponse/E2SetupFailure as per______.
-  virtual void handle_e2_setup_response(const e2_setup_response_message& msg) = 0;
-
   /// \brief Initiates the E2 Setup procedure as per _____
-  /// \param[in] request The E1SetupRequest message to transmit.
+  /// \param[in] request The E2SetupRequest message to transmit.
   /// \return Returns a e2_setup_response_message struct with the success member set to 'true' in case of a
   /// successful outcome, 'false' otherwise.
-  /// \remark The CU transmits the E2SetupRequest as per ______.
   /// and awaits the response. If a E2SetupFailure is received the E2 will handle the failure.
-  virtual async_task<e2_setup_response_message> handle_e2_setup_request(const e2_setup_request_message& request) = 0;
+  virtual async_task<e2_setup_response_message> handle_e2_setup_request(e2_setup_request_message& request) = 0;
+
+  /// \brief Initiates the E2 Setup procedure as per _____. Setup Request generated from cfg.
+  /// \return Returns a e2_setup_response_message struct with the success member set to 'true' in case of a
+  /// successful outcome, 'false' otherwise.
+  /// and awaits the response. If a E2SetupFailure is received the E2 will handle the failure.
+  virtual async_task<e2_setup_response_message> start_initial_e2_setup_routine() = 0;
+};
+
+class e2_du_metrics_notifier : public scheduler_ue_metrics_notifier, public rlc_metrics_notifier
+{
+public:
+  virtual ~e2_du_metrics_notifier() = default;
+
+  using rlc_metrics_notifier::report_metrics;
+  using scheduler_ue_metrics_notifier::report_metrics;
+};
+
+class e2_du_metrics_interface
+{
+public:
+  virtual ~e2_du_metrics_interface() = default;
+  /// @brief Get the metrics from the scheduler.
+  /// @param ue_metrics
+  virtual void get_metrics(scheduler_ue_metrics& ue_metrics) = 0;
+
+  /// \brief connects e2_du_metric_provider
+  /// \param[in] meas_provider pointer to the e2_du_metric_provider
+  virtual void connect_e2_du_meas_provider(std::unique_ptr<e2_du_metrics_notifier> meas_provider) = 0;
+};
+
+/// This interface is used to pack outgoing and unpack incoming E2 messages.
+class e2ap_packer : public e2_message_handler
+{
+public:
+  virtual ~e2ap_packer() = default;
+
+  /// Handle packed E2AP PDU that needs to be unpacked and forwarded.
+  virtual void handle_packed_pdu(const byte_buffer& pdu) = 0;
 };
 
 /// Combined entry point for E2 handling.
@@ -99,5 +121,8 @@ class e2_interface : public e2_message_handler, public e2_event_handler, public 
 {
 public:
   virtual ~e2_interface() = default;
+  virtual void start()    = 0;
+  virtual void stop()     = 0;
 };
+
 } // namespace srsran

@@ -24,9 +24,9 @@
 
 #include "rlc_am_interconnect.h"
 #include "rlc_am_pdu.h"
-#include "rlc_am_window.h"
 #include "rlc_rx_entity.h"
 #include "srsran/support/executors/task_executor.h"
+#include "srsran/support/sdu_window.h"
 #include "srsran/support/timers.h"
 #include "fmt/format.h"
 #include <set>
@@ -54,10 +54,10 @@ struct rlc_rx_am_sdu_info {
   bool                                                       fully_received = false;
   bool                                                       has_gap        = false;
   std::set<rlc_rx_am_sdu_segment, rlc_rx_am_sdu_segment_cmp> segments; // Set of segments with SO as key
-  byte_buffer_slice_chain                                    sdu = {};
+  byte_buffer_chain                                          sdu = {};
 };
 
-/// \brief RX state variables
+/// \brief Rx state variables
 /// Ref: 3GPP TS 38.322 version 16.2.0 Section 7.1
 struct rlc_rx_am_state {
   /// \brief RX_Next – Receive state variable
@@ -87,8 +87,11 @@ private:
   /// Config storage
   const rlc_rx_am_config cfg;
 
-  /// RX state variables
+  /// Rx state variables
   rlc_rx_am_state st;
+
+  /// Maximum number of visited SNs in the RX window when building a status report.
+  uint32_t max_nof_sn_per_status_report; // keep this attribute close to st (cache)
 
   /// Status handler
   rlc_tx_am_status_handler* status_handler = nullptr;
@@ -97,20 +100,32 @@ private:
   /// Indicates whether a status report is required
   std::atomic<bool> do_status = {false};
 
-  /// RX counter modulus
+  /// Rx counter modulus
   const uint32_t mod;
   /// AM window size
   const uint32_t am_window_size;
 
-  /// RX window
-  std::unique_ptr<rlc_am_window_base<rlc_rx_am_sdu_info>> rx_window;
+  /// Rx window
+  std::unique_ptr<sdu_window<rlc_rx_am_sdu_info>> rx_window;
   /// Indicates the rx_window has not been changed, i.e. no need to rebuild status report.
   static const bool rx_window_not_changed = false;
   /// Indicates the rx_window has been changed, i.e. need to rebuild status report.
   static const bool rx_window_changed = true;
 
-  /// Cached status report
-  rlc_am_status_pdu status_report;
+  /// Pre-allocated status reports for (re)-building, caching, and sharing with TX entity
+  std::array<rlc_am_status_pdu, 3> status_buf;
+
+  /// Status report for (re)-building
+  rlc_am_status_pdu* status_builder = &status_buf[0];
+  /// Status report for caching
+  rlc_am_status_pdu* status_cached = &status_buf[1];
+  /// Status report for sharing
+  rlc_am_status_pdu* status_shared = &status_buf[2];
+
+  /// Size of the cached status report
+  std::atomic<uint32_t> status_report_size;
+  std::atomic<bool>     status_prohibit_timer_is_running{false};
+
   /// Mutex for controlled access to the cached status report, e.g. read by the Tx entity in a different executor
   std::mutex status_report_mutex;
 
@@ -127,25 +142,31 @@ private:
   /// Ref: TS 38.322 Sec. 7.3
   unique_timer reassembly_timer;
 
+  task_executor& ue_executor;
+
+  pcap_rlc_pdu_context pcap_context;
+
 public:
-  rlc_rx_am_entity(du_ue_index_t                     du_index,
+  rlc_rx_am_entity(uint32_t                          du_index_,
+                   du_ue_index_t                     ue_index,
                    rb_id_t                           rb_id,
                    const rlc_rx_am_config&           config,
                    rlc_rx_upper_layer_data_notifier& upper_dn_,
-                   timer_manager&                    timers,
-                   task_executor&                    ue_executor);
+                   timer_factory                     timers,
+                   task_executor&                    ue_executor,
+                   rlc_pcap&                         pcap_);
 
-  // RX/TX interconnect
+  // Rx/Tx interconnect
   void set_status_handler(rlc_tx_am_status_handler* status_handler_) { status_handler = status_handler_; }
   void set_status_notifier(rlc_tx_am_status_notifier* status_notifier_) { status_notifier = status_notifier_; }
 
   // Interfaces for lower layers
   void handle_pdu(byte_buffer_slice buf) override;
 
-  // Status provider for RX entity
-  rlc_am_status_pdu get_status_pdu() override;
-  uint32_t          get_status_pdu_length() override;
-  bool              status_report_required() override;
+  // Status provider for Tx entity
+  rlc_am_status_pdu& get_status_pdu() override;
+  uint32_t           get_status_pdu_length() override;
+  bool               status_report_required() override;
 
   /// Inform the Tx entity that a status report is triggered (whenever do_status is set to true and t-statusProhibit is
   /// not running), or its size has changed (e.g. further PDUs have been received)
@@ -171,9 +192,9 @@ public:
   /// \return The rebased value of sn
   uint32_t rx_mod_base(uint32_t sn) const { return (sn - st.rx_next) % mod; }
 
-  /// Checks whether a sequence number is inside the current RX window
+  /// Checks whether a sequence number is inside the current Rx window
   /// \param sn The sequence number to be checked
-  /// \return True if sn is inside the RX window, false otherwise
+  /// \return True if sn is inside the Rx window, false otherwise
   bool inside_rx_window(uint32_t sn) const
   {
     // RX_Next <= SN < RX_Next + AM_Window_Size
@@ -214,7 +235,7 @@ public:
   bool is_t_reassembly_running() { return reassembly_timer.is_running(); }
 
 private:
-  /// Handles a received control PDU. The PDU is unpacked and forwarded to the RX entity
+  /// Handles a received control PDU. The PDU is unpacked and forwarded to the Rx entity
   /// \param buf The control PDU to be handled (including header and payload)
   void handle_control_pdu(byte_buffer_slice buf);
 
@@ -258,7 +279,10 @@ private:
   /// and resets the rx_window_changed flag
   void refresh_status_report();
 
-  void on_expired_status_prohibit_timer(uint32_t timeout_id);
+  /// Swaps the cached status_report with the newly built version
+  void store_status_report();
+
+  void on_expired_status_prohibit_timer();
 
   /// \brief on_expired_reassembly_timer Handler for expired reassembly timer
   ///
@@ -266,12 +290,12 @@ private:
   /// in order to avoid incidential blocking of those critical paths.
   ///
   /// \param timeout_id The timer ID
-  void on_expired_reassembly_timer(uint32_t timeout_id);
+  void on_expired_reassembly_timer();
 
   /// Creates the rx_window according to sn_size
   /// \param sn_size Size of the sequence number (SN)
   /// \return unique pointer to rx_window instance
-  std::unique_ptr<rlc_am_window_base<rlc_rx_am_sdu_info>> create_rx_window(rlc_am_sn_size sn_size);
+  std::unique_ptr<sdu_window<rlc_rx_am_sdu_info>> create_rx_window(rlc_am_sn_size sn_size);
 
   void log_state(srslog::basic_levels level) { logger.log(level, "RX entity state. {}", st); }
 };

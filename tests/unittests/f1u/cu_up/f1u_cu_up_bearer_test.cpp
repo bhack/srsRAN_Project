@@ -22,6 +22,7 @@
 
 #include "lib/f1u/cu_up/f1u_bearer_impl.h"
 #include "srsran/srslog/srslog.h"
+#include "srsran/support/executors/manual_task_worker.h"
 #include <gtest/gtest.h>
 #include <list>
 
@@ -38,8 +39,8 @@ public:
   std::list<nru_dl_message>          tx_msg_list;
   std::list<uint32_t>                highest_transmitted_pdcp_sn_list;
   std::list<uint32_t>                highest_delivered_pdcp_sn_list;
-  std::list<byte_buffer_slice_chain> rx_sdu_list;
-  std::list<uint32_t>                removed_ul_teid_list;
+  std::list<byte_buffer_chain>       rx_sdu_list;
+  std::list<up_transport_layer_info> removed_ul_tnls;
 
   // f1u_tx_pdu_notifier interface
   void on_new_pdu(nru_dl_message msg) override { tx_msg_list.push_back(std::move(msg)); }
@@ -55,10 +56,10 @@ public:
   }
 
   // f1u_rx_sdu_notifier interface
-  void on_new_sdu(byte_buffer_slice_chain sdu) override { rx_sdu_list.push_back(std::move(sdu)); }
+  void on_new_sdu(byte_buffer_chain sdu) override { rx_sdu_list.push_back(std::move(sdu)); }
 
   // f1u_bearer_disconnector interface
-  void disconnect_cu_bearer(uint32_t ul_teid) override { removed_ul_teid_list.push_back(ul_teid); }
+  void disconnect_cu_bearer(const up_transport_layer_info& ul_tnl) override { removed_ul_tnls.push_back(ul_tnl); }
 };
 
 class f1u_trx_test
@@ -85,14 +86,21 @@ protected:
     logger.set_level(srslog::basic_levels::debug);
 
     // init F1-U logger
-    srslog::fetch_basic_logger("F1-U", false).set_level(srslog::basic_levels::debug);
-    srslog::fetch_basic_logger("F1-U", false).set_hex_dump_max_size(100);
+    srslog::fetch_basic_logger("CU-F1-U", false).set_level(srslog::basic_levels::debug);
+    srslog::fetch_basic_logger("CU-F1-U", false).set_hex_dump_max_size(100);
 
     // create tester and testee
     logger.info("Creating F1-U bearer");
     tester          = std::make_unique<f1u_cu_up_test_frame>();
     drb_id_t drb_id = drb_id_t::drb1;
-    f1u             = std::make_unique<f1u_bearer_impl>(0, drb_id, *tester, *tester, *tester, *tester, ul_teid_next++);
+    f1u             = std::make_unique<f1u_bearer_impl>(0,
+                                            drb_id,
+                                            up_transport_layer_info{{"127.0.0.1"}, gtpu_teid_t{ul_teid_next.value()++}},
+                                            *tester,
+                                            *tester,
+                                            *tester,
+                                            timer_factory{timers, ue_worker},
+                                            *tester);
   }
 
   void TearDown() override
@@ -101,10 +109,18 @@ protected:
     srslog::flush();
   }
 
+  void tick()
+  {
+    timers.tick();
+    ue_worker.run_pending_tasks();
+  }
+
   srslog::basic_logger&                 logger = srslog::fetch_basic_logger("TEST", false);
+  timer_manager                         timers;
+  manual_task_worker                    ue_worker{128};
   std::unique_ptr<f1u_cu_up_test_frame> tester;
   std::unique_ptr<f1u_bearer_impl>      f1u;
-  uint32_t                              ul_teid_next = 1234;
+  gtpu_teid_t                           ul_teid_next{1234};
 };
 
 TEST_F(f1u_cu_up_test, create_and_delete)
@@ -113,34 +129,73 @@ TEST_F(f1u_cu_up_test, create_and_delete)
   EXPECT_TRUE(tester->highest_transmitted_pdcp_sn_list.empty());
   EXPECT_TRUE(tester->highest_delivered_pdcp_sn_list.empty());
   EXPECT_TRUE(tester->rx_sdu_list.empty());
-  EXPECT_TRUE(tester->removed_ul_teid_list.empty());
-  uint32_t ul_teid = f1u->get_ul_teid();
+  EXPECT_TRUE(tester->removed_ul_tnls.empty());
+  gtpu_teid_t ul_teid = f1u->get_ul_teid();
   f1u.reset();
-  ASSERT_FALSE(tester->removed_ul_teid_list.empty());
-  EXPECT_EQ(tester->removed_ul_teid_list.front(), ul_teid);
-  tester->removed_ul_teid_list.pop_front();
-  EXPECT_TRUE(tester->removed_ul_teid_list.empty());
+  ASSERT_FALSE(tester->removed_ul_tnls.empty());
+  EXPECT_EQ(tester->removed_ul_tnls.front().gtp_teid, ul_teid);
+  tester->removed_ul_tnls.pop_front();
+  EXPECT_TRUE(tester->removed_ul_tnls.empty());
 }
 
 TEST_F(f1u_cu_up_test, tx_discard)
 {
-  constexpr uint32_t pdcp_sn = 123;
+  constexpr uint32_t pdu_size = 10;
+  constexpr uint32_t pdcp_sn  = 123;
+
+  // advance time by one to ensure timer is stopped and ignores this tick
+  tick();
 
   f1u->discard_sdu(pdcp_sn);
-  f1u->discard_sdu(pdcp_sn + 7);
+  // advance time just before the timer-based DL notification is triggered
+  for (uint32_t t = 0; t < f1u_dl_notif_time_ms - 1; t++) {
+    EXPECT_TRUE(tester->tx_msg_list.empty());
+    tick();
+  }
+  EXPECT_TRUE(tester->tx_msg_list.empty());
+
+  f1u->discard_sdu(pdcp_sn + 1); // this should be merged into previous block
+  f1u->discard_sdu(pdcp_sn + 3); // this should trigger the next block
+
+  byte_buffer tx_pdcp_pdu1 = create_sdu_byte_buffer(pdu_size, 0xcc);
+  pdcp_tx_pdu sdu1;
+  sdu1.buf     = tx_pdcp_pdu1.deep_copy();
+  sdu1.pdcp_sn = pdcp_sn + 22;
+
+  // transmit a PDU to piggy-back previous discard
+  f1u->handle_sdu(std::move(sdu1));
 
   EXPECT_TRUE(tester->highest_transmitted_pdcp_sn_list.empty());
   EXPECT_TRUE(tester->highest_delivered_pdcp_sn_list.empty());
   EXPECT_TRUE(tester->rx_sdu_list.empty());
 
   ASSERT_FALSE(tester->tx_msg_list.empty());
-  EXPECT_TRUE(tester->tx_msg_list.front().t_pdu.empty());
+  EXPECT_FALSE(tester->tx_msg_list.front().t_pdu.empty());
+  EXPECT_EQ(tester->tx_msg_list.front().t_pdu, tx_pdcp_pdu1);
   ASSERT_TRUE(tester->tx_msg_list.front().dl_user_data.discard_blocks.has_value());
-  ASSERT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value().size(), 1);
+  ASSERT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value().size(), 2);
   EXPECT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value()[0].pdcp_sn_start, pdcp_sn);
-  EXPECT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value()[0].block_size, 1);
+  EXPECT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value()[0].block_size, 2);
+  EXPECT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value()[1].pdcp_sn_start, pdcp_sn + 3);
+  EXPECT_EQ(tester->tx_msg_list.front().dl_user_data.discard_blocks.value()[1].block_size, 1);
 
   tester->tx_msg_list.pop_front();
+  ASSERT_TRUE(tester->tx_msg_list.empty());
+
+  // advance time by one to ensure timer is stopped and ignores this tick
+  tick();
+
+  f1u->discard_sdu(pdcp_sn + 7);
+  // advance time just before the timer-based DL notification is triggered
+  for (uint32_t t = 0; t < f1u_dl_notif_time_ms - 1; t++) {
+    EXPECT_TRUE(tester->tx_msg_list.empty());
+    tick();
+  }
+  EXPECT_TRUE(tester->tx_msg_list.empty());
+
+  // final tick to expire timer
+  tick();
+  EXPECT_FALSE(tester->tx_msg_list.empty());
 
   ASSERT_FALSE(tester->tx_msg_list.empty());
   EXPECT_TRUE(tester->tx_msg_list.front().t_pdu.empty());
@@ -199,12 +254,12 @@ TEST_F(f1u_cu_up_test, rx_pdcp_pdus)
 
   byte_buffer    rx_pdcp_pdu1 = create_sdu_byte_buffer(pdu_size, pdcp_sn);
   nru_ul_message msg1;
-  msg1.t_pdu = byte_buffer_slice_chain{rx_pdcp_pdu1.deep_copy()};
+  msg1.t_pdu = byte_buffer_chain{rx_pdcp_pdu1.deep_copy()};
   f1u->handle_pdu(std::move(msg1));
 
   byte_buffer    rx_pdcp_pdu2 = create_sdu_byte_buffer(pdu_size, pdcp_sn + 1);
   nru_ul_message msg2;
-  msg2.t_pdu = byte_buffer_slice_chain{rx_pdcp_pdu2.deep_copy()};
+  msg2.t_pdu = byte_buffer_chain{rx_pdcp_pdu2.deep_copy()};
   f1u->handle_pdu(std::move(msg2));
 
   EXPECT_TRUE(tester->tx_msg_list.empty());

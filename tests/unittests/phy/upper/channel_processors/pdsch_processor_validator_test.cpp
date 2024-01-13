@@ -20,11 +20,15 @@
  *
  */
 
-#include "../../support/resource_grid_test_doubles.h"
+#include "../../support/resource_grid_mapper_test_doubles.h"
 #include "../rx_softbuffer_test_doubles.h"
+#include "../tx_softbuffer_test_doubles.h"
+#include "pdsch_processor_test_doubles.h"
+#include "srsran/phy/support/support_factories.h"
 #include "srsran/phy/upper/channel_processors/channel_processor_factories.h"
 #include "srsran/phy/upper/channel_processors/channel_processor_formatters.h"
 #include "srsran/ran/dmrs.h"
+#include "srsran/ran/precoding/precoding_codebooks.h"
 #include "fmt/ostream.h"
 #include "gtest/gtest.h"
 
@@ -41,7 +45,6 @@ const pdsch_processor::pdu_t base_pdu = {nullopt,
                                          cyclic_prefix::NORMAL,
                                          {{modulation_scheme::QPSK, 0}},
                                          1,
-                                         {0},
                                          pdsch_processor::pdu_t::CRB0,
                                          {0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0},
                                          dmrs_type::TYPE1,
@@ -55,7 +58,8 @@ const pdsch_processor::pdu_t base_pdu = {nullopt,
                                          3168,
                                          {},
                                          0,
-                                         0};
+                                         0,
+                                         precoding_configuration::make_wideband(make_single_port())};
 
 struct test_case_t {
   std::function<pdsch_processor::pdu_t()> get_pdu;
@@ -74,7 +78,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.bwp_size_rb            = MAX_RB + 1;
        return pdu;
      },
-     R"(Invalid BWP configuration 0:276 for a VRB mask of size 52\.)"},
+     R"(Invalid BWP configuration \[0, 276\) for the given frequency allocation \[0\, 52\)\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.dmrs_symbol_mask       = {1};
@@ -86,7 +90,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.dmrs_symbol_mask       = bounded_bitset<MAX_NSYMB_PER_SLOT>(MAX_NSYMB_PER_SLOT);
        return pdu;
      },
-     R"(The number of OFDM symbols carrying DM-RS RE must be greater than zero.)"},
+     R"(The number of OFDM symbols carrying DM-RS must be greater than zero\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.dmrs_symbol_mask       = bounded_bitset<MAX_NSYMB_PER_SLOT>(MAX_NSYMB_PER_SLOT);
@@ -111,7 +115,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.nof_symbols            = 13;
        return pdu;
      },
-     R"(The transmission with time allocation 2:13 exceeds the slot boundary of 14 symbols.)"},
+     R"(The transmission with time allocation \[2, 15\) exceeds the slot boundary of 14 symbols.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.dmrs                   = dmrs_type::TYPE2;
@@ -123,7 +127,7 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
        pdu.nof_cdm_groups_without_data = get_max_nof_cdm_groups_without_data(dmrs_config_type::type1) + 1;
        return pdu;
      },
-     R"(The number of CDM groups without data \(i\.e\., 3\) must not exceed the maximum given by the type \(i\.e\., 2\)\.)"},
+     R"(The number of CDM groups without data \(i\.e\., 3\) must not exceed the maximum supported by the DM-RS type \(i\.e\., 2\)\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.freq_alloc             = rb_allocation::make_type0({1, 0, 1, 0, 1, 0});
@@ -132,22 +136,57 @@ const std::vector<test_case_t> pdsch_processor_validator_test_data = {
      R"(Only contiguous allocation is currently supported\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
-       pdu.ports                  = {0, 1};
-       return pdu;
-     },
-     R"(Only one layer is currently supported\. 2 layers requested\.)"},
-    {[] {
-       pdsch_processor::pdu_t pdu = base_pdu;
        pdu.tbs_lbrm_bytes         = 0;
        return pdu;
      },
-     R"(Invalid LBRM size \(0 bytes\)\. It must be non-zero, lesser than or equal to 3168 bytes\.)"},
+     R"(Invalid LBRM size \(0 bytes\)\. It must be non-zero, less than or equal to 3168 bytes\.)"},
     {[] {
        pdsch_processor::pdu_t pdu = base_pdu;
        pdu.codewords.clear();
        return pdu;
      },
      R"(Expected 1 codewords and got 0 for 1 layers\.)"},
+    {[] {
+       pdsch_processor::pdu_t pdu = base_pdu;
+       pdu.bwp_start_rb           = 0;
+       pdu.bwp_size_rb            = 52;
+       pdu.freq_alloc             = rb_allocation::make_type1(0, 52);
+       pdu.freq_alloc = rb_allocation::make_type1(0, 52, vrb_to_prb_mapper::create_non_interleaved_common_ss(1));
+       return pdu;
+     },
+     R"(Invalid BWP configuration \[0, 52\) for the given frequency allocation \[1\, 53\)\.)"},
+    {[] {
+       pdsch_processor::pdu_t pdu = base_pdu;
+       pdu.bwp_start_rb           = 0;
+       pdu.bwp_size_rb            = 52;
+       pdu.freq_alloc             = rb_allocation::make_type1(0, 52);
+       pdu.freq_alloc = rb_allocation::make_type1(0, 52, vrb_to_prb_mapper::create_interleaved_common(1, 0, 52));
+       return pdu;
+     },
+     R"(Invalid BWP configuration \[0, 52\) for the given frequency allocation non-contiguous.)"},
+    {[] {
+       pdsch_processor::pdu_t pdu = base_pdu;
+       pdu.bwp_start_rb           = 0;
+       pdu.bwp_size_rb            = 52;
+       pdu.freq_alloc             = rb_allocation::make_type1(0, 52);
+       pdu.freq_alloc = rb_allocation::make_type1(0, 52, vrb_to_prb_mapper::create_interleaved_coreset0(1, 52));
+       return pdu;
+     },
+     R"(Invalid BWP configuration \[0, 52\) for the given frequency allocation non-contiguous.)"},
+    {[] {
+       pdsch_processor::pdu_t pdu = base_pdu;
+
+       // Create RE pattern that collides with DM-RS.
+       re_pattern reserved_pattern;
+       reserved_pattern.prb_mask = ~bounded_bitset<MAX_RB>(MAX_RB);
+       reserved_pattern.prb_mask.fill(0, MAX_RB);
+       reserved_pattern.symbols = pdu.dmrs_symbol_mask;
+       reserved_pattern.re_mask = ~bounded_bitset<NRE>(NRE);
+       pdu.reserved.merge(reserved_pattern);
+
+       return pdu;
+     },
+     R"(The DM-RS symbol mask must not collide with reserved elements.)"},
 };
 
 class pdschProcessorFixture : public ::testing::TestWithParam<test_case_t>
@@ -223,8 +262,11 @@ protected:
 std::unique_ptr<pdsch_processor>     pdschProcessorFixture::pdsch_proc;
 std::unique_ptr<pdsch_pdu_validator> pdschProcessorFixture::pdu_validator;
 
-TEST_P(pdschProcessorFixture, pdschProcessorValidatortest)
+TEST_P(pdschProcessorFixture, pdschProcessorValidatorDeathTest)
 {
+  // Use thread safe death test.
+  ::testing::GTEST_FLAG(death_test_style) = "threadsafe";
+
   ASSERT_NE(pdsch_proc, nullptr);
   ASSERT_NE(pdu_validator, nullptr);
 
@@ -233,23 +275,28 @@ TEST_P(pdschProcessorFixture, pdschProcessorValidatortest)
   // Make sure the configuration is invalid.
   ASSERT_FALSE(pdu_validator->is_valid(param.get_pdu()));
 
-  // Prepare resource grid.
-  resource_grid_writer_spy grid(0, 0, 0);
+  // Prepare resource grid and resource grid mapper spies.
+  resource_grid_writer_spy              grid(0, 0, 0);
+  std::unique_ptr<resource_grid_mapper> mapper = create_resource_grid_mapper(0, 0, grid);
 
   // Prepare receive data.
   std::vector<uint8_t> data;
 
   // Prepare softbuffer.
-  rx_softbuffer_spy softbuffer(ldpc::MAX_CODEBLOCK_SIZE, 0);
+  tx_buffer_spy    softbuffer_spy(ldpc::MAX_CODEBLOCK_SIZE, 0);
+  unique_tx_buffer softbuffer(softbuffer_spy);
+
+  pdsch_processor_notifier_spy notifier_spy;
 
   // Process pdsch PDU.
 #ifdef ASSERTS_ENABLED
-//  ASSERT_DEATH({ pdsch_proc->process(grid, {data}, param.get_pdu()); }, param.expr);
+  ASSERT_DEATH({ pdsch_proc->process(*mapper, std::move(softbuffer), notifier_spy, {data}, param.get_pdu()); },
+               param.expr);
 #endif // ASSERTS_ENABLED
 }
 
 // Creates test suite that combines all possible parameters.
-INSTANTIATE_TEST_SUITE_P(pdschProcessorValidatortest,
+INSTANTIATE_TEST_SUITE_P(pdschProcessorValidatorDeathTest,
                          pdschProcessorFixture,
                          ::testing::ValuesIn(pdsch_processor_validator_test_data));
 

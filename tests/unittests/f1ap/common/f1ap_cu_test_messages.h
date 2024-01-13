@@ -22,7 +22,7 @@
 
 #pragma once
 
-#include "srsran/f1ap/common/f1ap_types.h"
+#include "srsran/f1ap/common/f1ap_ue_id.h"
 #include "srsran/f1ap/cu_cp/f1ap_cu.h"
 #include "srsran/ran/rnti.h"
 
@@ -30,10 +30,10 @@ namespace srsran {
 namespace srs_cu_cp {
 
 /// \brief Generate a dummy F1AP Served Cell Item.
-asn1::f1ap::gnb_du_served_cells_item_s generate_served_cells_item(unsigned nrcell_id, unsigned nrpci);
+asn1::f1ap::gnb_du_served_cells_item_s generate_served_cells_item(unsigned nrcell_id, pci_t nrpci);
 
 /// \brief Generates dummy F1AP SETUP REQUEST message.
-f1ap_message generate_f1_setup_request();
+f1ap_message generate_f1_setup_request(unsigned gnb_du_id = 0x11, unsigned nrcell_id = 6576, pci_t pci = 0);
 
 /// \brief Generates dummy F1AP Initial UL RRC TRANSFER message.
 f1ap_message generate_init_ul_rrc_message_transfer(gnb_du_ue_f1ap_id_t du_ue_id,
@@ -53,25 +53,32 @@ f1ap_message generate_ue_context_release_complete(gnb_cu_ue_f1ap_id_t cu_ue_id, 
 f1ap_message generate_ue_context_setup_request(gnb_cu_ue_f1ap_id_t cu_ue_id, gnb_du_ue_f1ap_id_t du_ue_id);
 
 /// \brief Generates dummy F1AP UE CONTEXT SETUP RESPONSE message.
-f1ap_message generate_ue_context_setup_response(gnb_cu_ue_f1ap_id_t cu_ue_id,
-                                                gnb_du_ue_f1ap_id_t du_ue_id,
-                                                rnti_t              crnti = to_rnti(0x4601));
+f1ap_message
+generate_ue_context_setup_response(gnb_cu_ue_f1ap_id_t cu_ue_id,
+                                   gnb_du_ue_f1ap_id_t du_ue_id,
+                                   rnti_t              crnti             = to_rnti(0x4601),
+                                   byte_buffer         cell_group_config = make_byte_buffer(
+                                       "5c02b091117aec701061e000b1c03544cde4a20c7c080408c008241000100000"));
 
 /// \brief Generates dummy F1AP UE CONTEXT SETUP FAILURE message.
 f1ap_message generate_ue_context_setup_failure(gnb_cu_ue_f1ap_id_t cu_ue_id, gnb_du_ue_f1ap_id_t du_ue_id);
 
 /// \brief Generates dummy CU-CP UE CONTEXT MODIFICATION REQUEST message.
-cu_cp_ue_context_modification_request
-generate_ue_context_modification_request(ue_index_t ue_index, const std::initializer_list<drb_id_t>& drbs_to_add);
+f1ap_ue_context_modification_request generate_ue_context_modification_request(ue_index_t ue_index);
 
 /// \brief Generates dummy F1AP UE CONTEXT MODIFICATION RESPONSE message.
-f1ap_message generate_ue_context_modification_response(gnb_cu_ue_f1ap_id_t                    cu_ue_id,
-                                                       gnb_du_ue_f1ap_id_t                    du_ue_id,
-                                                       rnti_t                                 crnti = to_rnti(0x4601),
-                                                       const std::initializer_list<drb_id_t>& drbs_added = {});
+f1ap_message generate_ue_context_modification_response(gnb_cu_ue_f1ap_id_t cu_ue_id,
+                                                       gnb_du_ue_f1ap_id_t du_ue_id,
+                                                       rnti_t              crnti = to_rnti(0x4601));
 
 /// \brief Generates dummy F1AP UE CONTEXT MODIFICATION FAILURE message.
 f1ap_message generate_ue_context_modification_failure(gnb_cu_ue_f1ap_id_t cu_ue_id, gnb_du_ue_f1ap_id_t du_ue_id);
+
+/// \brief Generate a dummy Paging message.
+cu_cp_paging_message generate_paging_message();
+
+/// \brief Generates dummy F1AP UE CONTEXT RELEASE REQUEST message.
+f1ap_message generate_ue_context_release_request(gnb_cu_ue_f1ap_id_t cu_ue_id, gnb_du_ue_f1ap_id_t du_ue_id);
 
 } // namespace srs_cu_cp
 } // namespace srsran

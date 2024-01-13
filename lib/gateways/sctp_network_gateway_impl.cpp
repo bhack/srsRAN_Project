@@ -21,11 +21,10 @@
  */
 
 #include "sctp_network_gateway_impl.h"
-#include <arpa/inet.h>
+#include "srsran/gateways/addr_info.h"
+#include "srsran/support/error_handling.h"
 #include <fcntl.h>
-#include <netinet/sctp.h>
-#include <unistd.h>
-
+#include <srsran/support/sockets.h>
 #include <utility>
 
 using namespace srsran;
@@ -50,9 +49,18 @@ bool sctp_network_gateway_impl::set_sockopts()
   if (config.rx_timeout_sec > 0) {
     if (not set_receive_timeout(config.rx_timeout_sec)) {
       logger.error("Couldn't set receive timeout for socket");
-
       return false;
     }
+  }
+
+  // Set SRTO_MAX
+  if (not sctp_set_rto_opts(sock_fd, config.rto_initial, config.rto_min, config.rto_max, logger)) {
+    return false;
+  }
+
+  // Set SCTP init options
+  if (not sctp_set_init_msg_opts(sock_fd, config.init_max_attempts, config.max_init_timeo, logger)) {
+    return false;
   }
 
   if (config.reuse_addr) {
@@ -73,7 +81,7 @@ bool sctp_network_gateway_impl::subscripe_to_events()
   events.sctp_shutdown_event         = 1;
   events.sctp_association_event      = 1;
 
-  if (::setsockopt(sock_fd, IPPROTO_SCTP, SCTP_EVENTS, &events, sizeof(events))) {
+  if (::setsockopt(sock_fd, IPPROTO_SCTP, SCTP_EVENTS, &events, sizeof(events)) != 0) {
     logger.error("Subscribing to SCTP events failed: {}", strerror(errno));
     return false;
   }
@@ -86,7 +94,7 @@ bool sctp_network_gateway_impl::set_receive_timeout(unsigned rx_timeout_sec)
   tv.tv_sec  = rx_timeout_sec;
   tv.tv_usec = 0;
 
-  if (::setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv)) {
+  if (::setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof tv) != 0) {
     logger.error("Couldn't set receive timeout for socket: {}", strerror(errno));
     return false;
   }
@@ -97,7 +105,7 @@ bool sctp_network_gateway_impl::set_receive_timeout(unsigned rx_timeout_sec)
 bool sctp_network_gateway_impl::set_reuse_addr()
 {
   int one = 1;
-  if (::setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one))) {
+  if (::setsockopt(sock_fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) != 0) {
     logger.error("Couldn't set reuseaddr for socket: {}", strerror(errno));
     return false;
   }
@@ -139,6 +147,16 @@ bool sctp_network_gateway_impl::create_and_bind()
     sock_fd = ::socket(result->ai_family, result->ai_socktype, result->ai_protocol);
     if (sock_fd == -1) {
       ret = errno;
+      if (ret == ESOCKTNOSUPPORT) {
+        // probably the sctp kernel module is missing on the system, inform the user and exit here
+        logger.error(
+            "Failed to create SCTP socket: {}. Hint: Please ensure 'sctp' kernel module is available on the system.",
+            strerror(ret));
+        report_error(
+            "Failed to create SCTP socket: {}. Hint: Please ensure 'sctp' kernel module is available on the system.\n",
+            strerror(ret));
+        break;
+      }
       continue;
     }
 
@@ -161,7 +179,7 @@ bool sctp_network_gateway_impl::create_and_bind()
     }
 
     // store client address
-    memcpy(&client_addr, result->ai_addr, result->ai_addrlen);
+    std::memcpy(&client_addr, result->ai_addr, result->ai_addrlen);
     client_addrlen     = result->ai_addrlen;
     client_ai_family   = result->ai_family;
     client_ai_socktype = result->ai_socktype;
@@ -184,8 +202,16 @@ bool sctp_network_gateway_impl::create_and_bind()
   freeaddrinfo(results);
 
   if (sock_fd == -1) {
-    fmt::print("Error connecting to {}:{} - {}\n", config.connect_address, config.connect_port, strerror(ret));
-    logger.error("Error binding to {}:{} - {}", config.bind_address, config.bind_port, strerror(ret));
+    fmt::print("Failed to bind {} socket to {}:{}. {}\n",
+               ipproto_to_string(hints.ai_protocol),
+               config.bind_address,
+               config.bind_port,
+               strerror(ret));
+    logger.error("Failed to bind {} socket to {}:{}. {}",
+                 ipproto_to_string(hints.ai_protocol),
+                 config.bind_address,
+                 config.bind_port,
+                 strerror(ret));
     return false;
   }
 
@@ -235,13 +261,30 @@ bool sctp_network_gateway_impl::create_and_connect()
     return false;
   }
 
-  struct addrinfo* result;
+  fmt::print("Connecting to {} on {}:{}\n",
+             config.connection_name.c_str(),
+             config.connect_address.c_str(),
+             connect_port.c_str());
+  std::chrono::time_point<std::chrono::steady_clock> start = std::chrono::steady_clock::now();
+  struct addrinfo*                                   result;
   for (result = results; result != nullptr; result = result->ai_next) {
-    // create SCTP socket
-    sock_fd = ::socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    // Create SCTP socket only if not created in create_and_bind function.
     if (sock_fd == -1) {
-      ret = errno;
-      continue;
+      sock_fd = ::socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+      if (sock_fd == -1) {
+        ret = errno;
+        if (ret == ESOCKTNOSUPPORT) {
+          // probably the sctp kernel module is missing on the system, inform the user and exit here
+          logger.error(
+              "Failed to create SCTP socket: {}. Hint: Please ensure 'sctp' kernel module is available on the system.",
+              strerror(ret));
+          report_error("Failed to create SCTP socket: {}. Hint: Please ensure 'sctp' kernel module is available on the "
+                       "system.\n",
+                       strerror(ret));
+          break;
+        }
+        continue;
+      }
     }
 
     if (not set_sockopts()) {
@@ -263,7 +306,7 @@ bool sctp_network_gateway_impl::create_and_connect()
     }
 
     // store server address
-    memcpy(&server_addr, result->ai_addr, result->ai_addrlen);
+    std::memcpy(&server_addr, result->ai_addr, result->ai_addrlen);
     server_addrlen     = result->ai_addrlen;
     server_ai_family   = result->ai_family;
     server_ai_socktype = result->ai_socktype;
@@ -279,6 +322,10 @@ bool sctp_network_gateway_impl::create_and_connect()
       }
     }
 
+    // If connected then use server address as destination address.
+    std::memcpy(&msg_dst_addr, &server_addr, server_addrlen);
+    msg_dst_addrlen = server_addrlen;
+
     logger.debug("Connection successful");
     break;
   }
@@ -286,7 +333,20 @@ bool sctp_network_gateway_impl::create_and_connect()
   freeaddrinfo(results);
 
   if (sock_fd == -1) {
-    logger.error("Error connecting to {}:{} - {}", config.connect_address, config.connect_port, strerror(ret));
+    std::chrono::time_point<std::chrono::steady_clock> end = std::chrono::steady_clock::now();
+    auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+    fmt::print("Failed to connect {} socket to {}:{}. error=\"{}\" timeout={}ms\n",
+               ipproto_to_string(hints.ai_protocol),
+               config.connect_address,
+               config.connect_port,
+               strerror(ret),
+               now_ms.count());
+    logger.error("Failed to connect {} socket to {}:{}. error=\"{}\" timeout={}ms",
+                 ipproto_to_string(hints.ai_protocol),
+                 config.connect_address,
+                 config.connect_port,
+                 strerror(ret),
+                 now_ms.count());
     return false;
   }
 
@@ -344,9 +404,9 @@ bool sctp_network_gateway_impl::recreate_and_reconnect()
 /// Close socket handle and set FD to -1
 bool sctp_network_gateway_impl::close_socket()
 {
+  logger.debug("Closing socket.");
   if (not is_initialized()) {
-    logger.error("Socket not initialized");
-    return false;
+    return true;
   }
 
   if (::close(sock_fd) == -1) {
@@ -370,8 +430,8 @@ void sctp_network_gateway_impl::receive()
   int rx_bytes = ::sctp_recvmsg(sock_fd,
                                 tmp_mem.data(),
                                 network_gateway_sctp_max_len,
-                                (struct sockaddr*)&client_addr,
-                                &client_addrlen,
+                                (struct sockaddr*)&msg_src_addr,
+                                &msg_src_addrlen,
                                 &sri,
                                 &msg_flags);
 
@@ -515,12 +575,18 @@ void sctp_network_gateway_impl::handle_pdu(const byte_buffer& pdu)
 
   span<const uint8_t> pdu_span = to_span(pdu, tmp_mem);
 
+  if (not server_addrlen) {
+    // If only bind, send msg to the last src address.
+    std::memcpy(&msg_dst_addr, &msg_src_addr, msg_src_addrlen);
+    msg_dst_addrlen = msg_src_addrlen;
+  }
+
   int bytes_sent = sctp_sendmsg(sock_fd,
                                 pdu_span.data(),
                                 pdu_span.size_bytes(),
-                                (struct sockaddr*)&server_addr,
-                                server_addrlen,
-                                ppi,
+                                (struct sockaddr*)&msg_dst_addr,
+                                msg_dst_addrlen,
+                                htonl(config.ppid),
                                 0,
                                 stream_no,
                                 0,

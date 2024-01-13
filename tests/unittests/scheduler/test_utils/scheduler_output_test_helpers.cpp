@@ -21,7 +21,7 @@
  */
 
 #include "scheduler_output_test_helpers.h"
-#include "lib/scheduler/pdcch_scheduling/pdcch_config_helpers.h"
+#include "lib/scheduler/support/pdcch/pdcch_mapping.h"
 #include "srsran/ran/pdcch/cce_to_prb_mapping.h"
 #include "srsran/ran/prach/prach_configuration.h"
 
@@ -33,7 +33,8 @@ std::vector<grant_info> srsran::get_pdcch_grant_info(pci_t pci, const pdcch_dl_i
 
   const bwp_configuration&     bwp_cfg = *pdcch.ctx.bwp_cfg;
   const coreset_configuration& cs_cfg  = *pdcch.ctx.coreset_cfg;
-  prb_index_list pdcch_prbs = cce_to_prb_mapping(bwp_cfg, cs_cfg, pci, pdcch.ctx.cces.aggr_lvl, pdcch.ctx.cces.ncce);
+  prb_index_list               pdcch_prbs =
+      pdcch_helper::cce_to_prb_mapping(bwp_cfg, cs_cfg, pci, pdcch.ctx.cces.aggr_lvl, pdcch.ctx.cces.ncce);
   for (unsigned prb : pdcch_prbs) {
     unsigned crb = prb_to_crb(bwp_cfg, prb);
     grants.push_back(grant_info{bwp_cfg.scs, ofdm_symbol_range{0U, (uint8_t)cs_cfg.duration}, {crb, crb + 1}});
@@ -48,7 +49,7 @@ std::vector<grant_info> srsran::get_pdcch_grant_info(const pdcch_ul_information&
   const bwp_configuration&     bwp_cfg = *pdcch.ctx.bwp_cfg;
   const coreset_configuration& cs_cfg  = *pdcch.ctx.coreset_cfg;
   prb_index_list               pdcch_prbs =
-      cce_to_prb_mapping(bwp_cfg, cs_cfg, MAX_PCI + 1, pdcch.ctx.cces.aggr_lvl, pdcch.ctx.cces.ncce);
+      pdcch_helper::cce_to_prb_mapping(bwp_cfg, cs_cfg, MAX_PCI + 1, pdcch.ctx.cces.aggr_lvl, pdcch.ctx.cces.ncce);
   for (unsigned prb : pdcch_prbs) {
     unsigned crb = prb_to_crb(bwp_cfg, prb);
     grants.push_back(grant_info{bwp_cfg.scs, ofdm_symbol_range{0U, (uint8_t)cs_cfg.duration}, {crb, crb + 1}});
@@ -56,35 +57,40 @@ std::vector<grant_info> srsran::get_pdcch_grant_info(const pdcch_ul_information&
   return grants;
 }
 
-grant_info srsran::get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const sib_information& sib)
+static grant_info get_common_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const pdsch_information& pdsch)
 {
-  bwp_configuration coreset0_bwp_cfg = bwp_cfg.generic_params;
-  coreset0_bwp_cfg.crbs              = bwp_cfg.pdcch_common.coreset0->coreset0_crbs();
-
-  crb_interval crbs = prb_to_crb(coreset0_bwp_cfg, sib.pdsch_cfg.prbs.prbs());
-  return grant_info{sib.pdsch_cfg.bwp_cfg->scs, sib.pdsch_cfg.symbols, crbs};
+  crb_interval cs0_crbs = bwp_cfg.pdcch_common.coreset0->coreset0_crbs();
+  crb_interval crbs     = {pdsch.rbs.type1().start() + cs0_crbs.start(), pdsch.rbs.type1().stop() + cs0_crbs.start()};
+  return grant_info{bwp_cfg.generic_params.scs, pdsch.symbols, crbs};
 }
 
-grant_info srsran::get_pdsch_grant_info(const rar_information& rar)
+grant_info srsran::get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const sib_information& sib)
 {
-  bwp_configuration bwp_cfg = *rar.pdsch_cfg.bwp_cfg;
-  bwp_cfg.crbs              = rar.pdsch_cfg.coreset_cfg->coreset0_crbs();
-  crb_interval crbs         = prb_to_crb(bwp_cfg, rar.pdsch_cfg.prbs.prbs());
-  return grant_info{rar.pdsch_cfg.bwp_cfg->scs, rar.pdsch_cfg.symbols, crbs};
+  return get_common_pdsch_grant_info(bwp_cfg, sib.pdsch_cfg);
+}
+
+grant_info srsran::get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const rar_information& rar)
+{
+  return get_common_pdsch_grant_info(bwp_cfg, rar.pdsch_cfg);
 }
 
 grant_info srsran::get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const dl_paging_allocation& pg)
 {
   // See TS 38.212, section 7.3.1.2.1. DCI Format 1_0.
-  bwp_configuration coreset0_bwp_cfg = bwp_cfg.generic_params;
-  coreset0_bwp_cfg.crbs              = bwp_cfg.pdcch_common.coreset0->coreset0_crbs();
-  crb_interval crbs                  = prb_to_crb(coreset0_bwp_cfg, pg.pdsch_cfg.prbs.prbs());
-  return grant_info{pg.pdsch_cfg.bwp_cfg->scs, pg.pdsch_cfg.symbols, crbs};
+  return get_common_pdsch_grant_info(bwp_cfg, pg.pdsch_cfg);
 }
 
-grant_info srsran::get_pdsch_grant_info(const dl_msg_alloc& ue_grant)
+grant_info srsran::get_pdsch_grant_info(const bwp_downlink_common& bwp_cfg, const dl_msg_alloc& ue_grant)
 {
-  crb_interval crbs = prb_to_crb(*ue_grant.pdsch_cfg.bwp_cfg, ue_grant.pdsch_cfg.prbs.prbs());
+  const vrb_interval vrbs   = ue_grant.pdsch_cfg.rbs.type1();
+  unsigned           ref_rb = 0;
+  if (ue_grant.pdsch_cfg.ss_set_type != search_space_set_type::ue_specific and
+      ue_grant.pdsch_cfg.dci_fmt == dci_dl_format::f1_0) {
+    ref_rb = ue_grant.pdsch_cfg.coreset_cfg->get_coreset_start_crb();
+  } else {
+    ref_rb = ue_grant.pdsch_cfg.bwp_cfg->crbs.start();
+  }
+  crb_interval crbs = {vrbs.start() + ref_rb, vrbs.stop() + ref_rb};
   return grant_info{ue_grant.pdsch_cfg.bwp_cfg->scs, ue_grant.pdsch_cfg.symbols, crbs};
 }
 
@@ -96,7 +102,7 @@ std::vector<test_grant_info> srsran::get_dl_grants(const cell_configuration& cel
   for (const ssb_information& ssb : dl_res.bc.ssb_info) {
     grants.emplace_back();
     grants.back().type  = test_grant_info::SSB;
-    grants.back().rnti  = INVALID_RNTI;
+    grants.back().rnti  = rnti_t::INVALID_RNTI;
     grants.back().grant = grant_info{cell_cfg.ssb_cfg.scs, ssb.symbols, ssb.crbs};
   }
 
@@ -135,7 +141,7 @@ std::vector<test_grant_info> srsran::get_dl_grants(const cell_configuration& cel
     grants.emplace_back();
     grants.back().type  = test_grant_info::RAR;
     grants.back().rnti  = rar.pdsch_cfg.rnti;
-    grants.back().grant = get_pdsch_grant_info(rar);
+    grants.back().grant = get_pdsch_grant_info(cell_cfg.dl_cfg_common.init_dl_bwp, rar);
   }
 
   // Register UE PDSCHs.
@@ -143,7 +149,7 @@ std::vector<test_grant_info> srsran::get_dl_grants(const cell_configuration& cel
     grants.emplace_back();
     grants.back().type  = test_grant_info::UE_DL;
     grants.back().rnti  = ue_pdsch.pdsch_cfg.rnti;
-    grants.back().grant = get_pdsch_grant_info(ue_pdsch);
+    grants.back().grant = get_pdsch_grant_info(cell_cfg.dl_cfg_common.init_dl_bwp, ue_pdsch);
   }
 
   for (const dl_paging_allocation& pg : dl_res.paging_grants) {
@@ -174,7 +180,7 @@ std::vector<test_grant_info> srsran::get_ul_grants(const cell_configuration& cel
       crb_interval crbs = prb_to_crb(cell_cfg.ul_cfg_common.init_ul_bwp.generic_params, prbs);
       grants.emplace_back();
       grants.back().type  = test_grant_info::PRACH;
-      grants.back().rnti  = INVALID_RNTI;
+      grants.back().rnti  = rnti_t::INVALID_RNTI;
       grants.back().grant = grant_info{cell_cfg.ul_cfg_common.init_ul_bwp.generic_params.scs, symbols, crbs};
     }
   }
@@ -182,10 +188,11 @@ std::vector<test_grant_info> srsran::get_ul_grants(const cell_configuration& cel
   // Fill PUSCHs.
   for (const ul_sched_info& pusch : ul_res.puschs) {
     const bwp_configuration& bwp_cfg = *pusch.pusch_cfg.bwp_cfg;
-    crb_interval             crbs    = prb_to_crb(bwp_cfg, pusch.pusch_cfg.prbs.prbs());
+    prb_interval             prbs    = {pusch.pusch_cfg.rbs.type1().start(), pusch.pusch_cfg.rbs.type1().stop()};
+    crb_interval             crbs    = prb_to_crb(bwp_cfg, prbs);
     grants.emplace_back();
     grants.back().type  = test_grant_info::UE_UL;
-    grants.back().rnti  = INVALID_RNTI;
+    grants.back().rnti  = rnti_t::INVALID_RNTI;
     grants.back().grant = grant_info{pusch.pusch_cfg.bwp_cfg->scs, pusch.pusch_cfg.symbols, crbs};
   }
 
@@ -194,7 +201,7 @@ std::vector<test_grant_info> srsran::get_ul_grants(const cell_configuration& cel
     const bwp_configuration& bwp_cfg = *pucch.bwp_cfg;
     grants.emplace_back();
     grants.back().type = test_grant_info::PUCCH;
-    grants.back().rnti = INVALID_RNTI;
+    grants.back().rnti = rnti_t::INVALID_RNTI;
     if (not pucch.resources.second_hop_prbs.empty()) {
       ofdm_symbol_range first_hop_symbols{pucch.resources.symbols.start(),
                                           pucch.resources.symbols.start() + pucch.resources.symbols.length() / 2};
@@ -207,7 +214,7 @@ std::vector<test_grant_info> srsran::get_ul_grants(const cell_configuration& cel
       // Add a second resource for Frequency Hopping.
       grants.emplace_back();
       grants.back().type = test_grant_info::PUCCH;
-      grants.back().rnti = INVALID_RNTI;
+      grants.back().rnti = rnti_t::INVALID_RNTI;
       grants.back().grant =
           grant_info{bwp_cfg.scs, second_hop_symbols, crb_interval{crb_second_hop, crb_second_hop + 1}};
     } else {

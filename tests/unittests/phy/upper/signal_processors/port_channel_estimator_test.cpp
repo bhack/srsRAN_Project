@@ -61,7 +61,7 @@ protected:
   static void SetUpTestSuite()
   {
     if (!ch_est_factory) {
-      std::shared_ptr<dft_processor_factory> dft_factory = create_dft_processor_factory_fftw();
+      std::shared_ptr<dft_processor_factory> dft_factory = create_dft_processor_factory_fftw_slow();
       if (!dft_factory) {
         dft_factory = create_dft_processor_factory_generic();
       }
@@ -77,7 +77,7 @@ protected:
     // Assert factories again for compatibility with GTest < 1.11.
     ASSERT_NE(ch_est_factory, nullptr);
 
-    ch_estimator = ch_est_factory->create();
+    ch_estimator = ch_est_factory->create(port_channel_estimator_fd_smoothing_strategy::filter);
     ASSERT_NE(ch_estimator, nullptr);
   }
 

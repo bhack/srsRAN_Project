@@ -38,21 +38,36 @@ public:
   void run_slot(cell_resource_allocator& res_grid);
 
 private:
+  // [Implementation-defined] This is the maximum number of slots per PRACH preamble. It's obtained by considering the
+  // longest preamble length (which can be derived from Table 6.3.3.1-1, TS 38.211 for Format 2) and the shortest slot
+  // duration currently supported by the GNB, which is 0.5ms for SCS 30KHz.
+  static const unsigned MAX_SLOTS_PER_PRACH = 7;
+
+  // The maximum number of PRACH preamble indexes that the UE can choose from.
+  static const unsigned MAX_NOF_PRACH_PREAMBLES = 64;
+
   struct cached_prach_occasion {
     /// RB x symbol resources used for the PRACH.
-    grant_info grant_resources;
+    static_vector<grant_info, MAX_SLOTS_PER_PRACH> grant_list;
     /// Pre-generated PRACH occasion.
     prach_occasion_info occasion;
   };
 
   const rach_config_common& rach_cfg_common() const { return *cell_cfg.ul_cfg_common.init_ul_bwp.rach_cfg_common; }
 
-  void allocate_slot_prach_pdus(cell_slot_resource_allocator& sl_res_grid);
+  void allocate_slot_prach_pdus(cell_resource_allocator& res_grid, slot_point sl);
 
   const cell_configuration& cell_cfg;
   srslog::basic_logger&     logger;
 
   bool first_slot_ind = true;
+  /// This is the first symbol within a slot (with reference to the PUSCH SCS) where the preamble (for long formats) or
+  /// the first preamble of a burst of PRACH opportunities (for short formats) starts.
+  unsigned start_slot_pusch_scs = 0;
+  /// For long PRACH preamble formats, this is the duration of the PRACH preamble in slots, which can be more than 1.
+  /// For short PRACH preamble formats, this is the duration of the burst of PRACH opportunities, which can be 1 or 2
+  /// slots, as per Section 5.3.2, and Tables 6.3.3.2-2 and 6.3.3.2-3, TS 38.211.
+  unsigned prach_length_slots = 1;
 
   /// PRACH Configuration parameters derived from the cell configuration.
   prach_configuration prach_cfg;

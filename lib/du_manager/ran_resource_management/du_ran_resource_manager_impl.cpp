@@ -22,6 +22,8 @@
 
 #include "du_ran_resource_manager_impl.h"
 #include "srsran/mac/config/mac_cell_group_config_factory.h"
+#include "srsran/mac/config/mac_config_helpers.h"
+#include "srsran/rlc/rlc_srb_config_factory.h"
 #include "srsran/scheduler/config/serving_cell_config_factory.h"
 
 using namespace srsran;
@@ -73,9 +75,11 @@ du_ue_resource_update_response du_ue_ran_resource_updater_impl::update(du_cell_i
 
 ///////////////////////////
 
-du_ran_resource_manager_impl::du_ran_resource_manager_impl(span<const du_cell_config>              cell_cfg_list_,
-                                                           const std::map<uint8_t, du_qos_config>& qos_) :
+du_ran_resource_manager_impl::du_ran_resource_manager_impl(span<const du_cell_config>                cell_cfg_list_,
+                                                           const std::map<srb_id_t, du_srb_config>&  srbs_,
+                                                           const std::map<five_qi_t, du_qos_config>& qos_) :
   cell_cfg_list(cell_cfg_list_),
+  srb_config(srbs_),
   qos_config(qos_),
   logger(srslog::fetch_basic_logger("DU-MNG")),
   pucch_res_mng(cell_cfg_list)
@@ -91,7 +95,6 @@ ue_ran_resource_configurator du_ran_resource_manager_impl::create_ue_resource_co
   }
   ue_res_pool.emplace(ue_index);
   auto& mcg = ue_res_pool[ue_index].cg_cfg;
-  mcg.cells.clear();
 
   // UE initialized PCell.
   if (not allocate_cell_resources(ue_index, pcell_index, SERVING_CELL_PCELL_IDX)) {
@@ -130,16 +133,28 @@ du_ran_resource_manager_impl::update_context(du_ue_index_t                      
   }
 
   // > Deallocate removed SRBs / DRBs.
-  // TODO
+  for (drb_id_t drb_id : upd_req.drbs_to_rem) {
+    auto it = std::find_if(ue_mcg.rlc_bearers.begin(), ue_mcg.rlc_bearers.end(), [drb_id](const rlc_bearer_config& b) {
+      return b.drb_id == drb_id;
+    });
+    ue_mcg.rlc_bearers.erase(it);
+  }
 
   // > Allocate new or modified bearers.
   for (srb_id_t srb_id : upd_req.srbs_to_setup) {
     // >> New or Modified SRB.
     lcid_t lcid = srb_id_to_lcid(srb_id);
     ue_mcg.rlc_bearers.emplace_back();
-    ue_mcg.rlc_bearers.back().lcid    = lcid;
-    ue_mcg.rlc_bearers.back().rlc_cfg = make_default_srb_rlc_config();
-    // TODO: Parameterize SRB config.
+    ue_mcg.rlc_bearers.back().lcid = lcid;
+
+    auto srb_it = srb_config.find(srb_id);
+    if (srb_it != srb_config.end()) {
+      ue_mcg.rlc_bearers.back().rlc_cfg = srb_it->second.rlc;
+      ue_mcg.rlc_bearers.back().mac_cfg = srb_it->second.mac;
+    } else {
+      ue_mcg.rlc_bearers.back().rlc_cfg = make_default_srb_rlc_config();
+      ue_mcg.rlc_bearers.back().mac_cfg = make_default_srb_mac_lc_config(lcid);
+    }
   }
   for (const f1ap_drb_to_setup& drb : upd_req.drbs_to_setup) {
     // >> New or Modified DRB.
@@ -150,7 +165,7 @@ du_ran_resource_manager_impl::update_context(du_ue_index_t                      
       if (std::any_of(ue_mcg.rlc_bearers.begin(), ue_mcg.rlc_bearers.end(), [&drb](const auto& item) {
             return *drb.lcid == item.lcid;
           })) {
-        logger.warning("Failed to allocate DRB-Id={}. Cause: Specified lcid={} already exists", drb.drb_id, lcid);
+        logger.warning("Failed to allocate {}. Cause: Specified lcid={} already exists", drb.drb_id, lcid);
         resp.failed_drbs.push_back(drb.drb_id);
         continue;
       }
@@ -158,7 +173,7 @@ du_ran_resource_manager_impl::update_context(du_ue_index_t                      
       // >> Allocate LCID if not specified by F1AP.
       lcid = find_empty_lcid(ue_mcg.rlc_bearers);
       if (lcid > LCID_MAX_DRB) {
-        logger.warning("Failed to allocate DRB-Id={}. Cause: No available LCIDs", drb.drb_id);
+        logger.warning("Failed to allocate {}. Cause: No available LCIDs", drb.drb_id);
         resp.failed_drbs.push_back(drb.drb_id);
         continue;
       }
@@ -166,18 +181,23 @@ du_ran_resource_manager_impl::update_context(du_ue_index_t                      
 
     // >> Get RLC config from 5QI
     if (qos_config.find(drb.five_qi) == qos_config.end()) {
-      logger.warning("Failed to allocate DRB-Id={}. Cause: No 5QI={} configured", drb.drb_id, drb.five_qi);
+      logger.warning("Failed to allocate {}. Cause: No {} configured", drb.drb_id, drb.five_qi);
       resp.failed_drbs.push_back(drb.drb_id);
       continue;
     }
-    logger.debug("Getting RLC config for DRB-Id={} from 5QI={}", drb.drb_id, drb.five_qi);
+    logger.debug("Getting RLC and MAC config for {} from {}", drb.drb_id, drb.five_qi);
     const du_qos_config& qos = qos_config.at(drb.five_qi);
 
     ue_mcg.rlc_bearers.emplace_back();
     ue_mcg.rlc_bearers.back().lcid    = lcid;
     ue_mcg.rlc_bearers.back().drb_id  = drb.drb_id;
     ue_mcg.rlc_bearers.back().rlc_cfg = qos.rlc;
+    ue_mcg.rlc_bearers.back().mac_cfg = qos.mac;
   }
+  // >> Sort by LCID.
+  std::sort(ue_mcg.rlc_bearers.begin(), ue_mcg.rlc_bearers.end(), [](const auto& lhs, const auto& rhs) {
+    return lhs.lcid < rhs.lcid;
+  });
 
   // > Allocate resources for new or modified cells.
   if (not ue_mcg.cells.contains(0) or ue_mcg.cells[0].serv_cell_cfg.cell_index != pcell_idx) {
@@ -221,9 +241,11 @@ bool du_ran_resource_manager_impl::allocate_cell_resources(du_ue_index_t     ue_
     ue_res.cells[0].serv_cell_idx            = SERVING_CELL_PCELL_IDX;
     ue_res.cells[0].serv_cell_cfg            = cell_cfg_list[0].ue_ded_serv_cell_cfg;
     ue_res.cells[0].serv_cell_cfg.cell_index = cell_index;
-    ue_res.mcg_cfg                           = config_helpers::make_initial_mac_cell_group_config();
+    ue_res.mcg_cfg = config_helpers::make_initial_mac_cell_group_config(cell_cfg_list[0].mcg_params);
     // TODO: Move to helper.
-    ue_res.pcg_cfg.p_nr_fr1            = 10;
+    if (cell_cfg_list[0].pcg_params.p_nr_fr1.has_value()) {
+      ue_res.pcg_cfg.p_nr_fr1 = cell_cfg_list[0].pcg_params.p_nr_fr1->to_int();
+    }
     ue_res.pcg_cfg.pdsch_harq_codebook = pdsch_harq_ack_codebook::dynamic;
 
     if (not pucch_res_mng.alloc_resources(ue_res)) {

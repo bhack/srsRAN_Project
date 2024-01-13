@@ -20,10 +20,11 @@
  *
  */
 
-#include "lib/du_manager/converters/asn1_cell_group_config_helpers.h"
+#include "lib/du_manager/converters/asn1_rrc_config_helpers.h"
 #include "srsran/asn1/asn1_utils.h"
-#include "srsran/asn1/rrc_nr/rrc_nr.h"
+#include "srsran/asn1/rrc_nr/cell_group_config.h"
 #include "srsran/mac/config/mac_cell_group_config_factory.h"
+#include "srsran/scheduler/config/csi_helper.h"
 #include "srsran/scheduler/config/serving_cell_config_factory.h"
 #include <gtest/gtest.h>
 
@@ -248,9 +249,9 @@ TEST(serving_cell_config_converter_test, test_ue_custom_pdsch_cfg_conversion)
   });
   dest_pdsch_cfg.tci_states.erase(dest_pdsch_cfg.tci_states.begin());
 
-  dest_pdsch_cfg.pdsch_mapping_type_a_dmrs.value().additional_positions.value() = dmrs_additional_positions::pos0;
-  dest_pdsch_cfg.pdsch_mapping_type_a_dmrs.value().scrambling_id0               = 10;
-  dest_pdsch_cfg.pdsch_mapping_type_a_dmrs.value().scrambling_id1               = 20;
+  dest_pdsch_cfg.pdsch_mapping_type_a_dmrs.value().additional_positions = dmrs_additional_positions::pos0;
+  dest_pdsch_cfg.pdsch_mapping_type_a_dmrs.value().scrambling_id0       = 10;
+  dest_pdsch_cfg.pdsch_mapping_type_a_dmrs.value().scrambling_id1       = 20;
 
   asn1::rrc_nr::cell_group_cfg_s rrc_cell_grp_cfg;
   srs_du::calculate_cell_group_config_diff(rrc_cell_grp_cfg, src_cell_grp_cfg, dest_cell_grp_cfg);
@@ -420,15 +421,9 @@ TEST(serving_cell_config_converter_test, test_ue_custom_pucch_cfg_conversion)
   dest_pucch_cfg.pucch_res_set.erase(dest_pucch_cfg.pucch_res_set.begin());
 
   // >>> PUCCH resource 2.
-  pucch_resource res_basic{.res_id                 = 12,
-                           .starting_prb           = 40,
-                           .second_hop_prb         = 50,
-                           .intraslot_freq_hopping = true,
-                           .format                 = pucch_format::FORMAT_3};
-  res_basic.format                    = pucch_format::FORMAT_2;
-  res_basic.format_3.nof_symbols      = 1;
-  res_basic.format_4.starting_sym_idx = 13;
-  res_basic.format_4.occ_length       = srsran::pucch_f4_occ_len::n2;
+  pucch_resource res_basic{.res_id = 12, .starting_prb = 40, .second_hop_prb = 50, .format = pucch_format::FORMAT_3};
+  res_basic.format = pucch_format::FORMAT_2;
+  res_basic.format_params.emplace<pucch_format_2_3_cfg>(pucch_format_2_3_cfg{.nof_symbols = 1, .starting_sym_idx = 13});
   dest_pucch_cfg.pucch_res_list.push_back(res_basic);
 
   // Remove first element.
@@ -839,6 +834,9 @@ TEST(serving_cell_config_converter_test, test_initial_pdsch_serving_cell_cfg_con
 {
   auto dest_cell_grp_cfg = make_initial_cell_group_config();
 
+  dest_cell_grp_cfg.cells[0].serv_cell_cfg.pdsch_serv_cell_cfg->nof_harq_proc =
+      pdsch_serving_cell_config::nof_harq_proc_for_pdsch::n8;
+
   asn1::rrc_nr::cell_group_cfg_s rrc_cell_grp_cfg;
   srs_du::calculate_cell_group_config_diff(rrc_cell_grp_cfg, {}, dest_cell_grp_cfg);
 
@@ -855,7 +853,8 @@ TEST(serving_cell_config_converter_test, test_initial_pdsch_serving_cell_cfg_con
   ASSERT_TRUE(rrc_sp_cell_cfg_ded.pdsch_serving_cell_cfg.is_setup());
 
   ASSERT_TRUE(rrc_sp_cell_cfg_ded.pdsch_serving_cell_cfg.setup().max_mimo_layers_present);
-  ASSERT_FALSE(rrc_sp_cell_cfg_ded.pdsch_serving_cell_cfg.setup().nrof_harq_processes_for_pdsch_present);
+  ASSERT_FALSE(rrc_sp_cell_cfg_ded.pdsch_serving_cell_cfg.setup().nrof_harq_processes_for_pdsch_present)
+      << "For 8 HARQs, this flag can be avoided";
 }
 
 TEST(serving_cell_config_converter_test, test_custom_pdsch_serving_cell_cfg_conversion)
@@ -918,13 +917,21 @@ TEST(serving_cell_config_converter_test, test_pdsch_serving_cell_cfg_release_con
   ASSERT_EQ(rrc_sp_cell_cfg_ded.pdsch_serving_cell_cfg.type(), asn1::setup_release_opts::release);
 }
 
+static csi_meas_config make_test_csi_meas_cfg()
+{
+  csi_helper::csi_builder_params csi_params{};
+  csi_params.pci           = (pci_t)1;
+  csi_params.nof_rbs       = 52;
+  csi_params.csi_rs_period = csi_helper::get_max_csi_rs_period(subcarrier_spacing::kHz15);
+  return csi_helper::make_csi_meas_config(csi_params);
+}
+
 TEST(serving_cell_config_converter_test, test_initial_csi_meas_cfg_conversion)
 {
   auto dest_cell_grp_cfg = make_initial_cell_group_config();
 
   if (not dest_cell_grp_cfg.cells.begin()->serv_cell_cfg.csi_meas_cfg.has_value()) {
-    dest_cell_grp_cfg.cells.begin()->serv_cell_cfg.csi_meas_cfg.emplace(
-        config_helpers::make_default_csi_meas_config(cell_config_builder_params{}));
+    dest_cell_grp_cfg.cells.begin()->serv_cell_cfg.csi_meas_cfg = make_test_csi_meas_cfg();
   }
 
   asn1::rrc_nr::cell_group_cfg_s rrc_cell_grp_cfg;
@@ -974,37 +981,34 @@ TEST(serving_cell_config_converter_test, test_custom_csi_meas_cfg_conversion)
 {
   auto src_cell_grp_cfg = make_initial_cell_group_config();
   if (not src_cell_grp_cfg.cells[0].serv_cell_cfg.csi_meas_cfg.has_value()) {
-    src_cell_grp_cfg.cells[0].serv_cell_cfg.csi_meas_cfg.emplace(config_helpers::make_default_csi_meas_config());
+    src_cell_grp_cfg.cells[0].serv_cell_cfg.csi_meas_cfg = make_test_csi_meas_cfg();
   }
   auto& src_meas = src_cell_grp_cfg.cells[0].serv_cell_cfg.csi_meas_cfg.value();
-  src_meas.nzp_csi_rs_res_list.clear();
-  src_meas.nzp_csi_rs_res_list.push_back(config_helpers::make_default_nzp_csi_rs_resource({}));
-  src_meas.nzp_csi_rs_res_set_list.clear();
-  src_meas.nzp_csi_rs_res_set_list.push_back(config_helpers::make_default_nzp_csi_rs_resource_set());
-  src_meas.csi_res_cfg_list.clear();
-  src_meas.csi_res_cfg_list.push_back(config_helpers::make_default_csi_resource_config());
+  src_meas.nzp_csi_rs_res_list.resize(1);
+  src_meas.nzp_csi_rs_res_set_list.resize(1);
+  src_meas.csi_res_cfg_list.resize(1);
 
   srs_du::cell_group_config dest_cell_grp_cfg{src_cell_grp_cfg};
   auto&                     dest_csi_meas_cfg = dest_cell_grp_cfg.cells[0].serv_cell_cfg.csi_meas_cfg.value();
   // Add new/remove configurations. Configuration need not be valid.
   // Resource 1.
-  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(config_helpers::make_default_nzp_csi_rs_resource({}));
+  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_id = static_cast<nzp_csi_rs_res_id_t>(1);
   // Resource 2.
-  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(config_helpers::make_default_nzp_csi_rs_resource({}));
+  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_id = static_cast<nzp_csi_rs_res_id_t>(2);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_mapping.first_ofdm_symbol_in_td = 8;
   // Resource 3.
-  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(config_helpers::make_default_nzp_csi_rs_resource({}));
+  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_id         = static_cast<nzp_csi_rs_res_id_t>(3);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().csi_res_offset = 12;
   // Resource 4.
-  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(config_helpers::make_default_nzp_csi_rs_resource({}));
+  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_id = static_cast<nzp_csi_rs_res_id_t>(4);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_mapping.first_ofdm_symbol_in_td = 8;
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().csi_res_offset                      = 12;
   // Resource 5.
-  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(config_helpers::make_default_nzp_csi_rs_resource({}));
+  dest_csi_meas_cfg.nzp_csi_rs_res_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_id = static_cast<nzp_csi_rs_res_id_t>(5);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_mapping.fd_alloc.resize(12);
   dest_csi_meas_cfg.nzp_csi_rs_res_list.back().res_mapping.nof_ports    = 2;
@@ -1017,14 +1021,14 @@ TEST(serving_cell_config_converter_test, test_custom_csi_meas_cfg_conversion)
 
   // Add new/remove configurations. Configuration need not be valid.
   // Resource Set 1.
-  dest_csi_meas_cfg.nzp_csi_rs_res_set_list.push_back(config_helpers::make_default_nzp_csi_rs_resource_set());
+  dest_csi_meas_cfg.nzp_csi_rs_res_set_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_set_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.back().res_set_id          = static_cast<nzp_csi_rs_res_set_id_t>(1);
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.back().nzp_csi_rs_res      = {static_cast<nzp_csi_rs_res_id_t>(1),
                                                                           static_cast<nzp_csi_rs_res_id_t>(2),
                                                                           static_cast<nzp_csi_rs_res_id_t>(3),
                                                                           static_cast<nzp_csi_rs_res_id_t>(4)};
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.back().is_trs_info_present = true;
-  dest_csi_meas_cfg.nzp_csi_rs_res_set_list.push_back(config_helpers::make_default_nzp_csi_rs_resource_set());
+  dest_csi_meas_cfg.nzp_csi_rs_res_set_list.push_back(dest_csi_meas_cfg.nzp_csi_rs_res_set_list[0]);
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.back().res_set_id               = static_cast<nzp_csi_rs_res_set_id_t>(2);
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.back().nzp_csi_rs_res           = {static_cast<nzp_csi_rs_res_id_t>(5)};
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.back().is_repetition_on         = true;
@@ -1033,22 +1037,21 @@ TEST(serving_cell_config_converter_test, test_custom_csi_meas_cfg_conversion)
   dest_csi_meas_cfg.nzp_csi_rs_res_set_list.erase(dest_csi_meas_cfg.nzp_csi_rs_res_set_list.begin());
 
   // Add new/remove configurations. Configuration need not be valid.
-  dest_csi_meas_cfg.csi_im_res_list.push_back(config_helpers::make_default_csi_im_resource({}));
-  dest_csi_meas_cfg.csi_im_res_list.push_back(config_helpers::make_default_csi_im_resource({}));
+  dest_csi_meas_cfg.csi_im_res_list.push_back(dest_csi_meas_cfg.csi_im_res_list[0]);
+  dest_csi_meas_cfg.csi_im_res_list.push_back(dest_csi_meas_cfg.csi_im_res_list[1]);
   dest_csi_meas_cfg.csi_im_res_list.back().res_id = static_cast<csi_im_res_id_t>(1);
   dest_csi_meas_cfg.csi_im_res_list.back().csi_im_res_element_pattern.emplace(
       csi_im_resource::csi_im_resource_element_pattern{
           .pattern_type        = csi_im_resource::csi_im_resource_element_pattern_type::pattern0,
           .subcarrier_location = 2,
           .symbol_location     = 2});
-  dest_csi_meas_cfg.csi_im_res_list.back().freq_band_start_rb.emplace(4);
-  dest_csi_meas_cfg.csi_im_res_list.back().freq_band_nof_rb.emplace(48);
+  dest_csi_meas_cfg.csi_im_res_list.back().freq_band_rbs = {4, 4 + 48};
   dest_csi_meas_cfg.csi_im_res_list.back().csi_res_period.emplace(csi_resource_periodicity::slots64);
   dest_csi_meas_cfg.csi_im_res_list.back().csi_res_offset.emplace(11);
 
   // Add new/remove configurations.
-  dest_csi_meas_cfg.csi_im_res_set_list.push_back(config_helpers::make_default_csi_im_resource_set());
-  dest_csi_meas_cfg.csi_im_res_set_list.push_back(config_helpers::make_default_csi_im_resource_set());
+  dest_csi_meas_cfg.csi_im_res_set_list.push_back(dest_csi_meas_cfg.csi_im_res_set_list[0]);
+  dest_csi_meas_cfg.csi_im_res_set_list.push_back(dest_csi_meas_cfg.csi_im_res_set_list[0]);
   dest_csi_meas_cfg.csi_im_res_set_list.back().res_set_id        = static_cast<csi_im_res_set_id_t>(1);
   dest_csi_meas_cfg.csi_im_res_set_list.back().csi_ims_resources = {static_cast<csi_im_res_id_t>(1)};
 
@@ -1057,17 +1060,17 @@ TEST(serving_cell_config_converter_test, test_custom_csi_meas_cfg_conversion)
       .res_set_id = static_cast<csi_ssb_res_set_id_t>(0), .csi_ssb_res_list = {static_cast<ssb_id_t>(0)}});
 
   // Add new/remove configurations. Configuration need not be valid.
-  dest_csi_meas_cfg.csi_res_cfg_list.push_back(config_helpers::make_default_csi_resource_config());
+  dest_csi_meas_cfg.csi_res_cfg_list.push_back(dest_csi_meas_cfg.csi_res_cfg_list[0]);
   dest_csi_meas_cfg.csi_res_cfg_list.back().res_cfg_id = static_cast<csi_res_config_id_t>(1);
   csi_resource_config::csi_im_resource_set_list csi_im_res_set{};
   csi_im_res_set.push_back(static_cast<const csi_im_res_set_id_t>(0));
   dest_csi_meas_cfg.csi_res_cfg_list.back().csi_rs_res_set_list = csi_im_res_set;
-  dest_csi_meas_cfg.csi_res_cfg_list.push_back(config_helpers::make_default_csi_resource_config());
+  dest_csi_meas_cfg.csi_res_cfg_list.push_back(dest_csi_meas_cfg.csi_res_cfg_list[0]);
   dest_csi_meas_cfg.csi_res_cfg_list.back().res_cfg_id = static_cast<csi_res_config_id_t>(2);
   csi_resource_config::nzp_csi_rs_ssb nzp_csi_rs_res_set{};
   nzp_csi_rs_res_set.nzp_csi_rs_res_set_list.push_back(static_cast<const nzp_csi_rs_res_set_id_t>(1));
   dest_csi_meas_cfg.csi_res_cfg_list.back().csi_rs_res_set_list = nzp_csi_rs_res_set;
-  dest_csi_meas_cfg.csi_res_cfg_list.push_back(config_helpers::make_default_csi_resource_config());
+  dest_csi_meas_cfg.csi_res_cfg_list.push_back(dest_csi_meas_cfg.csi_res_cfg_list[0]);
   dest_csi_meas_cfg.csi_res_cfg_list.back().res_cfg_id = static_cast<csi_res_config_id_t>(3);
   csi_resource_config::nzp_csi_rs_ssb nzp_csi_res_set{};
   nzp_csi_res_set.nzp_csi_rs_res_set_list.push_back(static_cast<const nzp_csi_rs_res_set_id_t>(1));
@@ -1078,7 +1081,7 @@ TEST(serving_cell_config_converter_test, test_custom_csi_meas_cfg_conversion)
   dest_csi_meas_cfg.csi_res_cfg_list.erase(dest_csi_meas_cfg.csi_res_cfg_list.begin());
 
   // Add new/remove configurations. Configuration need not be valid.
-  dest_csi_meas_cfg.csi_report_cfg_list.push_back(config_helpers::make_default_csi_report_config());
+  dest_csi_meas_cfg.csi_report_cfg_list.push_back(dest_csi_meas_cfg.csi_report_cfg_list[0]);
   dest_csi_meas_cfg.csi_report_cfg_list.back().report_cfg_id               = static_cast<csi_report_config_id_t>(1);
   dest_csi_meas_cfg.csi_report_cfg_list.back().res_for_channel_meas        = static_cast<csi_res_config_id_t>(2);
   dest_csi_meas_cfg.csi_report_cfg_list.back().csi_im_res_for_interference = static_cast<csi_res_config_id_t>(3);
@@ -1122,7 +1125,7 @@ TEST(serving_cell_config_converter_test, test_custom_csi_meas_cfg_conversion)
   dest_csi_meas_cfg.csi_report_cfg_list.back().codebook_cfg.value().codebook_type = type2;
 
   dest_csi_meas_cfg.csi_report_cfg_list.back().is_group_based_beam_reporting_enabled = true;
-  dest_csi_meas_cfg.csi_report_cfg_list.back().cqi_table.emplace(csi_report_config::cqi_table_t::table1);
+  dest_csi_meas_cfg.csi_report_cfg_list.back().cqi_table.emplace(cqi_table_t::table1);
   dest_csi_meas_cfg.csi_report_cfg_list.back().subband_size = csi_report_config::subband_size_t::value2;
   dest_csi_meas_cfg.csi_report_cfg_list.back().non_pmi_port_indication.push_back(
       csi_report_config::port_index_for_8_ranks{
@@ -1194,8 +1197,7 @@ TEST(serving_cell_config_converter_test, test_csi_meas_cfg_release_conversion)
   auto src_cell_grp_cfg = make_initial_cell_group_config();
 
   if (not src_cell_grp_cfg.cells.begin()->serv_cell_cfg.csi_meas_cfg.has_value()) {
-    src_cell_grp_cfg.cells.begin()->serv_cell_cfg.csi_meas_cfg.emplace(
-        config_helpers::make_default_csi_meas_config(cell_config_builder_params{}));
+    src_cell_grp_cfg.cells.begin()->serv_cell_cfg.csi_meas_cfg = make_test_csi_meas_cfg();
   }
 
   srs_du::cell_group_config dest_cell_grp_cfg{src_cell_grp_cfg};

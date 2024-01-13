@@ -22,11 +22,13 @@
 
 #include "cu_up_test_helpers.h"
 #include "lib/e1ap/cu_up/e1ap_cu_up_asn1_helpers.h"
+#include "srsran/asn1/e1ap/e1ap.h"
 #include "srsran/cu_up/cu_up_factory.h"
 #include "srsran/support/executors/task_worker.h"
-#include "srsran/support/io_broker/io_broker_factory.h"
+#include "srsran/support/io/io_broker_factory.h"
 #include "srsran/support/test_utils.h"
 #include <arpa/inet.h>
+#include <chrono>
 #include <fcntl.h>
 #include <gtest/gtest.h>
 #include <sys/socket.h>
@@ -37,12 +39,57 @@ using namespace srsran;
 using namespace srs_cu_up;
 using namespace asn1::e1ap;
 
-class dummy_e1ap_notifier : public e1ap_message_notifier
+/// This implementation returns back to the E1 interface a dummy CU-UP E1 Setup Response message upon the receival of
+/// the CU-UP E1 Setup Request message.
+class dummy_cu_cp_handler : public e1ap_connection_client
 {
-  void on_new_message(const e1ap_message& msg) override
+public:
+  std::unique_ptr<e1ap_message_notifier>
+  handle_cu_up_connection_request(std::unique_ptr<e1ap_message_notifier> cu_up_rx_pdu_notifier_) override
   {
-    // do nothing
+    class dummy_du_tx_pdu_notifier : public e1ap_message_notifier
+    {
+    public:
+      dummy_du_tx_pdu_notifier(dummy_cu_cp_handler& parent_) : parent(parent_) {}
+
+      void on_new_message(const e1ap_message& msg) override
+      {
+        if (msg.pdu.type() != asn1::e1ap::e1ap_pdu_c::types::init_msg) {
+          return;
+        }
+
+        e1ap_message response;
+        if (msg.pdu.init_msg().value.type().value ==
+            asn1::e1ap::e1ap_elem_procs_o::init_msg_c::types_opts::gnb_cu_cp_e1_setup_request) {
+          // Generate a dummy CU-UP E1 Setup response message and pass it back to the CU-UP.
+          response.pdu.set_successful_outcome();
+          response.pdu.successful_outcome().load_info_obj(ASN1_E1AP_ID_GNB_CU_UP_E1_SETUP);
+
+          auto& setup_res = response.pdu.successful_outcome().value.gnb_cu_up_e1_setup_resp();
+          // Use the same transaction ID as in the request message.
+          setup_res->transaction_id         = msg.pdu.init_msg().value.gnb_cu_up_e1_setup_request()->transaction_id;
+          setup_res->gnb_cu_cp_name_present = true;
+          setup_res->gnb_cu_cp_name.from_string("srsCU-CP");
+        } else {
+          // do nothing
+          return;
+        }
+
+        // Send response to DU.
+        parent.cu_up_rx_pdu_notifier->on_new_message(response);
+      }
+
+    private:
+      dummy_cu_cp_handler& parent;
+    };
+
+    cu_up_rx_pdu_notifier = std::move(cu_up_rx_pdu_notifier_);
+
+    return std::make_unique<dummy_du_tx_pdu_notifier>(*this);
   }
+
+private:
+  std::unique_ptr<e1ap_message_notifier> cu_up_rx_pdu_notifier;
 };
 
 /// Fixture class for CU-UP test
@@ -57,9 +104,10 @@ protected:
     srslog::fetch_basic_logger("GTPU").set_level(srslog::basic_levels::debug);
 
     // create worker thread and executer
-    worker   = std::make_unique<task_worker>("thread", 128, false, os_thread_realtime_priority::no_realtime());
-    executor = make_task_executor(*worker);
+    worker   = std::make_unique<task_worker>("thread", 128, os_thread_realtime_priority::no_realtime());
+    executor = make_task_executor_ptr(*worker);
 
+    app_timers   = std::make_unique<timer_manager>(256);
     f1u_gw       = std::make_unique<dummy_f1u_gateway>(f1u_bearer);
     broker       = create_io_broker(io_broker_type::epoll);
     upf_addr_str = "127.0.0.1";
@@ -69,12 +117,18 @@ protected:
   {
     // create config
     cu_up_configuration cfg;
-    cfg.cu_up_executor       = executor.get();
-    cfg.gtpu_pdu_executor    = executor.get();
-    cfg.e1ap_notifier        = &e1ap_message_notifier;
-    cfg.f1u_gateway          = f1u_gw.get();
-    cfg.epoll_broker         = broker.get();
-    cfg.net_cfg.n3_bind_port = 0; // Random free port selected by the OS.
+    cfg.ctrl_executor                = executor.get();
+    cfg.dl_executor                  = executor.get();
+    cfg.ul_executor                  = executor.get();
+    cfg.io_ul_executor               = executor.get();
+    cfg.e1ap.e1ap_conn_client        = &e1ap_client;
+    cfg.f1u_gateway                  = f1u_gw.get();
+    cfg.epoll_broker                 = broker.get();
+    cfg.timers                       = app_timers.get();
+    cfg.gtpu_pcap                    = &dummy_pcap;
+    cfg.net_cfg.n3_bind_port         = 0; // Random free port selected by the OS.
+    cfg.n3_cfg.gtpu_reordering_timer = std::chrono::milliseconds(0);
+    cfg.statistics_report_period     = std::chrono::seconds(1);
 
     return cfg;
   }
@@ -87,7 +141,9 @@ protected:
     srslog::flush();
   }
 
-  dummy_e1ap_notifier                         e1ap_message_notifier;
+  std::unique_ptr<timer_manager> app_timers;
+
+  dummy_cu_cp_handler                         e1ap_client;
   dummy_inner_f1u_bearer                      f1u_bearer;
   std::unique_ptr<dummy_f1u_gateway>          f1u_gw;
   std::unique_ptr<io_broker>                  broker;
@@ -96,13 +152,14 @@ protected:
 
   std::unique_ptr<task_worker>   worker;
   std::unique_ptr<task_executor> executor;
+  null_dlt_pcap                  dummy_pcap;
 
   std::string upf_addr_str;
 
   void create_drb()
   {
     // Generate BearerContextSetupRequest
-    e1ap_message asn1_bearer_context_setup_msg = generate_bearer_context_setup_request_msg(9);
+    e1ap_message asn1_bearer_context_setup_msg = generate_bearer_context_setup_request(9);
 
     // Convert to common type
     e1ap_bearer_context_setup_request bearer_context_setup;
@@ -115,7 +172,7 @@ protected:
 };
 
 //////////////////////////////////////////////////////////////////////////////////////
-/* E1APonnection handling                                                           */
+/* E1AP connection handling                                                           */
 //////////////////////////////////////////////////////////////////////////////////////
 
 /// Test the E1AP connection
@@ -150,12 +207,14 @@ TEST_F(cu_up_test, dl_data_flow)
   cu_up_addr.sin_port        = htons(cu_up->get_n3_bind_port());
   cu_up_addr.sin_addr.s_addr = inet_addr(cfg.net_cfg.n3_bind_addr.c_str());
 
+  // teid=2, qfi=1
   const uint8_t gtpu_ping_vec[] = {
-      0x30, 0xff, 0x00, 0x54, 0x00, 0x00, 0x00, 0x01, 0x45, 0x00, 0x00, 0x54, 0xe8, 0x83, 0x40, 0x00, 0x40, 0x01, 0xfa,
-      0x00, 0xac, 0x10, 0x00, 0x03, 0xac, 0x10, 0x00, 0x01, 0x08, 0x00, 0x2c, 0xbe, 0xb4, 0xa4, 0x00, 0x01, 0xd3, 0x45,
-      0x61, 0x63, 0x00, 0x00, 0x00, 0x00, 0x1a, 0x20, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x11, 0x12, 0x13, 0x14,
-      0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
-      0x28, 0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37};
+      0x34, 0xff, 0x00, 0x5c, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x85, 0x01, 0x00, 0x01, 0x00, 0x45,
+      0x00, 0x00, 0x54, 0x9b, 0xfb, 0x00, 0x00, 0x40, 0x01, 0x56, 0x5a, 0xc0, 0xa8, 0x04, 0x01, 0xc0, 0xa8,
+      0x03, 0x02, 0x00, 0x00, 0xb8, 0xc0, 0x00, 0x02, 0x00, 0x01, 0x5d, 0x26, 0x77, 0x64, 0x00, 0x00, 0x00,
+      0x00, 0xb1, 0xde, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+      0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+      0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37};
 
   int ret = 0;
 
@@ -230,7 +289,7 @@ TEST_F(cu_up_test, ul_data_flow)
   span<const uint8_t> t_pdu_span1 = {t_pdu_arr1};
   byte_buffer         t_pdu_buf1  = {t_pdu_span1};
   nru_ul_message      nru_msg1    = {};
-  nru_msg1.t_pdu                  = byte_buffer_slice_chain{std::move(t_pdu_buf1)};
+  nru_msg1.t_pdu                  = byte_buffer_chain{std::move(t_pdu_buf1)};
   f1u_bearer.handle_pdu(std::move(nru_msg1));
 
   // send message 2
@@ -243,26 +302,24 @@ TEST_F(cu_up_test, ul_data_flow)
   span<const uint8_t> t_pdu_span2 = {t_pdu_arr2};
   byte_buffer         t_pdu_buf2  = {t_pdu_span2};
   nru_ul_message      nru_msg2    = {};
-  nru_msg2.t_pdu                  = byte_buffer_slice_chain{std::move(t_pdu_buf2)};
+  nru_msg2.t_pdu                  = byte_buffer_chain{std::move(t_pdu_buf2)};
   f1u_bearer.handle_pdu(std::move(nru_msg2));
 
   std::array<uint8_t, 128> rx_buf;
 
+  uint16_t exp_len      = 100;
+  uint16_t f1u_hdr_len  = 3;
+  uint16_t gtpu_hdr_len = 16;
+
   // receive message 1
   ret = recv(sock_fd, rx_buf.data(), rx_buf.size(), 0);
-  ASSERT_EQ(ret, 92);
-  EXPECT_TRUE(std::equal(t_pdu_span1.begin() + 3, t_pdu_span1.end(), rx_buf.begin() + 8));
+  ASSERT_EQ(ret, exp_len);
+  EXPECT_TRUE(std::equal(t_pdu_span1.begin() + f1u_hdr_len, t_pdu_span1.end(), rx_buf.begin() + gtpu_hdr_len));
 
   // receive message 2
   ret = recv(sock_fd, rx_buf.data(), rx_buf.size(), 0);
-  ASSERT_EQ(ret, 92);
-  EXPECT_TRUE(std::equal(t_pdu_span2.begin() + 3, t_pdu_span2.end(), rx_buf.begin() + 8));
+  ASSERT_EQ(ret, exp_len);
+  EXPECT_TRUE(std::equal(t_pdu_span2.begin() + f1u_hdr_len, t_pdu_span2.end(), rx_buf.begin() + gtpu_hdr_len));
 
   close(sock_fd);
-}
-
-int main(int argc, char** argv)
-{
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
 }

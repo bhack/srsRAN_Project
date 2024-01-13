@@ -26,15 +26,17 @@
 #include "srsran/adt/optional.h"
 #include "srsran/adt/slotted_array.h"
 #include "srsran/ran/band_helper.h"
+#include "srsran/ran/cyclic_prefix.h"
 #include "srsran/ran/frame_types.h"
 #include "srsran/ran/ofdm_symbol_range.h"
 #include "srsran/ran/pcch/pcch_configuration.h"
 #include "srsran/ran/pdcch/coreset.h"
 #include "srsran/ran/pdcch/search_space.h"
+#include "srsran/ran/prach/rach_config_common.h"
 #include "srsran/ran/prach/restricted_set_config.h"
 #include "srsran/ran/pucch/pucch_configuration.h"
 #include "srsran/ran/resource_block.h"
-#include "srsran/scheduler/prb_grant.h"
+#include "srsran/scheduler/vrb_alloc.h"
 #include <bitset>
 
 namespace srsran {
@@ -48,7 +50,7 @@ struct pdcch_config_common {
   /// Contains SearchSpaceZero and commonSearchSpaceList. Size: (0..4).
   std::vector<search_space_configuration> search_spaces;
   search_space_id                         sib1_search_space_id;
-  search_space_id                         other_si_search_space_id;
+  optional<search_space_id>               other_si_search_space_id;
   optional<search_space_id>               paging_search_space_id;
   /// SearchSpace of RA procedure. If field is invalid, the UE does not receive RAR in this BWP.
   search_space_id ra_search_space_id;
@@ -67,19 +69,19 @@ constexpr inline bwp_id_t to_bwp_id(std::underlying_type_t<bwp_id_t> value)
 /// Generic parameters of a bandwidth part as defined in TS 38.211, clause 4.5 and TS 38.213, clause 12.
 /// \remark See TS 38.331, Bandwidth-Part (BWP).
 struct bwp_configuration {
-  bool               cp_extended;
+  cyclic_prefix      cp;
   subcarrier_spacing scs;
   /// Common RBs where the BWP is located. CRB=0 overlaps with pointA.
   crb_interval crbs;
 
   bool operator==(const bwp_configuration& other) const
   {
-    return std::tie(cp_extended, scs, crbs) == std::tie(other.cp_extended, other.scs, other.crbs);
+    return std::tie(cp, scs, crbs) == std::tie(other.cp, other.scs, other.crbs);
   }
 
   bool operator<(const bwp_configuration& other) const
   {
-    return std::tie(cp_extended, scs, crbs) < std::tie(other.cp_extended, other.scs, other.crbs);
+    return std::tie(cp, scs, crbs) < std::tie(other.cp, other.scs, other.crbs);
   }
 };
 
@@ -94,7 +96,7 @@ enum class sch_mapping_type {
 
 struct pdsch_time_domain_resource_allocation {
   /// Values: (0..32).
-  unsigned          k0;
+  uint8_t           k0;
   sch_mapping_type  map_type;
   ofdm_symbol_range symbols;
 
@@ -118,38 +120,6 @@ struct bwp_downlink_common {
   pdsch_config_common pdsch_common;
 };
 
-/// \remark See TS 38.331, RACH-ConfigGeneric.
-struct rach_config_generic {
-  /// Values: {0,...,255}.
-  uint8_t prach_config_index;
-  /// Msg2 RAR window length in #slots. Network configures a value < 10msec. Values: (1, 2, 4, 8, 10, 20, 40, 80).
-  unsigned ra_resp_window;
-  /// Number of PRACH occasions FDMed in one time instance as per TS38.211, clause 6.3.3.2.
-  unsigned msg1_fdm;
-  /// Offset of lowest PRACH transmission occasion in frequency domain respective to PRB 0,
-  /// as per TS38.211, clause 6.3.3.2. Possible values: {0,...,MAX_NOF_PRB - 1}.
-  unsigned msg1_frequency_start;
-  /// Zero-correlation zone configuration number as per TS38.331 "zeroCorrelationZoneConfig", used to derive N_{CS}.
-  uint16_t zero_correlation_zone_config;
-};
-
-/// Used to specify the cell-specific random-access parameters as per TS38.331, "RACH-ConfigCommon".
-struct rach_config_common {
-  rach_config_generic rach_cfg_generic;
-  /// Total number of prambles used for contention based and contention free RA. Values: (1..64).
-  unsigned total_nof_ra_preambles;
-  /// PRACH root sequence index. Values: (1..839).
-  /// \remark See TS 38.211, clause 6.3.3.1.
-  bool     prach_root_seq_index_l839_present;
-  unsigned prach_root_seq_index;
-  /// \brief Subcarrier spacing of PRACH as per TS38.331, "RACH-ConfigCommon". If invalid, the UE applies the SCS as
-  /// derived from the prach-ConfigurationIndex in RACH-ConfigGeneric as per TS38.211 Tables 6.3.3.1-[1-3].
-  subcarrier_spacing    msg1_scs;
-  restricted_set_config restricted_set;
-  /// Enables the transform precoder for Msg3 transmission according to clause 6.1.3 of TS 38.214.
-  bool msg3_transform_precoder;
-};
-
 struct pusch_time_domain_resource_allocation {
   /// Values: (0..32).
   unsigned         k2;
@@ -168,6 +138,17 @@ struct pusch_time_domain_resource_allocation {
 struct pusch_config_common {
   /// PUSCH time domain resource allocations. Size: (0..maxNrofUL-Allocations=16).
   std::vector<pusch_time_domain_resource_allocation> pusch_td_alloc_list;
+  /// \brief \c msg3-DeltaPreamble, part of \c PUSCH-ConfigCommon, TS 38.331.
+  /// Power offset between msg3 and RACH preamble transmission. The actual value is 2 * msg3-DeltaPreamble in dB.
+  bounded_integer<int, -1, 6> msg3_delta_preamble;
+  /// \brief \c p0-NominalWithGrant, part of \c PUSCH-ConfigCommon, TS 38.331.
+  /// P0 value for PUSCH with grant (except msg3). Value in dBm. Only even values allowed.
+  bounded_integer<int, -202, 24> p0_nominal_with_grant;
+
+  /// Non RACH-ConfigCommon parameters.
+  /// \brief Power level corresponding to MSG-3 TPC command in dB, as per Table 8.2-2, TS 38.213.
+  /// Values {-6,...,8} and must be a multiple of 2.
+  bounded_integer<int, -6, 8> msg3_delta_power;
 };
 
 /// \remark See TS 38.331, "PUCCH-ConfigCommon".
@@ -199,6 +180,10 @@ struct scs_specific_carrier {
   subcarrier_spacing scs;
   /// Width of this carrier in number of PRBs. Values: (0..MAX_NOF_PRBS).
   unsigned carrier_bandwidth;
+  /// Indicates the downlink Tx Direct Current location for the carrier. A value in the range 0..3299 indicates the
+  /// subcarrier index within the carrier. The values in the value range 3301..4095 are reserved and ignored by the UE.
+  /// If this field is absent, the UE assumes the default value of 3300 (i.e. "Outside the carrier").
+  optional<unsigned> tx_direct_current_location;
 };
 
 /// \brief Used to indicate a frequency band
@@ -207,8 +192,12 @@ struct freq_band_indicator {
 };
 
 /// \brief This class provides basic parameters of a downlink carrier and transmission.
-/// \remark See TS 38.331, "FrequencyInfoDL-SIB".
+/// \remark See TS 38.331, "FrequencyInfoDL" and "FrequencyInfoDL-SIB".
 struct frequency_info_dl {
+  /// Absolute frequency (as ARFCN) of the SSB.
+  unsigned absolute_frequency_ssb;
+  /// Absolute frequency (in ARFCN) of the reference resource block (common RB0).
+  unsigned absolute_freq_point_a;
   /// Represents the offset to Point A, as defined in TS 38.211, clause 4.4.4.2. Values: (0..2199).
   unsigned offset_to_point_a;
   /// Set of carriers for different subcarrier spacings. The network configures this for all SCSs that are used in
@@ -234,6 +223,9 @@ struct frequency_info_ul {
   /// UL BWPs in this serving cell. Size: (1..maxSCSs=5).
   std::vector<scs_specific_carrier> scs_carrier_list;
   bool                              freq_shift_7p5khz_present;
+  /// Maximum transmit power allowed in this serving cell. Values: {-30,...,33}dBm. See TS 38.331, \c p-Max under \c
+  /// FrequencyInfoUL.
+  optional<bounded_integer<int, -30, 33>> p_max;
 
   /// Set of frequency bands.
   std::vector<freq_band_indicator> freq_band_list;

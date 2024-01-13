@@ -27,6 +27,8 @@
 #include "srsran/adt/variant.h"
 #include "srsran/mac/bsr_format.h"
 #include "srsran/mac/lcid_dl_sch.h"
+#include "srsran/mac/phr_report.h"
+#include "srsran/ran/csi_report/csi_report_data.h"
 #include "srsran/ran/du_types.h"
 #include "srsran/ran/phy_time_unit.h"
 #include "srsran/ran/rnti.h"
@@ -63,6 +65,8 @@ struct ul_crc_pdu_indication {
   harq_id_t       harq_id;
   bool            tb_crc_success;
   optional<float> ul_sinr_metric;
+  /// \brief Timing Advance Offset measured for the UE.
+  optional<phy_time_unit> time_advance_offset;
 };
 
 /// \brief UL HARQ CRC indication for a given UE PDU.
@@ -81,11 +85,12 @@ struct uci_indication {
       static_vector<mac_harq_ack_report_status, NOF_HARQS_PER_UCI> harqs;
       /// \brief Metric of channel quality that ranges from -65.534 to 65.534 dBs.
       optional<float> ul_sinr;
+      /// \brief Timing Advance Offset measured for the UE.
+      optional<phy_time_unit> time_advance_offset;
     };
     struct uci_pusch_pdu {
       static_vector<mac_harq_ack_report_status, uci_constants::MAX_NOF_HARQ_BITS> harqs;
-      bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>              csi_part1;
-      bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>              csi_part2;
+      optional<csi_report_data>                                                   csi;
     };
     struct uci_pucch_f2_or_f3_or_f4_pdu {
       /// Maximum number of SR bits expected on the PUCCH transmission.
@@ -93,11 +98,11 @@ struct uci_indication {
 
       bounded_bitset<MAX_SR_PAYLOAD_SIZE_BITS>                                    sr_info;
       static_vector<mac_harq_ack_report_status, uci_constants::MAX_NOF_HARQ_BITS> harqs;
-      bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS>              csi_part1;
-      /// CSI Part 2 is for PUCCH format 3 and 4.
-      bounded_bitset<uci_constants::MAX_NOF_CSI_PART1_OR_PART2_BITS> csi_part2;
+      optional<csi_report_data>                                                   csi;
       /// \brief Metric of channel quality that ranges from -65.534 to 65.534 dBs.
       optional<float> ul_sinr;
+      /// \brief Timing Advance Offset measured for the UE.
+      optional<phy_time_unit> time_advance_offset;
     };
 
     du_ue_index_t                                                                ue_index;
@@ -105,6 +110,9 @@ struct uci_indication {
     variant<uci_pucch_f0_or_f1_pdu, uci_pusch_pdu, uci_pucch_f2_or_f3_or_f4_pdu> pdu;
   };
   using uci_pdu_list = static_vector<uci_pdu, MAX_UCI_PDUS_PER_UCI_IND>;
+
+  // Note: user-defined ctor to avoid zero-initialization of uci_pdu_list.
+  uci_indication() {}
 
   du_cell_index_t cell_index;
   slot_point      slot_rx;
@@ -116,6 +124,14 @@ struct dl_mac_ce_indication {
   lcid_dl_sch_t ce_lcid;
 };
 
+/// \brief Information and context relative to PHR forwarded by MAC.
+struct ul_phr_indication_message {
+  du_cell_index_t cell_index;
+  du_ue_index_t   ue_index;
+  rnti_t          rnti;
+  phr_report      phr;
+};
+
 class scheduler_feedback_handler
 {
 public:
@@ -124,7 +140,12 @@ public:
   virtual void handle_crc_indication(const ul_crc_indication& crc)            = 0;
   virtual void handle_uci_indication(const uci_indication& uci)               = 0;
 
+  /// \brief Handles PHR indication sent by MAC.
+  /// \param phr PHR indication message sent by MAC.
+  virtual void handle_ul_phr_indication(const ul_phr_indication_message& phr_ind) = 0;
+
   /// \brief Command scheduling of DL MAC CE for a given UE.
+  /// \param mac_ce DL MAC CE to be scheduled.
   virtual void handle_dl_mac_ce_indication(const dl_mac_ce_indication& mac_ce) = 0;
 };
 

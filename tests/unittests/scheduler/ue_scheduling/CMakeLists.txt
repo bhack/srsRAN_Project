@@ -19,13 +19,17 @@
 #
 
 add_executable(ue_scheduler_test
-        dl_logical_channel_test.cpp
+        logical_channel_test.cpp
         harq_entity_test.cpp
         harq_process_test.cpp
         srb0_scheduler_test.cpp
         ue_configuration_test.cpp
         ue_grid_allocator_test.cpp
-        ul_logical_channel_test.cpp)
+        ul_logical_channel_test.cpp
+        ue_pdsch_param_candidate_searcher_test.cpp
+        ue_link_adaptation_controller_test.cpp
+        ta_manager_test.cpp
+        ue_harq_link_adaptation_test.cpp)
 target_link_libraries(ue_scheduler_test
         srsran_sched
         srslog
@@ -35,3 +39,4 @@ target_link_libraries(ue_scheduler_test
         gtest
         gtest_main)
 gtest_discover_tests(ue_scheduler_test)
+add_test(ue_scheduler_test ue_scheduler_test)

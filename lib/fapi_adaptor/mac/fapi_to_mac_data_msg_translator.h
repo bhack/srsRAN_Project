@@ -40,9 +40,6 @@ public:
   explicit fapi_to_mac_data_msg_translator(subcarrier_spacing scs_);
 
   // See interface for documentation.
-  void on_dl_tti_response(const fapi::dl_tti_response_message& msg) override;
-
-  // See interface for documentation.
   void on_rx_data_indication(const fapi::rx_data_indication_message& msg) override;
 
   // See interface for documentation.
@@ -67,12 +64,10 @@ public:
   void set_cell_crc_handler(mac_cell_control_information_handler& handler);
 
 private:
+  const subcarrier_spacing                                     scs;
   std::reference_wrapper<mac_cell_rach_handler>                rach_handler;
   std::reference_wrapper<mac_pdu_handler>                      pdu_handler;
   std::reference_wrapper<mac_cell_control_information_handler> crc_handler;
-
-  // :TODO: subcarrier spacing should be retrieved from the cells configuration in the future.
-  const subcarrier_spacing scs;
 };
 
 } // namespace fapi_adaptor

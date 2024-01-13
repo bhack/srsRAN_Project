@@ -21,8 +21,12 @@
 add_library(srsran_phy_support STATIC
         interpolator/interpolator_linear_impl.cpp
         prach_buffer_pool_impl.cpp
+        re_pattern.cpp
         resource_grid_pool_impl.cpp
         resource_grid_impl.cpp
+        resource_grid_reader_impl.cpp
+        resource_grid_writer_impl.cpp
+        resource_grid_mapper_impl.cpp
         support_factories.cpp)
 target_link_libraries(srsran_phy_support srsvec)
 

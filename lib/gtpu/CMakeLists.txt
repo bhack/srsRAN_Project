@@ -18,10 +18,12 @@
 # and at http://www.gnu.org/licenses/.
 #
 
-set(SOURCES gtpu_tunnel_factory.cpp
+set(SOURCES gtpu_tunnel_ngu_factory.cpp
             gtpu_pdu.cpp
             gtpu_demux_factory.cpp
+            gtpu_echo_factory.cpp
+            gtpu_teid_pool_factory.cpp
             gtpu_demux_impl.cpp)
 
 add_library(srsran_gtpu STATIC ${SOURCES})
-target_link_libraries(srsran_gtpu srsran_support)
+target_link_libraries(srsran_gtpu srsran_psup srsran_support)

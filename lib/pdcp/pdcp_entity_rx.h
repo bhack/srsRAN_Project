@@ -28,12 +28,12 @@
 #include "pdcp_pdu.h"
 #include "pdcp_rx_metrics_impl.h"
 #include "srsran/adt/byte_buffer.h"
-#include "srsran/adt/byte_buffer_slice_chain.h"
+#include "srsran/adt/byte_buffer_chain.h"
 #include "srsran/pdcp/pdcp_config.h"
 #include "srsran/pdcp/pdcp_rx.h"
+#include "srsran/support/sdu_window.h"
 #include "srsran/support/timers.h"
 #include "fmt/format.h"
-#include <map>
 
 namespace srsran {
 
@@ -50,33 +50,41 @@ struct pdcp_rx_state {
   uint32_t rx_reord;
 };
 
-/// Base class used for receiving RLC bearers.
-/// It provides interfaces for the RLC bearers, for the lower layers
-class pdcp_entity_rx : public pdcp_entity_tx_rx_base,
-                       public pdcp_rx_status_provider,
-                       public pdcp_rx_lower_interface,
-                       public pdcp_rx_upper_control_interface,
-                       public pdcp_rx_metrics
+struct pdcp_rx_sdu_info {
+  byte_buffer sdu   = {};
+  uint32_t    count = {};
+};
+
+/// Base class used for receiving PDCP bearers.
+/// It provides interfaces for the PDCP bearers, for the higher and lower layers
+class pdcp_entity_rx final : public pdcp_entity_tx_rx_base,
+                             public pdcp_rx_status_provider,
+                             public pdcp_rx_lower_interface,
+                             public pdcp_rx_upper_control_interface,
+                             public pdcp_rx_metrics
 {
 public:
   pdcp_entity_rx(uint32_t                        ue_index,
                  rb_id_t                         rb_id_,
-                 pdcp_config::pdcp_rx_config     cfg_,
+                 pdcp_rx_config                  cfg_,
                  pdcp_rx_upper_data_notifier&    upper_dn_,
                  pdcp_rx_upper_control_notifier& upper_cn_,
-                 timer_manager&                  timers);
+                 timer_factory                   timers);
+
+  void handle_pdu(byte_buffer_chain buf) override;
+
+  /// \brief Triggers re-establishment as specified in TS 38.323, section 5.1.2
+  void reestablish(security::sec_128_as_config sec_cfg_) override;
 
   // Rx/Tx interconnect
   void set_status_handler(pdcp_tx_status_handler* status_handler_) { status_handler = status_handler_; }
-
-  void handle_pdu(byte_buffer_slice_chain buf) final;
 
   /// \brief Compiles a PDCP status report
   ///
   /// Ref: TS 38.323, Sec. 5.4.1, Sec. 6.2.3.1 and Sec. 6.3.{9,10}
   ///
   /// \return Control PDU for PDCP status report as a byte_buffer
-  byte_buffer compile_status_report() final;
+  byte_buffer compile_status_report() override;
 
   /*
    * Header helpers
@@ -86,37 +94,75 @@ public:
   /// \param[out] hdr Reference to a pdcp_data_pdu_header that is filled with the header content
   /// \param[in] buf Reference to the PDU bytes
   /// \return True if header was read successfully, false otherwise
-  bool read_data_pdu_header(pdcp_data_pdu_header& hdr, const byte_buffer_slice_chain& buf) const;
+  bool read_data_pdu_header(pdcp_data_pdu_header& hdr, const byte_buffer& buf) const;
   void discard_data_header(byte_buffer& buf) const;
   void extract_mac(byte_buffer& buf, security::sec_mac& mac) const;
 
   /*
    * Security configuration
    */
-  void enable_security(security::sec_128_as_config sec_cfg_) final
+  void configure_security(security::sec_128_as_config sec_cfg_) final
   {
-    integrity_enabled = security::integrity_enabled::on;
-    ciphering_enabled = security::ciphering_enabled::on;
-    sec_cfg           = sec_cfg_;
-    logger.log_info("Security configured. NIA{} ({}) NEA{} ({})",
-                    sec_cfg.integ_algo,
-                    integrity_enabled,
-                    sec_cfg.cipher_algo,
-                    ciphering_enabled);
-    logger.log_debug(sec_cfg.k_128_rrc_int.data(), 16, "128 K_rrc_int");
-    logger.log_debug(sec_cfg.k_128_rrc_enc.data(), 16, "128 K_rrc_enc");
-    logger.log_debug(sec_cfg.k_128_up_int.data(), 16, "128 K_up_enc");
-    logger.log_debug(sec_cfg.k_128_up_enc.data(), 16, "128 K_up_enc");
+    srsran_assert((is_srb() && sec_cfg_.domain == security::sec_domain::rrc) ||
+                      (is_drb() && sec_cfg_.domain == security::sec_domain::up),
+                  "Invalid sec_domain={} for {} in {}",
+                  sec_cfg.domain,
+                  rb_type,
+                  rb_id);
+    // The 'NULL' integrity protection algorithm (nia0) is used only for SRBs and for the UE in limited service mode,
+    // see TS 33.501 [11] and when used for SRBs, integrity protection is disabled for DRBs. In case the ′NULL'
+    // integrity protection algorithm is used, 'NULL' ciphering algorithm is also used.
+    // Ref: TS 38.331 Sec. 5.3.1.2
+    if ((sec_cfg_.integ_algo == security::integrity_algorithm::nia0) &&
+        (is_drb() || (is_srb() && sec_cfg_.cipher_algo != security::ciphering_algorithm::nea0))) {
+      logger.log_error(
+          "Integrity algorithm NIA0 is only permitted for SRBs configured with NEA0. is_srb={} NIA{} NEA{}",
+          is_srb(),
+          sec_cfg_.integ_algo,
+          sec_cfg_.cipher_algo);
+    }
+
+    sec_cfg = sec_cfg_;
+    logger.log_info(
+        "Security configured: NIA{} NEA{} domain={}", sec_cfg.integ_algo, sec_cfg.cipher_algo, sec_cfg.domain);
+    if (sec_cfg.k_128_int.has_value()) {
+      logger.log_info(sec_cfg.k_128_int.value().data(), 16, "128 K_int");
+    }
+    logger.log_info(sec_cfg.k_128_enc.data(), 16, "128 K_enc");
+  }
+
+  void set_integrity_protection(security::integrity_enabled integrity_enabled_) final
+  {
+    if (integrity_enabled_ == security::integrity_enabled::on) {
+      if (!sec_cfg.k_128_int.has_value()) {
+        logger.log_error("Cannot enable integrity protection: Integrity key is not configured.");
+        return;
+      }
+      if (!sec_cfg.integ_algo.has_value()) {
+        logger.log_error("Cannot enable integrity protection: Integrity algorithm is not configured.");
+        return;
+      }
+    }
+    integrity_enabled = integrity_enabled_;
+    logger.log_info("Set integrity_enabled={}", integrity_enabled);
+  }
+  void set_ciphering(security::ciphering_enabled ciphering_enabled_) final
+  {
+    ciphering_enabled = ciphering_enabled_;
+    logger.log_info("Set ciphering_enabled={}", ciphering_enabled);
   }
 
   /*
    * Testing Helpers
    */
-  void set_state(pdcp_rx_state st_) { st = st_; }
+  void                        set_state(pdcp_rx_state st_) { st = st_; }
+  pdcp_rx_state               get_state() { return st; }
+  security::sec_128_as_config get_sec_config() { return sec_cfg; }
+  bool                        is_reordering_timer_running() { return reordering_timer.is_running(); }
 
 private:
-  pdcp_bearer_logger                logger;
-  const pdcp_config::pdcp_rx_config cfg;
+  pdcp_bearer_logger   logger;
+  const pdcp_rx_config cfg;
 
   security::sec_128_as_config  sec_cfg           = {};
   security::security_direction direction         = security::security_direction::uplink;
@@ -125,9 +171,11 @@ private:
 
   pdcp_rx_state st = {};
 
-  // Reordering queue and timer.
-  std::map<uint32_t, byte_buffer> reorder_queue;
-  unique_timer                    reordering_timer;
+  /// Rx window
+  std::unique_ptr<sdu_window<pdcp_rx_sdu_info>> rx_window;
+
+  /// Rx reordering timer
+  unique_timer reordering_timer;
   class reordering_callback;
   void handle_t_reordering_expire();
 
@@ -135,18 +183,18 @@ private:
 
   /// \brief Handles a received data PDU.
   /// \param buf The data PDU to be handled (including header and payload)
-  void handle_data_pdu(byte_buffer_slice_chain buf);
+  void handle_data_pdu(byte_buffer buf);
 
   /// \brief Handles a received control PDU.
   /// \param buf The control PDU to be handled (including header and payload)
-  void handle_control_pdu(byte_buffer_slice_chain buf);
+  void handle_control_pdu(byte_buffer_chain buf);
 
   void deliver_all_consecutive_counts();
+  void deliver_all_sdus();
+  void discard_all_sdus();
 
   bool        integrity_verify(byte_buffer_view buf, uint32_t count, const security::sec_mac& mac);
-  byte_buffer cipher_decrypt(byte_buffer_slice_chain::const_iterator msg_begin,
-                             byte_buffer_slice_chain::const_iterator msg_end,
-                             uint32_t                                count);
+  byte_buffer cipher_decrypt(byte_buffer& msg, uint32_t count);
 
   /*
    * Notifiers and handlers
@@ -155,7 +203,12 @@ private:
   pdcp_rx_upper_data_notifier&    upper_dn;
   pdcp_rx_upper_control_notifier& upper_cn;
 
-  timer_manager& timers;
+  timer_factory timers;
+
+  /// Creates the rx_window according to sn_size
+  /// \param sn_size Size of the sequence number (SN)
+  /// \return unique pointer to rx_window instance
+  std::unique_ptr<sdu_window<pdcp_rx_sdu_info>> create_rx_window(pdcp_sn_size sn_size_);
 
   void log_state(srslog::basic_levels level) { logger.log(level, "RX entity state. {}", st); }
 };
@@ -165,7 +218,7 @@ class pdcp_entity_rx::reordering_callback
 {
 public:
   explicit reordering_callback(pdcp_entity_rx* parent_) : parent(parent_) {}
-  void operator()(uint32_t timer_id);
+  void operator()(timer_id_t timer_id);
 
 private:
   pdcp_entity_rx* parent;

@@ -21,6 +21,7 @@
  */
 
 #include "srsran/asn1/asn1_utils.h"
+#include "srsran/support/srsran_test.h"
 #include "srsran/support/test_utils.h"
 #include <cmath>
 #include <gtest/gtest.h>
@@ -35,6 +36,20 @@ std::random_device rd;
 std::mt19937       g(rd());
 
 srsran::log_sink_spy* test_spy = nullptr;
+
+TEST(asn1_bit_ref_test, unpack_empty_buffer)
+{
+  byte_buffer pdu;
+  cbit_ref    bref(pdu);
+  uint8_t     dummy  = 0;
+  SRSASN_CODE result = bref.unpack(dummy, 1);
+  ASSERT_EQ(result, SRSASN_ERROR_DECODE_FAIL);
+
+  // Make sure the log backend has already processed the generated log entries.
+  srslog::flush();
+  TESTASSERT(test_spy->get_error_counter() == 1 and test_spy->get_warning_counter() == 0);
+  test_spy->reset_counters();
+}
 
 TEST(asn1_bit_ref_test, if_no_pack_is_called_buffer_stays_empty)
 {
@@ -420,11 +435,11 @@ TEST(asn1_seq_of_test, pack_unpack_and_operators)
 
   srsran::byte_buffer buffer;
   bit_ref             b{buffer};
-  pack_fixed_seq_of(b, fixed_list.data(), fixed_list.size(), integer_packer<uint32_t>(lb, ub, false));
+  pack_fixed_seq_of(b, fixed_list, fixed_list.size(), integer_packer<uint32_t>(lb, ub, false));
   TESTASSERT(b.distance() == (int)(fixed_list_size * n_bits));
   cbit_ref                 b2(buffer);
   std::array<uint32_t, 33> fixed_list2;
-  unpack_fixed_seq_of(&fixed_list2[0], b2, fixed_list.size(), integer_packer<uint32_t>(lb, ub, false));
+  unpack_fixed_seq_of(fixed_list2, b2, fixed_list.size(), integer_packer<uint32_t>(lb, ub, false));
   TESTASSERT(fixed_list == fixed_list2);
 
   // bounded seq_of
@@ -605,8 +620,51 @@ TEST(asn1_enumerated, pack_unpack)
   buffer.append(255);
   bref2 = cbit_ref(buffer);
   TESTASSERT(unpack_enum(e, bref2) == SRSASN_ERROR_DECODE_FAIL);
+
+  // Make sure the log backend has already processed the generated log entries.
+  srslog::flush();
   TESTASSERT(test_spy->get_error_counter() == 2 and test_spy->get_warning_counter() == 0);
+  test_spy->reset_counters();
 }
+
+class EnumBoolTest
+{
+public:
+  enum options { true_value, nulltype };
+  options               value;
+  static const uint32_t nof_types = 1, nof_exts = 0;
+  static const bool     has_ext = false;
+  EnumBoolTest() {}
+  EnumBoolTest(options v) : value(v) {}
+  EnumBoolTest& operator=(options v)
+  {
+    value = v;
+    return *this;
+  }
+              operator uint8_t() { return (uint8_t)value; }
+  std::string to_string() const
+  {
+    switch (value) {
+      case true_value:
+        return "true";
+      default:
+        printf("invalid value\n");
+    }
+    return "";
+  }
+};
+
+TEST(asn1_enumerated, bool_to_enum_test)
+{
+  EnumBoolTest e, e2;
+  TESTASSERT(e.nof_types == 1);
+  bool_to_enum<EnumBoolTest>(e, true);
+  TESTASSERT(e.to_string() == "true");
+  e2 = EnumBoolTest::options::true_value;
+  TESTASSERT(enum_to_bool(e2));
+  e2 = EnumBoolTest::options::nulltype;
+  TESTASSERT(!enum_to_bool(e2));
+};
 
 void test_json_writer()
 {

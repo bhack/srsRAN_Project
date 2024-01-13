@@ -24,16 +24,13 @@
 
 using namespace srsran;
 
-bool radio_uhd_rx_stream::receive_block(unsigned&                nof_rxd_samples,
-                                        baseband_gateway_buffer& data,
-                                        unsigned                 offset,
-                                        uhd::rx_metadata_t&      metadata)
+bool radio_uhd_rx_stream::receive_block(unsigned&                       nof_rxd_samples,
+                                        baseband_gateway_buffer_writer& data,
+                                        unsigned                        offset,
+                                        uhd::rx_metadata_t&             md)
 {
   // Extract number of samples.
   unsigned num_samples = data.get_nof_samples() - offset;
-
-  // Protect concurrent call of reception and stop.
-  std::unique_lock<std::mutex> lock(stream_mutex);
 
   // Ignore reception if it is not streaming.
   if (state != states::STREAMING) {
@@ -42,7 +39,7 @@ bool radio_uhd_rx_stream::receive_block(unsigned&                nof_rxd_samples
   }
 
   // Make sure the number of channels is equal.
-  report_fatal_error_if_not(data.get_nof_channels() == nof_channels, "Number of channels does not match.");
+  srsran_assert(data.get_nof_channels() == nof_channels, "Number of channels does not match.");
 
   // Flatten buffers.
   static_vector<void*, RADIO_MAX_NOF_CHANNELS> buffs_flat_ptr(nof_channels);
@@ -52,16 +49,21 @@ bool radio_uhd_rx_stream::receive_block(unsigned&                nof_rxd_samples
 
   uhd::rx_streamer::buffs_type buffs_cpp(buffs_flat_ptr.data(), nof_channels);
 
-  return safe_execution([this, buffs_cpp, num_samples, &metadata, &nof_rxd_samples]() {
-    nof_rxd_samples = stream->recv(buffs_cpp, num_samples, metadata, RECEIVE_TIMEOUT_S, ONE_PACKET);
+  // Protect the UHD Tx stream against concurrent access.
+  std::unique_lock<std::mutex> lock(stream_mutex);
+
+  return safe_execution([this, buffs_cpp, num_samples, &md, &nof_rxd_samples]() {
+    nof_rxd_samples = stream->recv(buffs_cpp, num_samples, md, RECEIVE_TIMEOUT_S, ONE_PACKET);
   });
 }
 
 radio_uhd_rx_stream::radio_uhd_rx_stream(uhd::usrp::multi_usrp::sptr& usrp,
                                          const stream_description&    description,
                                          radio_notification_handler&  notifier_) :
-  id(description.id), notifier(notifier_)
+  id(description.id), srate_Hz(description.srate_Hz), notifier(notifier_)
 {
+  srsran_assert(std::isnormal(srate_Hz) && (srate_Hz > 0.0), "Invalid sampling rate {}.", srate_Hz);
+
   // Build stream arguments.
   uhd::stream_args_t stream_args = {};
   stream_args.cpu_format         = "fc32";
@@ -97,6 +99,9 @@ bool radio_uhd_rx_stream::start(const uhd::time_spec_t& time_spec)
     return true;
   }
 
+  // Protect the UHD Tx stream against concurrent access.
+  std::unique_lock<std::mutex> lock(stream_mutex);
+
   if (!safe_execution([this, &time_spec]() {
         uhd::stream_cmd_t stream_cmd(uhd::stream_cmd_t::STREAM_MODE_START_CONTINUOUS);
         stream_cmd.time_spec  = time_spec;
@@ -113,27 +118,28 @@ bool radio_uhd_rx_stream::start(const uhd::time_spec_t& time_spec)
   return true;
 }
 
-bool radio_uhd_rx_stream::receive(baseband_gateway_buffer& buffs, uhd::time_spec_t& time_spec)
+baseband_gateway_receiver::metadata radio_uhd_rx_stream::receive(baseband_gateway_buffer_writer& buffs)
 {
-  uhd::rx_metadata_t md;
-  unsigned           nsamples            = buffs[0].size();
-  unsigned           rxd_samples_total   = 0;
-  unsigned           timeout_trial_count = 0;
+  baseband_gateway_receiver::metadata ret = {};
+  uhd::rx_metadata_t                  md;
+  unsigned                            nsamples            = buffs[0].size();
+  unsigned                            rxd_samples_total   = 0;
+  unsigned                            timeout_trial_count = 0;
 
-  // Receive stream in multiple blocks
+  // Receive stream in multiple blocks.
   while (rxd_samples_total < nsamples) {
     unsigned rxd_samples = 0;
     if (!receive_block(rxd_samples, buffs, rxd_samples_total, md)) {
       printf("Error: failed receiving packet. %s.\n", get_error_message().c_str());
-      return false;
+      return {};
     }
 
-    // Save timespec for first block.
+    // Save timespec for first block only if the last timestamp is unknown.
     if (rxd_samples_total == 0) {
-      time_spec = md.time_spec;
+      ret.ts = md.time_spec.to_ticks(srate_Hz);
     }
 
-    // Increment the total amount of received samples.
+    // Increase the total amount of received samples.
     rxd_samples_total += rxd_samples;
 
     // Prepare notification event.
@@ -149,7 +155,7 @@ bool radio_uhd_rx_stream::receive(baseband_gateway_buffer& buffs, uhd::time_spec
         ++timeout_trial_count;
         if (timeout_trial_count >= 10) {
           printf("Error: exceeded maximum number of timed out transmissions.\n");
-          return false;
+          return ret;
         }
         break;
       case uhd::rx_metadata_t::ERROR_CODE_NONE:
@@ -165,7 +171,7 @@ bool radio_uhd_rx_stream::receive(baseband_gateway_buffer& buffs, uhd::time_spec
       case uhd::rx_metadata_t::ERROR_CODE_ALIGNMENT:
       case uhd::rx_metadata_t::ERROR_CODE_BAD_PACKET:
         printf("Error: unhandled error in Rx metadata %s.", md.strerror().c_str());
-        return false;
+        return ret;
     }
 
     // Notify if the event type was set.
@@ -175,16 +181,16 @@ bool radio_uhd_rx_stream::receive(baseband_gateway_buffer& buffs, uhd::time_spec
   }
 
   // If it reaches here, there is no error.
-  return true;
+  return ret;
 }
 
 bool radio_uhd_rx_stream::stop()
 {
-  // Protect concurrent call of stop and reception.
-  std::unique_lock<std::mutex> lock(stream_mutex);
-
   // Transition state to stop before locking to prevent real time priority thread owning the lock constantly.
   state = states::STOP;
+
+  // Protect the UHD Tx stream against concurrent access.
+  std::unique_lock<std::mutex> lock(stream_mutex);
 
   // Try to stop the stream.
   if (!safe_execution([this]() {
@@ -199,4 +205,15 @@ bool radio_uhd_rx_stream::stop()
   }
 
   return true;
+}
+
+void radio_uhd_rx_stream::wait_stop()
+{
+  // nothing to wait here
+  return;
+}
+
+unsigned radio_uhd_rx_stream::get_buffer_size() const
+{
+  return max_packet_size;
 }

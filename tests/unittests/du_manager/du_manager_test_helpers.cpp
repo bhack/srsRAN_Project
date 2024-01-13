@@ -22,6 +22,8 @@
 
 #include "du_manager_test_helpers.h"
 #include "srsran/mac/config/mac_cell_group_config_factory.h"
+#include "srsran/mac/config/mac_config_helpers.h"
+#include "srsran/rlc/rlc_srb_config_factory.h"
 #include "srsran/scheduler/config/serving_cell_config_factory.h"
 
 using namespace srsran;
@@ -32,6 +34,7 @@ dummy_ue_resource_configurator_factory::dummy_ue_resource_configurator_factory()
   next_context_update_result.rlc_bearers.resize(1);
   next_context_update_result.rlc_bearers[0].lcid    = LCID_SRB1;
   next_context_update_result.rlc_bearers[0].rlc_cfg = make_default_srb_rlc_config();
+  next_context_update_result.rlc_bearers[0].mac_cfg = make_default_srb_mac_lc_config(LCID_SRB1);
   next_context_update_result.cells.emplace(0, config_helpers::create_default_initial_ue_spcell_cell_config());
   next_context_update_result.mcg_cfg = config_helpers::make_initial_mac_cell_group_config();
   next_context_update_result.pcg_cfg = {}; // TODO
@@ -84,7 +87,8 @@ srsran::srs_du::create_f1ap_ue_context_update_request(du_ue_index_t             
 {
   f1ap_ue_context_update_request req;
 
-  req.ue_index = ue_idx;
+  req.ue_index             = ue_idx;
+  req.full_config_required = false;
 
   for (srb_id_t srb_id : srbs_to_addmod) {
     req.srbs_to_setup.emplace_back();
@@ -93,12 +97,34 @@ srsran::srs_du::create_f1ap_ue_context_update_request(du_ue_index_t             
 
   for (drb_id_t drb_id : drbs_to_addmod) {
     req.drbs_to_setup.emplace_back();
-    req.drbs_to_setup.back().drb_id = drb_id;
-    req.drbs_to_setup.back().mode   = drb_rlc_mode::am;
+    req.drbs_to_setup.back().drb_id  = drb_id;
+    req.drbs_to_setup.back().mode    = drb_rlc_mode::am;
+    req.drbs_to_setup.back().five_qi = uint_to_five_qi(9);
     req.drbs_to_setup.back().uluptnl_info_list.resize(1);
-    req.drbs_to_setup.back().uluptnl_info_list[0].gtp_teid   = int_to_gtp_teid(0);
+    req.drbs_to_setup.back().uluptnl_info_list[0].gtp_teid   = int_to_gtpu_teid(0);
     req.drbs_to_setup.back().uluptnl_info_list[0].tp_address = transport_layer_address{"127.0.0.1"};
   }
 
   return req;
+}
+
+du_manager_test_bench::du_manager_test_bench(span<const du_cell_config> cells) :
+  du_cells(cells.begin(), cells.end()),
+  worker(128),
+  du_mng_exec(worker),
+  ue_exec_mapper(worker),
+  cell_exec_mapper(worker),
+  params{{"srsgnb", 1, 1, {"127.0.0.1"}, du_cells},
+         {timers, du_mng_exec, ue_exec_mapper, cell_exec_mapper},
+         {f1ap, f1ap},
+         {f1u_gw},
+         {mac, f1ap, f1ap, rlc_pcap},
+         {mac, mac}},
+  logger(srslog::fetch_basic_logger("DU-MNG"))
+{
+  logger.set_level(srslog::basic_levels::debug);
+
+  srslog::init();
+
+  params.ran.qos = config_helpers::make_default_du_qos_config_list(1000);
 }

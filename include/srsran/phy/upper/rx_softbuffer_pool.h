@@ -41,6 +41,12 @@ struct rx_softbuffer_identifier {
   {
     return (rnti == other.rnti) && (harq_ack_id == other.harq_ack_id);
   }
+
+  /// Not equal comparison with another identifier.
+  bool operator!=(const rx_softbuffer_identifier& other) const { return !(*this == other); }
+
+  /// Get unknown buffer identifier.
+  static constexpr rx_softbuffer_identifier unknown() { return {0, 16}; }
 };
 
 /// \brief Describes a receive softbuffer pool.
@@ -52,7 +58,7 @@ struct rx_softbuffer_identifier {
 ///
 /// The pool is designed for being unique in a sector. In other words, every sector must create its own pool.
 ///
-/// The implementation must be thread safe: reserve_softbuffer(), free_softbuffer() and run_slot() can potentially be
+/// The implementation must be thread safe: reserve_buffer(), free_softbuffer() and run_slot() can potentially be
 /// called from different threads.
 class rx_softbuffer_pool
 {
@@ -73,6 +79,8 @@ public:
   /// The pool does not initialize or modify the contents of the softbuffers. The modules that use the softbuffers are
   /// responsible for initializing and modifying their contents upon new transmissions.
   ///
+  /// It is expected that the pool logs in \c PHY channel the reason of a failed reservation.
+  ///
   /// \param[in] slot Indicates the slot context in which the reservation occurs.
   /// \param[in] id Identifies the softbuffer.
   /// \param[in] nof_codeblocks Indicates the number of codeblocks to reserve.
@@ -87,7 +95,9 @@ public:
 
 /// Softbuffer pool configuration.
 struct rx_softbuffer_pool_config {
-  /// Maximum codeblock size.
+  /// \brief Maximum codeblock size.
+  ///
+  /// Set to \c ldpc::MAX_CODEBLOCK_SIZE by default.
   unsigned max_codeblock_size;
   /// Number of softbuffers available in the pool.
   unsigned max_softbuffers;
@@ -95,6 +105,8 @@ struct rx_softbuffer_pool_config {
   unsigned max_nof_codeblocks;
   /// Softbuffer lifetime as a number of slots.
   unsigned expire_timeout_slots;
+  /// Set to true to indicate that soft bits are not stored in the buffer.
+  bool external_soft_bits;
 };
 
 std::unique_ptr<rx_softbuffer_pool> create_rx_softbuffer_pool(const rx_softbuffer_pool_config& config);

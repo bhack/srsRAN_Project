@@ -19,8 +19,7 @@
 #
 
 add_library(sched_cell OBJECT
-        cell_configuration.cpp
-        prb_grant.cpp
+        vrb_alloc.cpp
         resource_block_group.cpp
         resource_grid.cpp
         scheduler_prb.cpp)

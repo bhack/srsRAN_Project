@@ -25,6 +25,11 @@ target_link_libraries(pdcp_tx_test srsran_pdcp srsran_security srsran_support sr
 target_include_directories(pdcp_tx_test PRIVATE ${CMAKE_SOURCE_DIR})
 gtest_discover_tests(pdcp_tx_test)
 
+add_executable(pdcp_tx_empty_pool_test pdcp_tx_empty_pool_test.cpp)
+target_link_libraries(pdcp_tx_empty_pool_test srsran_pdcp srsran_security srsran_support srslog gtest gtest_main)
+target_include_directories(pdcp_tx_empty_pool_test PRIVATE ${CMAKE_SOURCE_DIR})
+gtest_discover_tests(pdcp_tx_empty_pool_test)
+
 add_executable(pdcp_rx_test pdcp_rx_test.cpp)
 target_link_libraries(pdcp_rx_test srsran_pdcp srsran_security srsran_support srslog gtest gtest_main)
 target_include_directories(pdcp_rx_test PRIVATE ${CMAKE_SOURCE_DIR})
@@ -49,6 +54,16 @@ add_executable(pdcp_rx_status_report_test pdcp_rx_status_report_test.cpp)
 target_link_libraries(pdcp_rx_status_report_test srsran_pdcp srsran_security srsran_support srslog gtest gtest_main)
 target_include_directories(pdcp_rx_status_report_test PRIVATE ${CMAKE_SOURCE_DIR})
 gtest_discover_tests(pdcp_rx_status_report_test)
+
+add_executable(pdcp_rx_reestablish_test pdcp_rx_reestablish_test.cpp)
+target_link_libraries(pdcp_rx_reestablish_test srsran_pdcp srsran_security srsran_support srslog gtest gtest_main)
+target_include_directories(pdcp_rx_reestablish_test PRIVATE ${CMAKE_SOURCE_DIR})
+gtest_discover_tests(pdcp_rx_reestablish_test)
+
+add_executable(pdcp_tx_reestablish_test pdcp_tx_reestablish_test.cpp)
+target_link_libraries(pdcp_tx_reestablish_test srsran_pdcp srsran_security srsran_support srslog gtest gtest_main)
+target_include_directories(pdcp_tx_reestablish_test PRIVATE ${CMAKE_SOURCE_DIR})
+gtest_discover_tests(pdcp_tx_reestablish_test)
 
 add_executable(pdcp_gen_helper pdcp_gen_helper.cpp)
 target_link_libraries(pdcp_gen_helper srsran_pdcp srsran_security srsran_support srslog)

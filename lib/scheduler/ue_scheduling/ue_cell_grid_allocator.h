@@ -26,6 +26,7 @@
 #include "../pdcch_scheduling/pdcch_resource_allocator.h"
 #include "../policy/ue_allocator.h"
 #include "../uci_scheduling/uci_scheduler.h"
+#include "ue_repository.h"
 #include "srsran/scheduler/config/scheduler_expert_config.h"
 
 namespace srsran {
@@ -35,7 +36,9 @@ namespace srsran {
 class ue_cell_grid_allocator : public ue_pdsch_allocator, public ue_pusch_allocator
 {
 public:
-  ue_cell_grid_allocator(const scheduler_ue_expert_config& expert_cfg_, ue_list& ues_, srslog::basic_logger& logger_);
+  ue_cell_grid_allocator(const scheduler_ue_expert_config& expert_cfg_,
+                         ue_repository&                    ues_,
+                         srslog::basic_logger&             logger_);
 
   /// Adds a new cell to the UE allocator.
   void add_cell(du_cell_index_t           cell_index,
@@ -45,9 +48,11 @@ public:
 
   size_t nof_cells() const { return cells.size(); }
 
-  bool allocate_dl_grant(const ue_pdsch_grant& grant) override;
+  void slot_indication();
 
-  bool allocate_ul_grant(const ue_pusch_grant& grant) override;
+  alloc_outcome allocate_dl_grant(const ue_pdsch_grant& grant) override;
+
+  alloc_outcome allocate_ul_grant(const ue_pusch_grant& grant) override;
 
 private:
   struct cell_t {
@@ -71,10 +76,13 @@ private:
 
   const scheduler_ue_expert_config& expert_cfg;
 
-  ue_list&              ues;
+  ue_repository&        ues;
   srslog::basic_logger& logger;
 
   slotted_array<cell_t, MAX_NOF_DU_CELLS> cells;
+
+  // Number of allocation attempts for DL and UL in the given slot.
+  unsigned dl_attempts_count = 0, ul_attempts_count = 0;
 };
 
 } // namespace srsran

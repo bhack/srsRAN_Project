@@ -46,10 +46,8 @@ protected:
     ASSERT_EQ(this->e1ap_pdu_notifier.last_e1ap_msg.pdu.init_msg().value.type().value,
               e1ap_elem_procs_o::init_msg_c::types::bearer_context_release_cmd);
 
-    test_ues[req.ue_index].cu_cp_ue_e1ap_id =
-        int_to_gnb_cu_cp_ue_e1ap_id(this->e1ap_pdu_notifier.last_e1ap_msg.pdu.init_msg()
-                                        .value.bearer_context_release_cmd()
-                                        ->gnb_cu_cp_ue_e1ap_id.value);
+    test_ues[req.ue_index].cu_cp_ue_e1ap_id = int_to_gnb_cu_cp_ue_e1ap_id(
+        this->e1ap_pdu_notifier.last_e1ap_msg.pdu.init_msg().value.bearer_context_release_cmd()->gnb_cu_cp_ue_e1ap_id);
   }
 
   bool was_bearer_context_release_command_sent(gnb_cu_cp_ue_e1ap_id_t cu_cp_ue_e1ap_id) const
@@ -63,7 +61,7 @@ protected:
     }
     auto& req = this->e1ap_pdu_notifier.last_e1ap_msg.pdu.init_msg().value.bearer_context_release_cmd();
 
-    return req->gnb_cu_cp_ue_e1ap_id.value == gnb_cu_cp_ue_e1ap_id_to_uint(cu_cp_ue_e1ap_id);
+    return req->gnb_cu_cp_ue_e1ap_id == gnb_cu_cp_ue_e1ap_id_to_uint(cu_cp_ue_e1ap_id);
   }
 
   bool was_bearer_context_release_complete_received() const
@@ -82,7 +80,7 @@ TEST_F(e1ap_cu_cp_bearer_context_release_test, when_command_sent_then_procedure_
 {
   // Test Preamble.
   auto command = generate_bearer_context_release_command(uint_to_ue_index(
-      test_rgen::uniform_int<uint32_t>(ue_index_to_uint(ue_index_t::min), ue_index_to_uint(ue_index_t::max) - 1)));
+      test_rgen::uniform_int<uint64_t>(ue_index_to_uint(ue_index_t::min), ue_index_to_uint(ue_index_t::max))));
 
   // Start BEARER CONTEXT RELEASE procedure.
   this->start_procedure(command);
@@ -96,7 +94,7 @@ TEST_F(e1ap_cu_cp_bearer_context_release_test, when_bearer_release_complete_rece
 {
   // Test Preamble.
   auto command = generate_bearer_context_release_command(uint_to_ue_index(
-      test_rgen::uniform_int<uint32_t>(ue_index_to_uint(ue_index_t::min), ue_index_to_uint(ue_index_t::max) - 1)));
+      test_rgen::uniform_int<uint64_t>(ue_index_to_uint(ue_index_t::min), ue_index_to_uint(ue_index_t::max))));
 
   // Start BEARER CONTEXT RELEASE procedure and return back the response from the CU-UP.
   this->start_procedure(command);

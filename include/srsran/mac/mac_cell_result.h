@@ -2,7 +2,7 @@
 #pragma once
 
 #include "srsran/adt/byte_buffer.h"
-#include "srsran/adt/byte_buffer_slice_chain.h"
+#include "srsran/adt/byte_buffer_chain.h"
 #include "srsran/adt/static_vector.h"
 #include "srsran/ran/pdcch/dci_packing.h"
 #include "srsran/ran/slot_point.h"
@@ -68,10 +68,11 @@ struct mac_dl_data_result {
     span<const uint8_t> pdu;
   };
 
-  slot_point                                    slot;
-  static_vector<dl_pdu, MAX_SIB1_PDUS_PER_SLOT> sib1_pdus;
-  static_vector<dl_pdu, MAX_RAR_PDUS_PER_SLOT>  rar_pdus;
-  static_vector<dl_pdu, MAX_UE_PDUS_PER_SLOT>   ue_pdus;
+  slot_point                                      slot;
+  static_vector<dl_pdu, MAX_SI_PDUS_PER_SLOT>     si_pdus;
+  static_vector<dl_pdu, MAX_RAR_PDUS_PER_SLOT>    rar_pdus;
+  static_vector<dl_pdu, MAX_UE_PDUS_PER_SLOT>     ue_pdus;
+  static_vector<dl_pdu, MAX_PAGING_PDUS_PER_SLOT> paging_pdus;
 };
 
 struct mac_ul_sched_result {

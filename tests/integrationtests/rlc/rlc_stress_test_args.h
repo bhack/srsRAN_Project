@@ -264,11 +264,12 @@ inline security::sec_128_as_config get_security_config_from_args(const stress_te
 {
   security::sec_128_as_config sec_cfg = {};
 
+  // Set security domain
+  sec_cfg.domain = security::sec_domain::up; // DRB
+
   // Set security keys
-  sec_cfg.k_128_rrc_int = k_128_int;
-  sec_cfg.k_128_up_int  = k_128_int;
-  sec_cfg.k_128_rrc_enc = k_128_enc;
-  sec_cfg.k_128_up_enc  = k_128_enc;
+  sec_cfg.k_128_int = k_128_int;
+  sec_cfg.k_128_enc = k_128_enc;
 
   // Set encryption/integrity algorithms
   sec_cfg.integ_algo  = static_cast<security::integrity_algorithm>(args.pdcp_integrity_algo);
@@ -280,8 +281,7 @@ inline security::sec_128_as_config get_security_config_from_args(const stress_te
 inline pdcp_config get_pdcp_config_from_args(uint32_t id, const stress_test_args& args)
 {
   pdcp_config cnfg = {};
-  cnfg.tx.rb_type  = pdcp_rb_type::drb;
-  cnfg.rx.rb_type  = pdcp_rb_type::drb;
+  cnfg.rb_type     = pdcp_rb_type::drb;
   if (args.pdcp_sn_size == 12) {
     cnfg.tx.sn_size = srsran::pdcp_sn_size::size12bits;
     cnfg.rx.sn_size = srsran::pdcp_sn_size::size12bits;
@@ -368,7 +368,7 @@ inline void init_log_from_args(const stress_test_args& args)
   log_pdcp.set_level(args.log_level_pdcp);
   log_pdcp.set_hex_dump_max_size(args.log_hex_limit);
 
-  auto& log_f1 = srslog::fetch_basic_logger("F1", false);
+  auto& log_f1 = srslog::fetch_basic_logger("F1AP", false);
   log_f1.set_level(args.log_level_pdcp);
   log_f1.set_hex_dump_max_size(args.log_hex_limit);
 

@@ -21,15 +21,16 @@
 add_subdirectory(messages)
 
 add_library(srsran_mac_to_fapi_translator STATIC mac_to_fapi_translator.cpp)
-target_link_libraries(srsran_mac_to_fapi_translator srsran_mac_fapi_adaptors fapi_validators)
+target_link_libraries(srsran_mac_to_fapi_translator srsran_mac_fapi_adaptors srsran_fapi_precoding_matrix_tools srsran_fapi)
 
 
 set(SOURCES
         fapi_to_mac_data_msg_translator.cpp
+        fapi_to_mac_error_msg_translator.cpp
         fapi_to_mac_time_msg_translator.cpp)
 
 add_library(srsran_fapi_to_mac_translator STATIC ${SOURCES})
-target_link_libraries(srsran_fapi_to_mac_translator srsvec)
+target_link_libraries(srsran_fapi_to_mac_translator srsvec srsran_support)
 
 add_library(mac_fapi_adaptor STATIC mac_fapi_adaptor_impl.cpp)
 target_link_libraries(mac_fapi_adaptor srsran_mac_to_fapi_translator srsran_fapi_to_mac_translator)

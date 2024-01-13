@@ -23,6 +23,7 @@
 #pragma once
 
 #include "radio_config_uhd_validator.h"
+#include "radio_uhd_baseband_gateway.h"
 #include "radio_uhd_device.h"
 #include "radio_uhd_device_type.h"
 #include "radio_uhd_multi_usrp.h"
@@ -32,15 +33,11 @@
 namespace srsran {
 
 /// Describes a radio session based on UHD that also implements the management and data plane functions.
-class radio_session_uhd_impl : public radio_session,
-                               private radio_management_plane,
-                               private baseband_gateway,
-                               private baseband_gateway_transmitter,
-                               private baseband_gateway_receiver
+class radio_session_uhd_impl : public radio_session, private radio_management_plane
 {
 private:
-  /// Defines the start stream command delay in seconds.
-  static constexpr double START_STREAM_DELAY_S = 0.1;
+  /// Wait at most 1s for external clock locking.
+  static constexpr int CLOCK_TIMEOUT_MS = 1000;
   /// Enumerates possible UHD session states.
   enum class states { UNINITIALIZED, SUCCESSFUL_INIT, STOP };
   /// Maps ports to stream and channel indexes.
@@ -53,11 +50,9 @@ private:
   static_vector<port_to_stream_channel, RADIO_MAX_NOF_PORTS> tx_port_map;
   /// Indexes the receiver port indexes into stream and channel index as first and second.
   static_vector<port_to_stream_channel, RADIO_MAX_NOF_PORTS> rx_port_map;
-  /// Vector or transmit streams.
-  static_vector<std::unique_ptr<radio_uhd_tx_stream>, RADIO_MAX_NOF_PORTS> tx_streams;
-  /// Vector or receive streams.
-  static_vector<std::unique_ptr<radio_uhd_rx_stream>, RADIO_MAX_NOF_PORTS> rx_streams;
-  double                                                                   sampling_rate_hz;
+  /// Baseband gateways.
+  std::vector<std::unique_ptr<radio_uhd_baseband_gateway>> bb_gateways;
+  double                                                   actual_sampling_rate_Hz;
   /// Protects the stream start.
   std::mutex stream_start_mutex;
   /// Indicates if the reception streams require start.
@@ -72,12 +67,11 @@ private:
   bool set_time_to_gps_time();
 
   /// \brief Waits for a sensor to be locked.
-  /// \param[out] is_locked Indicates if the sensor is locked by the time the method returns.
   /// \param[in] sensor_name Indicates the sensor name.
   /// \param[in] is_mboard Indicates if the sensor is from the motherboard or daughterboard.
   /// \param[in] timeout Indicates the amount of time to wait.
-  /// \return True if no exception is caught. Otherwise false.
-  bool wait_sensor_locked(bool& is_locked, const std::string& sensor_name, bool is_mboard, int timeout);
+  /// \return True if sensor is found and locked. Otherwise false.
+  bool wait_sensor_locked(const std::string& sensor_name, bool is_mboard, int timeout);
 
   /// \brief Set transmission gain from the class itself.
   /// \param[in] port_idx Indicates the port index.
@@ -104,8 +98,12 @@ private:
   bool set_rx_freq(unsigned port_idx, radio_configuration::lo_frequency frequency);
 
   /// \brief Start receive streams.
+  /// \param[in] init_time Time in which the stream shall start.
   /// \return True if no exception is caught. Otherwise false.
-  bool start_rx_stream();
+  bool start_rx_stream(baseband_gateway_timestamp init_time);
+
+public:
+  baseband_gateway_timestamp read_current_time() override;
 
 public:
   /// Constructs a radio session based on UHD.
@@ -117,43 +115,39 @@ public:
   /// \return True if no exception is caught during initialization. Otherwise false.
   bool is_successful() const { return (state != states::UNINITIALIZED); }
 
-  // See interface for documentation
+  // See interface for documentation.
   radio_management_plane& get_management_plane() override { return *this; }
 
-  // See interface for documentation
-  baseband_gateway& get_baseband_gateway() override { return *this; }
-
-  // See interface for documentation
-  void stop() override;
-
-  // See interface for documentation
-  baseband_gateway_transmitter& get_transmitter() override { return *this; }
-
-  // See interface for documentation
-  baseband_gateway_receiver& get_receiver() override { return *this; }
-
-  // See interface for documentation
-  void transmit(unsigned                                      stream_id,
-                const baseband_gateway_transmitter::metadata& metadata,
-                baseband_gateway_buffer&                      data) override;
+  // See interface for documentation.
+  baseband_gateway& get_baseband_gateway(unsigned stream_id) override
+  {
+    srsran_assert(stream_id < bb_gateways.size(),
+                  "Stream identifier (i.e., {}) exceeds the number of baseband gateways (i.e., {})",
+                  stream_id,
+                  bb_gateways.size());
+    return *bb_gateways[stream_id];
+  }
 
   // See interface for documentation.
-  baseband_gateway_receiver::metadata receive(baseband_gateway_buffer& data, unsigned stream_id) override;
+  void start(baseband_gateway_timestamp init_time) override;
 
-  // See interface for documentation
+  // See interface for documentation.
+  void stop() override;
+
+  // See interface for documentation.
   bool set_tx_gain(unsigned port_idx, double gain_dB) override { return set_tx_gain_unprotected(port_idx, gain_dB); }
 
-  // See interface for documentation
+  // See interface for documentation.
   bool set_rx_gain(unsigned port_idx, double gain_dB) override { return set_rx_gain_unprotected(port_idx, gain_dB); }
 };
 
 class radio_factory_uhd_impl : public radio_factory
 {
 public:
-  // See interface for documentation
+  // See interface for documentation.
   const radio_configuration::validator& get_configuration_validator() override { return config_validator; };
 
-  // See interface for documentation
+  // See interface for documentation.
   std::unique_ptr<radio_session> create(const radio_configuration::radio& config,
                                         task_executor&                    async_task_executor,
                                         radio_notification_handler&       notifier) override;
